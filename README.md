@@ -11,7 +11,6 @@ aBridge 可以和 [Yuxi](https://github.com/xerrors/Yuxi)一起部署，使用 *
 | **aBridge App**         | 屏幕、键鼠、Shell、文件    | Apple Silicon，macOS 14+   |
 | **aBridge for Browser** | 网页观察、导航、点击和填充 | Chromium 扩展，Chrome 116+ |
 
-
 [GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供 Server tarball、浏览器 ZIP 和 macOS 包。
 
 ## 部署 Server
