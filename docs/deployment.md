@@ -192,3 +192,35 @@ ABRIDGE_OIDC_BACKCHANNEL_ORIGIN=http://api:5050
 Bundle ID、安装路径和用户状态保持稳定，更新器不重置系统权限。ad hoc 签名绑定具体代码版本，更新仍可能触发录屏/辅助功能重新授权；要稳定延续签名身份，应持续使用同一 Developer ID 签名，不能靠放宽代码要求规避系统校验。自定义数据目录在更新重启后按安装路径保存在 macOS 偏好中，后续从 Finder 打开仍使用该目录。
 
 开发验证：`npm run check`；macOS 可另运行 `npm run test:desktop:update:live`，使用独立临时 App 验证真实下载、原路径替换、启动确认与失败回滚，不替换已安装客户端。
+
+## Docker 镜像
+
+正式 Server 镜像为 `ghcr.io/xerrors/abridge`，提供 `linux/amd64` 和 `linux/arm64`。固定版本标签如 `0.4.8`；`latest` 指向最近由镜像工作流发布的正式版本。仅包含 Server 和管理台，不包含桌面 SDK。
+
+```sh
+docker run -d --name abridge --restart unless-stopped \
+  -p 11111:8765 \
+  -v abridge-data:/data \
+  -e ABRIDGE_PUBLIC_ORIGIN=http://121.41.110.195:11111 \
+  ghcr.io/xerrors/abridge:0.4.8
+```
+
+将 `ABRIDGE_PUBLIC_ORIGIN` 换成实际访问地址；使用 HTTPS 反向代理时填外部 HTTPS Origin。远程扩展连接需要 HTTPS/WSS。命名卷保存数据库和管理员凭据，更新镜像时复用同一数据卷；不要同时启动两个容器使用同一个卷。
+
+```sh
+curl -f http://127.0.0.1:11111/health
+docker stats --no-stream abridge
+docker logs --tail 30 abridge
+```
+
+输出管理员链接（包含私密凭据，不转发）：
+
+```sh
+docker exec abridge node -e '
+const fs = require("node:fs");
+const token = process.env.ABRIDGE_ADMIN_TOKEN || fs.readFileSync("/data/server.db.admin-token", "utf8").trim();
+console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComponent(token));
+'
+```
+
+更新时先备份数据，再停止并删除旧容器，使用新镜像及相同端口、环境变量和数据卷重建。`docker rm abridge` 不删除命名卷；不要执行 `docker volume rm abridge-data`。

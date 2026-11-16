@@ -1,0 +1,93 @@
+name: Container
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish
+        required: true
+        default: v0.4.8
+permissions:
+  contents: read
+concurrency:
+  group: container-publish
+  cancel-in-progress: false
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      IMAGE: ghcr.io/xerrors/abridge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Validate and extract published source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq 'if .isDraft or .isPrerelease then error("Expected a formal release") else . end'
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          mkdir source
+          git archive "$RELEASE_TAG" | tar -x -C source
+          node -e 'if("v"+require("./source/package.json").version!==process.env.RELEASE_TAG)throw Error("Version mismatch")'
+          cp Dockerfile source/Dockerfile
+      - name: Build and smoke test
+        run: |
+          set -euo pipefail
+          docker build --label "org.opencontainers.image.version=${RELEASE_TAG#v}" -t candidate source
+          docker run -d --name smoke -p 127.0.0.1:18765:8765 candidate
+          trap 'docker logs smoke; docker rm -f smoke' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18765/health > health.json; then break; fi
+            sleep 1
+          done
+          node -e 'if(require("./health.json").version!==process.env.RELEASE_TAG.slice(1))throw Error("Health version mismatch")'
+          curl -fsS http://127.0.0.1:18765/ > /dev/null
+          curl -fsS -H 'Origin: http://127.0.0.1:18765' http://127.0.0.1:18765/static/app.js > /dev/null
+          docker exec smoke node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            const token=readFileSync("/data/server.db.admin-token","utf8").trim();
+            const r=await fetch("http://127.0.0.1:8765/api/admin/session",{method:"POST",headers:{authorization:"Bearer "+token,"content-type":"application/json"},body:"{}"});
+            if(!r.ok)throw Error("Admin authentication failed");
+            if(await (await import("node:fs/promises")).stat("/app/node_modules/@trycua").catch(()=>null))throw Error("Desktop SDK leaked into Server image");
+          '
+          docker stats --no-stream smoke
+      - name: Push validated architecture image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag candidate "$IMAGE:${RELEASE_TAG#v}-${{ matrix.arch }}"
+          docker push "$IMAGE:${RELEASE_TAG#v}-${{ matrix.arch }}"
+  publish:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      IMAGE: ghcr.io/xerrors/abridge
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish multi-platform version and latest
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create -t "$IMAGE:${RELEASE_TAG#v}" -t "$IMAGE:latest" \
+            "$IMAGE:${RELEASE_TAG#v}-amd64" "$IMAGE:${RELEASE_TAG#v}-arm64"
+          docker buildx imagetools inspect "$IMAGE:${RELEASE_TAG#v}"

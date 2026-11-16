@@ -76,3 +76,9 @@ npm run package:macos
 `dist/releases/abridge-browser-<version>.zip` 是商店上传包。首次上传在开发者信息中心完成，需准备商店名称、简要说明、用途、截图、图标、隐私政策及权限用途说明。上传后还需完成商店审核并取得 item ID；首次发布状态以信息中心为准。
 
 当前 tag 工作流生成可上传 ZIP，不自动代替商店提交与审核。后续自动上传需要已建立的 item ID 和 Chrome Web Store API 凭据；不把 Google 登录 Cookie 或账号密码放进 CI。
+
+## 容器镜像发布
+
+`.github/workflows/container.yml` 在正式 GitHub Release 发布时构建镜像，也支持手动输入已发布的正式 tag 补发。使用对应 tag 的源码和当前 Dockerfile，在原生 amd64、arm64 Linux runner 分别构建并验收健康接口、页面脚本、管理员认证及 Server 分发边界，再向 GHCR 推送版本和 `latest` 多架构清单。发布权限使用临时 `GITHUB_TOKEN`，不配置长期 registry token。
+
+首次推送后须在 GitHub Package 设置中将镜像设为 Public，并验证匿名拉取；仓库公开不代表首次创建的容器包自动公开。部署命令见[Docker 镜像](deployment.md#docker-镜像)。
