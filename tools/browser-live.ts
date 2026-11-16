@@ -1,11 +1,12 @@
 /** Opt-in real browser acceptance. Uses ego-browser and owned local pages only. */
 import { build } from "esbuild";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { browserTasks } from "./fixtures/browser-tasks.js";
 
 const root = resolve(import.meta.dirname, "..");
+await mkdir(join(root, ".local"), { recursive: true });
 const temporary = await mkdtemp(join(root, ".local/browser-live-"));
 const fixture = await browserTasks();
 try {

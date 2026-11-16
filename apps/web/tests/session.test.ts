@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -56,7 +57,7 @@ async function fixture(handler: Handler = (path) => response(path), management =
   const output = join(directory, "session.mjs");
   const key = "__abridgeSessionTestHooks";
   await build({
-    entryPoints: [new URL("../src/session.ts", import.meta.url).pathname],
+    entryPoints: [fileURLToPath(new URL("../src/session.ts", import.meta.url))],
     outfile: output,
     bundle: true,
     format: "esm",

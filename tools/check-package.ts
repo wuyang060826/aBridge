@@ -6,7 +6,7 @@ import { unzipSync } from "fflate";
 const root = resolve(import.meta.dirname, ".."),
   dist = join(root, "dist/releases");
 const files = await readdir(dist),
-  tarballs = files.filter((n) => n.endsWith(".tgz"));
+  tarballs = files.filter((n) => !n.startsWith("._") && n.endsWith(".tgz"));
 if (tarballs.length !== 1) throw new Error("Expected exactly one Server tarball");
 const listing = spawnSync("tar", ["-tzf", join(dist, tarballs[0]!)], { encoding: "utf8" });
 if (listing.status !== 0) throw new Error("Cannot inspect Server tarball");
