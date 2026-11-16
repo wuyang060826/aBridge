@@ -545,3 +545,48 @@ test("bounded transport terminates a non-draining socket", async () => {
   await assert.rejects(transport.send({ type: "stop" }), /deadline/);
   assert.equal(terminated, true);
 });
+
+test("Device Token verification returns only its identity, rejects other credentials and revoked devices", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("token-user", "fixture-password-123");
+    const computer = f.store.createDevice(owner.id, "Fixture Mac", ["shell"], "computer");
+    const browser = f.store.createDevice(owner.id, "Fixture Browser", ["browser"], "browser");
+    for (const device of [computer, browser]) {
+      const response = await fetch(f.url + "/api/device", {
+        headers: { Authorization: "Bearer " + device.key, Origin: "chrome-extension://" + "a".repeat(32) },
+      });
+      assert.equal(response.status, 200);
+      const result = await response.json();
+      assert.deepEqual(result, {
+        id: device.device.id,
+        name: device.device.name,
+        kind: device.device.kind,
+        capabilities: device.device.capabilities,
+      });
+      assert.ok(!JSON.stringify(result).includes(device.key));
+      assert.ok(!JSON.stringify(result).includes(owner.id));
+    }
+    for (const key of ["", f.adminToken, "abr_agent_invalid", "abr_device_invalid"]) {
+      assert.equal(
+        (await fetch(f.url + "/api/device", { headers: { Authorization: "Bearer " + key } })).status,
+        401,
+      );
+    }
+    assert.equal(
+      (
+        await fetch(f.url + "/api/device", {
+          headers: { Authorization: "Bearer " + computer.key, Origin: "https://untrusted.example" },
+        })
+      ).status,
+      403,
+    );
+    f.store.revokeDevice(computer.device.id);
+    assert.equal(
+      (await fetch(f.url + "/api/device", { headers: { Authorization: "Bearer " + computer.key } })).status,
+      401,
+    );
+  } finally {
+    await f.dispose();
+  }
+});

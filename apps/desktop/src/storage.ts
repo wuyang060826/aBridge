@@ -1,3 +1,4 @@
+import { normalizeDeviceServer } from "@abridge/protocol";
 import { constants } from "node:fs";
 import { mkdir, lstat, chmod, open, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,24 +13,14 @@ export type ClientConfig = {
   paused: boolean;
   pause_reason?: string;
   revoked?: boolean;
+  http_confirmed_origin?: string;
 };
-export function normalizeServerUrl(value: string): string {
-  let url: URL;
+export function normalizeServerUrl(value: string, confirmedHttpOrigin?: string): string {
   try {
-    url = new URL(value);
-  } catch {
-    throw new DesktopError("invalid_url", "Enter a valid server URL");
+    return normalizeDeviceServer(value, confirmedHttpOrigin);
+  } catch (error) {
+    throw new DesktopError("invalid_url", error instanceof Error ? error.message : "服务地址无效");
   }
-  if (
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (url.protocol !== "https:" &&
-      !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
-  )
-    throw new DesktopError("invalid_url", "Use HTTPS, or HTTP on localhost");
-  return url.href.replace(/\/$/, "");
 }
 export async function privateDirectory(path: string, create = true): Promise<void> {
   if (create) await mkdir(path, { recursive: true, mode: 0o700 });
@@ -92,6 +83,10 @@ export async function loadConfig(stateDir: string): Promise<ClientConfig> {
     typeof value.paused !== "boolean"
   )
     throw new DesktopError("configuration_invalid", "Bind this device in aBridge settings");
+  normalizeServerUrl(
+    value.url,
+    typeof value.http_confirmed_origin === "string" ? value.http_confirmed_origin : undefined,
+  );
   return value as ClientConfig;
 }
 export async function saveConfig(stateDir: string, config: ClientConfig): Promise<void> {

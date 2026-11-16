@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { api } from "./api.js";
 import type { Device, Grant } from "./api.js";
-import { Form, Modal } from "./components.js";
+import { Field, Form, Modal } from "./components.js";
 import type { Mutate, RunAction } from "./pages.js";
 import { ConnectionEditor } from "./connection-editor.js";
 import { ConnectionPreviewDialog } from "./connection-preview.js";
@@ -9,6 +9,7 @@ import { ConnectionPreviewDialog } from "./connection-preview.js";
 export type ManagementDialog =
   | { kind: "add-device" }
   | { kind: "add-browser" }
+  | { kind: "rotate-device"; device: Device }
   | { kind: "add-grant" }
   | { kind: "edit-grant"; grant: Grant }
   | { kind: "preview-grant"; grant: Grant }
@@ -59,6 +60,28 @@ export function ManagementModal({
             </li>
             <li>点击“在浏览器授权”，登录后确认绑定。</li>
           </ol>
+          <details>
+            <summary>使用 Device Token 手动绑定</summary>
+            <p class="small muted">
+              创建后仅显示一次 Token。请粘贴到对应客户端，不能用于 Agent 的 MCP 配置。
+            </p>
+            <Form
+              label="创建设备并生成 Token"
+              onSubmit={(form) =>
+                secret(
+                  "/api/devices",
+                  {
+                    name: String(form.get("name") || ""),
+                    kind: computer ? "computer" : "browser",
+                    capabilities: computer ? ["screen", "input", "shell", "files"] : ["browser"],
+                  },
+                  "Device Token",
+                )
+              }
+            >
+              <Field name="name" label="设备名称" />
+            </Form>
+          </details>
           <div class="dialog-actions">
             <button onClick={close}>完成</button>
             <button class="primary" onClick={() => run(() => navigator.clipboard.writeText(location.origin))}>
@@ -68,6 +91,19 @@ export function ManagementModal({
         </Modal>
       );
     }
+    case "rotate-device":
+      return (
+        <Modal title="重新生成 Device Token" close={close}>
+          <Form
+            label="重新生成"
+            onSubmit={() => secret(`/api/devices/${dialog.device.id}/credentials`, {}, "新 Device Token")}
+          >
+            <p class="small muted">
+              {dialog.device.name} · 旧 Token 将立即失效，当前连接会断开，需要重新绑定客户端。
+            </p>
+          </Form>
+        </Modal>
+      );
     case "add-grant":
       return (
         <ConnectionEditor

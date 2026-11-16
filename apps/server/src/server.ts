@@ -134,7 +134,7 @@ export async function createServer(config: ServerConfig) {
     const extensionAuthorization =
       (pathname === "/api/device-authorizations" && request.method === "POST") ||
       (pathname === "/api/device-authorizations/token" && request.method === "POST") ||
-      (pathname === "/api/device" && request.method === "PATCH") ||
+      (pathname === "/api/device" && ["GET", "PATCH"].includes(request.method)) ||
       (/^\/api\/device-authorizations\/[^/]+$/.test(pathname) && request.method === "DELETE");
     if (pathname === "/ws/browser" || (extensionAuthorization && browserOrigin.test(origin))) {
       if (!browserOrigin.test(origin))
@@ -353,6 +353,11 @@ export async function createServer(config: ServerConfig) {
     if (device.revoked_at !== null) throw new BridgeError("revoked", "Device was revoked", 409);
     store.renameDevice(device.id, body.name);
     return control.deviceView(store.device(device.id)!);
+  });
+  app.get("/api/device", async (request) => {
+    const device = store.authenticateDevice(bearer(request));
+    if (!device) throw new BridgeError("unauthorized", "设备 Token 无效或已撤销", 401);
+    return { id: device.id, name: device.name, kind: device.kind, capabilities: device.capabilities };
   });
   app.patch("/api/device", async (request) => {
     const device = store.authenticateDevice(bearer(request));

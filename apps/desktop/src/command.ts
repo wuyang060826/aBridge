@@ -4,6 +4,7 @@ import { defaultDataDirectory } from "@abridge/shared/paths";
 import { startDeviceClient, configureClient, getStatus } from "./runtime.js";
 import { localControl } from "./local-control.js";
 import { LocalExecutor } from "./executor.js";
+import { verifyDesktopToken } from "./authorization.js";
 import { authorizationCommand } from "./authorization-command.js";
 async function stdinJson(): Promise<Record<string, unknown>> {
   let text = "";
@@ -57,9 +58,17 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
     const data = await stdinJson();
     if (typeof data.url !== "string" || typeof data.device_key !== "string")
       throw new Error("url and device_key are required");
+    await verifyDesktopToken(
+      data.url,
+      data.device_key,
+      typeof data.http_confirmed_origin === "string" ? data.http_confirmed_origin : undefined,
+    );
     const config = await configureClient(stateDir, {
       url: data.url,
       device_key: data.device_key,
+      ...(typeof data.http_confirmed_origin === "string"
+        ? { http_confirmed_origin: data.http_confirmed_origin }
+        : {}),
       ...(data.capabilities ? { capabilities: data.capabilities as Record<string, boolean> } : {}),
     });
     console.log(JSON.stringify({ ok: true, ...config }));

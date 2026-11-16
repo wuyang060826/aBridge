@@ -29,6 +29,7 @@ export interface ConnectionHistory {
 }
 export interface BrowserProfile {
   key?: string;
+  http_confirmed_origin?: string;
   revoked?: boolean;
   paused?: boolean;
   instance_id?: string;
@@ -37,6 +38,7 @@ export interface BrowserProfile {
   label?: string;
 }
 export interface BrowserStatus {
+  http_confirmed_origin?: string;
   ok: true;
   configured: boolean;
   revoked: boolean;
@@ -59,9 +61,11 @@ export type UiMessage =
   | { type: "authorize_cancel" }
   | { type: "rename"; name: string }
   | {
-      type: "authorize";
+      type: "authorize" | "bind_token";
+      device_key?: string;
+      http_confirmed_origin?: string;
       server: string;
-      label: string;
+      label?: string;
     };
 export interface UiResponse {
   ok: boolean;
@@ -82,5 +86,14 @@ export const uiMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("authorize"),
     server: z.string(),
     label: z.string(),
+    http_confirmed_origin: z.string().optional(),
   }),
+  z
+    .object({
+      type: z.literal("bind_token"),
+      server: z.string(),
+      device_key: z.string().startsWith("abr_device_").max(4096),
+      http_confirmed_origin: z.string().optional(),
+    })
+    .strict(),
 ]);

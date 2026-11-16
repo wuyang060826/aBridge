@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
 import { z } from "zod";
-import { authorizeDevice } from "./authorization.js";
+import { deviceBindingInputSchema } from "@abridge/protocol";
+import { normalizeServerUrl } from "./storage.js";
+import { authorizeDevice, verifyDesktopToken } from "./authorization.js";
 import { configureClient } from "./runtime.js";
 import { DesktopError } from "./errors.js";
 
@@ -40,11 +42,20 @@ export async function authorizationCommand(stateDir: string): Promise<void> {
     }
   };
   try {
-    const start = z
-      .object({ url: z.string().min(1) })
-      .strict()
-      .parse(await next());
-    const result = await authorizeDevice(start.url, { signal, onAuthorization: emit });
+    const start = deviceBindingInputSchema.parse(await next());
+    const url = normalizeServerUrl(start.url, start.http_confirmed_origin);
+    let key: string;
+    if (start.device_key) {
+      await verifyDesktopToken(url, start.device_key, start.http_confirmed_origin, signal);
+      key = start.device_key;
+    } else {
+      const result = await authorizeDevice(url, {
+        signal,
+        onAuthorization: emit,
+        httpConfirmedOrigin: start.http_confirmed_origin,
+      });
+      key = result.device.key;
+    }
     emit({ event: "ready" });
     const commit = z
       .object({ command: z.literal("commit"), capabilities: z.record(z.string(), z.boolean()) })
@@ -52,11 +63,12 @@ export async function authorizationCommand(stateDir: string): Promise<void> {
       .parse(await next());
     signal.throwIfAborted();
     await configureClient(stateDir, {
-      url: result.url,
-      device_key: result.device.key,
+      url,
+      device_key: key,
+      http_confirmed_origin: start.http_confirmed_origin,
       capabilities: commit.capabilities,
     });
-    emit({ event: "complete", ok: true, url: result.url });
+    emit({ event: "complete", ok: true, url });
   } catch (error) {
     emit({
       event: "error",

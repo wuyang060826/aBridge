@@ -100,3 +100,7 @@ Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不能互换
 Server 重启后，客户端需要重新连接并创建任务会话，未知动作不自动重放。数据库只保存身份、授权和操作元信息；命令输出、文件正文与截图不写入数据库，临时返回内容仍可能敏感。
 
 备份使用 SQLite 备份接口，或先停止服务后保留数据库及 WAL。开发数据库需匹配当前 schema，不提供历史数据迁移。包的第三方组件说明位于随包的 `THIRD_PARTY_NOTICES.md`；aBridge 自身使用 Apache-2.0 许可证。
+
+## 手动设备绑定
+
+管理台可为电脑或浏览器生成 Device Token，或在现有设备详情重新生成（旧凭据立即失效）。客户端使用 `GET /api/device` 和 `Authorization: Bearer <DEVICE_TOKEN>` 验证自己的设备身份，响应仅含 `id/name/kind/capabilities`，不返回 Token、所有者或其他设备。无效、撤销、Agent Key 或管理员 Token 返回 `401`。该只读接口不会创建会话或修改授权；扩展来源请求允许使用自己的 Device Token 校验，其他网页仍受 Origin 检查。

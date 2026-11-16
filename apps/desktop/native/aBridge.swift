@@ -32,6 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var environmentLabels: [String: NSTextField] = [:]
     private var capabilityButtons: [String: NSSwitch] = [:]
     private var connectButton: NSButton!
+    private var bindingMethod: NSPopUpButton!
+    private var tokenFields: NSStackView!
+    private let deviceTokenField = NSSecureTextField(string: "")
+    private let visibleTokenField = NSTextField(string: "")
+    private var revealToken: NSButton!
+    private var httpConfirmedOrigin: String?
     private var pauseButton: NSButton!
     private var unbindButton: NSButton!
     private var authorizationCancelButton: NSButton!
@@ -240,12 +246,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         pauseButton?.isEnabled = running && fresh
         unbindButton?.isHidden = !bound
         unbindButton?.isEnabled = !authorizationCommitting
-        connectButton?.title = authorizationProcess != nil ? "等待浏览器授权…"
+        connectButton?.title = authorizationProcess != nil ? "正在绑定…"
+            : bindingMethod?.indexOfSelectedItem == 1 ? "验证并连接"
             : bound && sameServer(urlField.stringValue, boundServerAddress()) ? "重新连接" : "在浏览器授权"
         connectButton?.isEnabled = authorizationProcess == nil && !stoppingDaemon
+        bindingMethod?.isEnabled = authorizationProcess == nil && !stoppingDaemon
+        deviceTokenField.isEnabled = authorizationProcess == nil
+        visibleTokenField.isEnabled = authorizationProcess == nil
+        revealToken?.isEnabled = authorizationProcess == nil
         authorizationCancelButton?.isHidden = authorizationProcess == nil
         authorizationCancelButton?.isEnabled = !authorizationCommitting
-        authorizationOpenButton?.isHidden = authorizationProcess == nil
+        authorizationOpenButton?.isHidden = authorizationURL == nil
         authorizationOpenButton?.isEnabled = authorizationURL != nil && !authorizationCommitting
         urlField.isEditable = !authorizationCommitting
         deviceNameField.isEditable = bound && !savingDeviceName && !authorizationCommitting
@@ -380,6 +391,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         connectionActions.alignment = .centerY
         connectionActions.spacing = 8
         addFullWidth(connectionActions, to: connection)
+
+        bindingMethod = NSPopUpButton(frame: .zero, pullsDown: false)
+        bindingMethod.addItems(withTitles: ["浏览器授权", "Device Token"])
+        bindingMethod.target = self
+        bindingMethod.action = #selector(bindingMethodChanged)
+        let methodLabel = textLabel("绑定方式")
+        methodLabel.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        let methodRow = NSStackView(views: [methodLabel, bindingMethod, NSView()])
+        methodRow.alignment = .centerY
+        methodRow.spacing = 12
+        connection.insertArrangedSubview(methodRow, at: 2)
+        tokenFields = verticalStack(spacing: 6)
+        deviceTokenField.placeholderString = "abr_device_…"
+        visibleTokenField.placeholderString = "abr_device_…"
+        deviceTokenField.setAccessibilityLabel("Device Token")
+        visibleTokenField.setAccessibilityLabel("Device Token（可见）")
+        visibleTokenField.isHidden = true
+        revealToken = NSButton(checkboxWithTitle: "显示 Token", target: self, action: #selector(toggleTokenVisibility))
+        let tokenRow = NSStackView(views: [deviceTokenField, visibleTokenField, revealToken])
+        tokenRow.alignment = .centerY
+        tokenRow.spacing = 8
+        addFullWidth(tokenRow, to: tokenFields)
+        let tokenHint = textLabel("从管理台生成电脑设备的 Device Token，不能使用 Agent Key。")
+        tokenHint.font = .systemFont(ofSize: 11)
+        tokenHint.textColor = .secondaryLabelColor
+        addFullWidth(tokenHint, to: tokenFields)
+        connection.insertArrangedSubview(tokenFields, at: 3)
+        tokenFields.widthAnchor.constraint(equalTo: connection.widthAnchor).isActive = true
+        tokenFields.isHidden = true
 
         let capabilities = addSettingsGroup("本机能力", to: root)
         let capabilityRows = [
@@ -616,7 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
               parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
         let scheme = rawScheme.lowercased()
         let host = rawHost.lowercased()
-        guard scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host)) else { return nil }
+        guard scheme == "https" || scheme == "http" else { return nil }
         parts.scheme = scheme
         parts.host = host
         if parts.port == (scheme == "https" ? 443 : 80) { parts.port = nil }
@@ -649,6 +689,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return
         }
         guard notification.object as? NSTextField === urlField else { return }
+        httpConfirmedOrigin = nil
         if authorizationProcess != nil && !sameServer(urlField.stringValue, authorizationServer) {
             cancelAuthorization()
         }
@@ -657,7 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func connect() {
         guard authorizationProcess == nil, !stoppingDaemon else { return }
-        if sameServer(urlField.stringValue, boundServerAddress()) {
+        if bindingMethod.indexOfSelectedItem == 0 && sameServer(urlField.stringValue, boundServerAddress()) {
             authorizationLabel.isHidden = true
             stopDaemon { [weak self] in self?.startDaemon(); self?.renderMenu() }
             return
@@ -672,7 +713,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         try handle.write(contentsOf: data)
     }
 
+    @objc private func bindingMethodChanged() {
+        deviceTokenField.stringValue = ""
+        visibleTokenField.stringValue = ""
+        tokenFields.isHidden = bindingMethod.indexOfSelectedItem == 0
+        authorizationLabel.isHidden = true
+        renderMenu()
+        resizeSettingsWindow()
+    }
+
+    @objc private func toggleTokenVisibility() {
+        let show = revealToken.state == .on
+        if show { visibleTokenField.stringValue = deviceTokenField.stringValue }
+        else { deviceTokenField.stringValue = visibleTokenField.stringValue }
+        deviceTokenField.isHidden = show
+        visibleTokenField.isHidden = !show
+    }
+
+    private func confirmHttp(_ server: String) -> Bool {
+        guard let url = URL(string: server), url.scheme == "http",
+              let host = url.host, !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) else { return true }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        parts.path = ""
+        let origin = parts.string!
+        if httpConfirmedOrigin == origin { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "连接未加密的 Server？"
+        alert.informativeText = "\(origin)\n\n此连接使用 HTTP，设备 Token、操作内容和截图可能被网络中的其他人读取。建议使用 HTTPS。"
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "仍然连接")
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }
+        httpConfirmedOrigin = origin
+        return true
+    }
+
     private func beginAuthorization() {
+        guard let address = normalizedServerAddress(urlField.stringValue) else {
+            authorizationLabel.stringValue = "请填写完整的 HTTP 或 HTTPS Server 地址"
+            authorizationLabel.isHidden = false
+            return
+        }
+        let tokenMode = bindingMethod.indexOfSelectedItem == 1
+        let token = (revealToken.state == .on ? visibleTokenField.stringValue : deviceTokenField.stringValue).trimmingCharacters(in: .whitespacesAndNewlines)
+        if tokenMode && (!token.hasPrefix("abr_device_") || token.count > 4096) {
+            authorizationLabel.stringValue = "请输入电脑设备的 Device Token，不能使用 Agent Key 或管理员 Token"
+            authorizationLabel.isHidden = false
+            return
+        }
+        guard confirmHttp(address) else { return }
         guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"])) else {
             statusLabel.stringValue = "运行时文件缺失"
             return
@@ -684,14 +773,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         process.standardError = errorLog()
         authorizationProcess = process
         authorizationInput = input.fileHandleForWriting
-        authorizationServer = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        authorizationServer = address
         authorizationURL = nil
         authorizationCommitting = false
-        authorizationLabel.stringValue = "正在打开浏览器授权…"
+        authorizationLabel.stringValue = tokenMode ? "正在验证设备 Token…" : "正在打开浏览器授权…"
         authorizationLabel.isHidden = false
         do {
             try process.run()
-            try sendAuthorization(["url": authorizationServer!])
+            var request: [String: Any] = ["url": address]
+            if tokenMode { request["device_key"] = token }
+            if let origin = httpConfirmedOrigin { request["http_confirmed_origin"] = origin }
+            try sendAuthorization(request)
         } catch {
             finishAuthorization("无法启动浏览器授权，请查看日志")
             return
@@ -745,6 +837,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 } catch { self.finishAuthorization("无法保存绑定，请重新发起") }
             }
         case "complete":
+            deviceTokenField.stringValue = ""
+            visibleTokenField.stringValue = ""
             guard event["ok"] as? Bool == true else {
                 finishAuthorization("绑定未完成，请重试")
                 return
@@ -1001,6 +1095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
         urlField.stringValue = config["url"] as? String ?? urlField.stringValue
+        httpConfirmedOrigin = config["http_confirmed_origin"] as? String
         let capabilities = config["capabilities"] as? [String: Bool] ?? [:]
         for (key, button) in capabilityButtons { button.state = capabilities[key] == true ? .on : .off }
         connectButton.title = "重新连接"

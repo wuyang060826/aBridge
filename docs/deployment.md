@@ -140,7 +140,7 @@ npm run build
 
 在 `chrome://extensions` 开启开发者模式，加载 `dist/browser/`，不能直接加载 `apps/browser/src/`。独立分发使用构建工具生成的扩展 ZIP，解压后加载；版本由根项目版本生成。
 
-点击扩展图标，在弹窗中填写 Server 地址和设备名，点击“在浏览器授权”，登录管理台并确认绑定当前 Profile。远端 Server 使用 HTTPS/WSS，本机开发允许回环 HTTP/WS。绑定时只需允许扩展访问所填 Server 地址。
+点击扩展图标，在弹窗中填写 Server 地址和设备名，点击“在浏览器授权”，登录管理台并确认绑定当前 Profile。远端 Server 推荐 HTTPS/WSS；公网 HTTP/WS 需在客户端确认风险，本机回环 HTTP/WS 无需额外确认。绑定时只需允许扩展访问所填 Server 地址。
 
 每个扩展安装实例注册为独立浏览器设备，仅有 `browser` 能力；在管理台加入所需 Agent 连接。任务无需在 App 中选择窗口或准备浏览器连接。更新构建文件后在扩展管理页“重新加载”，再确认连接状态；绑定与暂停保留。更多约束见 [浏览器客户端](browser-profile-design.md)。
 
@@ -205,7 +205,7 @@ docker run -d --name abridge --restart unless-stopped \
   ghcr.io/xerrors/abridge:0.4.8
 ```
 
-将 `ABRIDGE_PUBLIC_ORIGIN` 换成实际访问地址；使用 HTTPS 反向代理时填外部 HTTPS Origin。远程扩展连接需要 HTTPS/WSS。命名卷保存数据库和管理员凭据，更新镜像时复用同一数据卷；不要同时启动两个容器使用同一个卷。
+将 `ABRIDGE_PUBLIC_ORIGIN` 换成实际访问地址；使用 HTTPS 反向代理时填外部 HTTPS Origin。远程连接推荐 HTTPS/WSS；公网 HTTP 需要客户端明确确认。命名卷保存数据库和管理员凭据，更新镜像时复用同一数据卷；不要同时启动两个容器使用同一个卷。
 
 ```sh
 curl -f http://127.0.0.1:11111/health
@@ -224,3 +224,11 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 ```
 
 更新时先备份数据，再停止并删除旧容器，使用新镜像及相同端口、环境变量和数据卷重建。`docker rm abridge` 不删除命名卷；不要执行 `docker volume rm abridge-data`。
+
+## 两种设备绑定方式
+
+macOS 设置和浏览器扩展均可选择“浏览器授权”或“Device Token”。浏览器授权通过登录与确认自动领取设备凭据；手动方式在管理台“添加电脑/添加浏览器”中展开“使用 Device Token 手动绑定”，填写名称生成 Token，仅显示一次。将它填入对应客户端，点击“验证并连接”；已有设备可在详情“更多”中重新生成 Token，旧 Token 和当前设备连接会立即失效。
+
+Device Token 只用于设备绑定，不能使用 Agent Key 或管理员 Token 代替。客户端先调用 `GET /api/device` 验证 Token 是否有效及设备类型是否匹配，再提交本地绑定。无效、撤销或类型不匹配的 Token 不替换旧绑定。Token 通过私有输入管道/扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
+
+HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式都会先显示完整 Origin 并提醒设备凭据、操作内容和截图未经加密；默认取消，确认后只对该 Origin 生效，换地址需重新确认。确认随成功绑定保存，重启/重连不会自动扩大允许范围。扩展仍需单独授予所填 Server 的站点访问权限。此设备连接确认不改变 Server 的 Host/Origin 防护，也不放开 Yuxi OIDC 对公网 HTTPS 的要求；旧 Server 需升级后才能使用手动 Token 验证接口。

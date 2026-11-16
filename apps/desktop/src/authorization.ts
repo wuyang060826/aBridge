@@ -10,6 +10,7 @@ import {
   deviceAuthorizationStartSchema,
   deviceAuthorizationTokenRequestSchema,
   deviceAuthorizationTokenSchema,
+  deviceIdentitySchema,
 } from "@abridge/protocol";
 import { DesktopError } from "./errors.js";
 import { normalizeServerUrl } from "./storage.js";
@@ -25,11 +26,12 @@ export type AuthorizedDevice = {
 };
 type AuthorizationOptions = {
   signal?: AbortSignal;
+  httpConfirmedOrigin?: string;
   timeoutMs?: number;
   onAuthorization: (notice: AuthorizationNotice) => void;
 };
 
-async function responseJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
+export async function responseJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
   if (!response.ok) {
     await response.body?.cancel();
     throw new DesktopError("authorization_failed", `授权服务请求失败 (${response.status})`);
@@ -59,7 +61,7 @@ async function responseJson<T>(response: Response, schema: z.ZodType<T>): Promis
 }
 
 export async function authorizeDevice(url: string, options: AuthorizationOptions): Promise<AuthorizedDevice> {
-  const serverUrl = normalizeServerUrl(url);
+  const serverUrl = normalizeServerUrl(url, options.httpConfirmedOrigin);
   const verifier = randomBytes(32).toString("base64url");
   const state = randomBytes(32).toString("base64url");
   const timeout = AbortSignal.timeout(options.timeoutMs ?? 300000);
@@ -219,4 +221,37 @@ export async function authorizeDevice(url: string, options: AuthorizationOptions
         .catch(() => {});
     }
   }
+}
+
+/** Verify a manually supplied credential without changing the existing binding. */
+export async function verifyDesktopToken(
+  url: string,
+  key: string,
+  confirmedHttpOrigin?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const server = normalizeServerUrl(url, confirmedHttpOrigin);
+  if (!key.startsWith("abr_device_") || key.length > 4096)
+    throw new DesktopError(
+      "invalid_token",
+      "请使用电脑设备的 Device Token，不能使用 Agent Key 或管理员 Token",
+    );
+  const response = await fetch(server + "/api/device", {
+    headers: { Authorization: `Bearer ${key}` },
+    redirect: "error",
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new DesktopError(
+      "binding_failed",
+      response.status === 401 ? "设备 Token 无效或已撤销" : `设备验证失败 (${response.status})`,
+    );
+  }
+  const device = await responseJson(response, deviceIdentitySchema);
+  if (device.kind !== "computer")
+    throw new DesktopError(
+      "wrong_device_kind",
+      "请使用电脑设备的 Token，不能使用浏览器、Agent 或管理员 Token",
+    );
 }

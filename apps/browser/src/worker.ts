@@ -1,3 +1,4 @@
+import { normalizeDeviceServer, deviceIdentitySchema } from "@abridge/protocol";
 import { authorizeBrowser } from "./authorization.js";
 import { BrowserBridge } from "./bridge.js";
 import {
@@ -67,6 +68,7 @@ const storedLocalSchema = z.object({
   device: z
     .object({
       key: z.string().optional(),
+      http_confirmed_origin: z.string().optional(),
       revoked: z.boolean().optional(),
       paused: z.boolean().optional(),
       instance_id: z.string().optional(),
@@ -161,24 +163,14 @@ async function renameDevice(name: string) {
     renaming = false;
   }
 }
-export function serverURL(value: string) {
-  let url;
+export function serverURL(value: string, confirmedHttpOrigin?: string) {
   try {
-    url = new URL(value.trim());
-  } catch {
-    throw fail("invalid_server", "请填写完整的 Server 地址");
+    return normalizeDeviceServer(value, confirmedHttpOrigin);
+  } catch (error) {
+    throw fail("invalid_server", error instanceof Error ? error.message : "服务地址无效");
   }
-  if (
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (url.protocol !== "https:" &&
-      !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
-  )
-    throw fail("invalid_server", "请使用 HTTPS，或本机 HTTP 地址");
-  return url.href.replace(/\/$/, "");
 }
+
 function send(connection: WebSocket | undefined, message: object) {
   if (!connection || connection !== socket || connection.readyState !== WebSocket.OPEN)
     throw fail("disconnected", "Server 已断开");
@@ -375,7 +367,7 @@ async function connect(): Promise<void> {
   await ready;
   await cleanup;
   if (cleanupError) throw cleanupError;
-  if (!profile.key || profile.revoked) return;
+  if (!profile.key || profile.revoked || authorization) return;
   if (connecting) return connecting;
   connecting = (async () => {
     if (socket) {
@@ -410,7 +402,10 @@ async function connect(): Promise<void> {
         });
       await cleanup;
     }
-    const url = new URL(profile.server + "/ws/browser");
+    // Binding may have started while retiring the previous connection.
+    if (authorization || !profile.key || profile.revoked) return;
+    const server = serverURL(profile.server!, profile.http_confirmed_origin);
+    const url = new URL(server + "/ws/browser");
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const connection = new WebSocket(url.href);
     socket = connection;
@@ -534,7 +529,10 @@ async function connect(): Promise<void> {
         { once: true },
       );
       connection.addEventListener("close", (event) => {
-        if (connection !== socket) return;
+        if (connection !== socket) {
+          done(fail("disconnected", "旧设备连接已结束"));
+          return;
+        }
         socket = undefined;
         authenticated = false;
         clearInterval(heartbeat);
@@ -610,6 +608,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
           label: authorization?.label ?? profile.label,
           server: authorization?.server ?? profile.server,
           device_id: profile.device_id,
+          http_confirmed_origin: profile.http_confirmed_origin,
           active_operations: active.size,
           active_sessions: bridge.sessions.size,
           connection_history: { ...connectionHistory },
@@ -624,11 +623,80 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
         notify();
         return { ok: true };
       }
+      if (message.type === "bind_token") {
+        if (authorization) throw fail("authorization_pending", "请先完成或取消当前授权");
+        const server = serverURL(message.server, message.http_confirmed_origin);
+        const pending = {
+          controller: new AbortController(),
+          server,
+          label: profile.label || "",
+          expiresAt: undefined as number | undefined,
+        };
+        authorization = pending;
+        authorizationError = undefined;
+        void (async () => {
+          const response = await fetch(server + "/api/device", {
+            headers: { Authorization: `Bearer ${message.device_key}` },
+            credentials: "omit",
+            redirect: "error",
+            signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(10000)]),
+          });
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw fail(
+              "invalid_token",
+              response.status === 401 ? "设备 Token 无效或已撤销" : `验证失败 (${response.status})`,
+            );
+          }
+          const device = deviceIdentitySchema.parse(await response.json());
+          if (device.kind !== "browser")
+            throw fail("wrong_device_kind", "请使用浏览器设备的 Token，不能使用电脑、Agent 或管理员 Token");
+          configuration = configuration
+            .catch(() => {})
+            .then(async () => {
+              if (authorization !== pending || pending.controller.signal.aborted) return;
+              const next: BrowserProfile = {
+                instance_id: crypto.randomUUID(),
+                server,
+                key: message.device_key,
+                device_id: device.id,
+                label: device.name,
+                paused: !!profile.paused,
+                http_confirmed_origin: message.http_confirmed_origin,
+              };
+              // Retire callbacks before awaiting cleanup: old close/revoke messages cannot alter the new binding.
+              const retired = socket;
+              socket = undefined;
+              authenticated = false;
+              clearInterval(heartbeat);
+              retired?.close();
+              await connecting?.catch(() => {});
+              await stop();
+              bridge.seen.clear();
+              await chrome.storage.local.set({ device: next, operation_journal: {} });
+              profile = next;
+              journal = {};
+              authorization = undefined;
+              authorizationError = undefined;
+              await syncRecoveryAlarm();
+              void connect().catch(() => {});
+              notify();
+            });
+          await configuration;
+        })().catch((caught: unknown) => {
+          if (authorization !== pending) return;
+          authorization = undefined;
+          authorizationError = errorDetails(caught).message;
+          notify();
+        });
+        notify();
+        return { ok: true };
+      }
       if (message.type === "authorize") {
         if (profile.key && !profile.revoked)
           throw fail("already_registered", "当前浏览器已绑定，请先解除绑定");
         if (authorization) throw fail("authorization_pending", "请先完成或取消当前授权");
-        const server = serverURL(message.server);
+        const server = serverURL(message.server, message.http_confirmed_origin);
         const label = message.label.trim();
         if (!label || label.length > 80) throw fail("invalid_name", "请填写浏览器名称");
         const pending = {
@@ -661,6 +729,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
                   instance_id: crypto.randomUUID(),
                   server,
                   key: token.key,
+                  http_confirmed_origin: message.http_confirmed_origin,
                   device_id: token.device_id,
                   label: token.name,
                   paused: !!profile.paused,

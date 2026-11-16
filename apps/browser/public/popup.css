@@ -208,3 +208,34 @@ button:not(:disabled):active {
   grid-template-columns: 92px minmax(0, 1fr);
   font-size: 10px;
 }
+#binding-method {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+#token-fields label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#show-token {
+  width: auto;
+}
+#http-warning {
+  max-width: 330px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+}
+#http-warning::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+#http-address {
+  overflow-wrap: anywhere;
+}

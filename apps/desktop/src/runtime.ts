@@ -16,7 +16,12 @@ import {
 } from "./storage.js";
 export async function configureClient(
   stateDir: string,
-  request: { url: string; device_key: string; capabilities?: Record<string, boolean> },
+  request: {
+    url: string;
+    device_key: string;
+    http_confirmed_origin?: string;
+    capabilities?: Record<string, boolean>;
+  },
 ): Promise<ClientConfig> {
   if (
     typeof request.url !== "string" ||
@@ -30,7 +35,7 @@ export async function configureClient(
         )))
   )
     throw new DesktopError("invalid_arguments", "Invalid desktop binding");
-  const url = normalizeServerUrl(request.url);
+  const url = normalizeServerUrl(request.url, request.http_confirmed_origin);
   let previous: ClientConfig | undefined;
   try {
     previous = await loadConfig(stateDir);
@@ -42,6 +47,9 @@ export async function configureClient(
   );
   const config: ClientConfig = {
     url,
+    ...(request.http_confirmed_origin === new URL(url).origin
+      ? { http_confirmed_origin: request.http_confirmed_origin }
+      : {}),
     capabilities,
     paused: previous?.paused ?? false,
     ...(previous?.pause_reason ? { pause_reason: previous.pause_reason } : {}),

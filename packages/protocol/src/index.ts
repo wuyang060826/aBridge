@@ -198,6 +198,37 @@ export const deviceAuthorizationTokenSchema = z
     capabilities: policyCapabilities.min(1),
   })
   .strict();
+/** Normalize an explicitly selected Server; plaintext consent is bound to its exact origin. */
+export function normalizeDeviceServer(value: string, confirmedHttpOrigin?: string): string {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error("请填写完整的 Server 地址");
+  }
+  if (url.username || url.password || url.search || url.hash || !["https:", "http:"].includes(url.protocol))
+    throw new Error("Server 地址仅支持 HTTP 或 HTTPS，不能包含凭据、查询或片段");
+  if (isInsecureDeviceServer(url.href) && confirmedHttpOrigin !== url.origin)
+    throw new Error("请先确认此 Server 使用未加密的 HTTP 连接");
+  return url.href.replace(/\/$/, "");
+}
+export function isInsecureDeviceServer(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+}
+export const deviceIdentitySchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  kind: deviceKindSchema,
+  capabilities: z.array(capabilitySchema),
+});
+export const deviceBindingInputSchema = z
+  .object({
+    url: z.string().min(1),
+    device_key: z.string().startsWith("abr_device_").max(4096).optional(),
+    http_confirmed_origin: z.string().optional(),
+  })
+  .strict();
 const modifierSchema = z.enum(["cmd", "command", "ctrl", "control", "alt", "option", "shift", "fn"]);
 const coordinateSchema = z.number().finite().nonnegative();
 const elementRefSchema = z.string().min(1).max(100);

@@ -99,6 +99,7 @@ export function DevicePage({
   data,
   refresh,
   revoke,
+  rotateToken,
   mutate,
   run,
   notify,
@@ -107,6 +108,7 @@ export function DevicePage({
   data: ManagementData;
   refresh: () => Promise<void>;
   revoke: (device: Device) => void;
+  rotateToken: (device: Device) => void;
   mutate: Mutate;
   run: RunAction;
   notify: (message: string) => void;
@@ -148,6 +150,7 @@ export function DevicePage({
                 <details class="connection-menu">
                   <summary aria-label="更多设备操作">更多</summary>
                   <div>
+                    <button onClick={() => rotateToken(device)}>重新生成 Device Token</button>
                     <button class="danger" onClick={() => revoke(device)}>
                       解除绑定
                     </button>

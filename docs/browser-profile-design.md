@@ -8,7 +8,7 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 
 ## 首次绑定
 
-先运行 `npm run build`，再通过开发者模式加载 `dist/browser/` 中已构建的扩展。源 TypeScript 目录不能直接加载。点击扩展图标，在弹窗中填写 Server 地址和设备名称，通过 `chrome.identity.launchWebAuthFlow` 打开管理台授权页；用户在浏览器中登录并确认后，扩展用一次性授权码和 PKCE 兑换 Device Key，只保存设备凭据。绑定时授权访问所填 Server 地址；远程连接使用 HTTPS/WSS，本机开发允许回环 HTTP/WS。
+先运行 `npm run build`，再通过开发者模式加载 `dist/browser/` 中已构建的扩展。源 TypeScript 目录不能直接加载。点击扩展图标，在弹窗中填写 Server 地址和设备名称，通过 `chrome.identity.launchWebAuthFlow` 打开管理台授权页；用户在浏览器中登录并确认后，扩展用一次性授权码和 PKCE 兑换 Device Key，只保存设备凭据。绑定时授权访问所填 Server 地址；远程连接推荐 HTTPS/WSS；公网 HTTP/WS 需在客户端确认风险，本机回环 HTTP/WS 无需额外确认。
 
 首次绑定的名称默认为 `Chrome · Profile`，可直接修改。已获 `identity.email` 可选权限时，通过 `chrome.identity.getProfileUserInfo({ accountStatus: "ANY" })` 读取当前 Profile 的账户邮箱，建议名称为 `Chrome · 邮箱`；未获权限时，只有点击“使用 Profile 账户”才请求读取权限，不自动弹出授权或打开网页登录。浏览器 API 不提供 Profile 的本地昵称，也不保证未登录、隐身或其他 Chromium 浏览器能返回邮箱；无邮箱或读取失败时保留通用默认名。账户信息只用于未编辑的首次绑定表单，不覆盖手动修改、已保存设备名称或等待中的授权名称；最终设备名称仍随绑定请求发送给 Server。
 
@@ -94,3 +94,7 @@ return { completed: state.completed };
 `page.locator(css).click({hold_ms:1500})` 原生按住鼠标左键 1500 毫秒后释放；`browser_act` 的 `click` 动作同样接受 `hold_ms`（0–10000 的整数，省略为普通单击）。保持期间关闭或取消会话会中断等待并清理任务页；页面导航导致结果未知，不重放。原生长按能否触发点赞、三连等业务行为仍由页面决定，DOM `dispatchEvent` 不能代替原生输入验证。
 
 `browser_exec` 外层没有 `setTimeout`、`setInterval` 或 DOM 全局。优先通过 `page.wait` / `locator.waitFor` 等待页面条件；确实需要固定等待时使用 `await page.sleep(ms)`（0–10000 的整数）。等待可被取消并计入代码总超时，不计入浏览器步骤数。`page.evaluate` 内部运行在网页环境，与外层隔离运行时不同。批次后续代码出错不会回滚先前点击，应读取状态后再决定下一步。
+
+### 手动 Device Token 绑定
+
+在弹窗“绑定方式”选择 Device Token，输入管理台为浏览器设备生成的凭据后验证并连接。Token 默认隐藏，可手动显示；验证成功才替换本地绑定，保留暂停状态并清理旧任务会话，不重放旧操作。HTTP 确认与 Server Origin 精确绑定并保存在设备配置中；worker 独立复核确认，未确认时不发送 Token，也不建立 WS。扩展 CSP 允许 HTTP/WS 连接，实际地址仍由站点权限和绑定确认限制。浏览器授权继续使用 PKCE 与浏览器管理的授权窗口，两种方式取得相同的 Device Key。

@@ -96,7 +96,25 @@
               placeholder="https://abridge.example.com"
               autocomplete="url"
           /></label>
-          <div>
+          <label
+            >绑定方式<select id="binding-method">
+              <option value="browser">浏览器授权</option>
+              <option value="token">Device Token</option>
+            </select></label
+          >
+          <div id="token-fields" hidden>
+            <label
+              >Device Token<input
+                id="device-token"
+                type="password"
+                autocomplete="off"
+                maxlength="4096"
+                placeholder="abr_device_…"
+            /></label>
+            <label><input id="show-token" type="checkbox" />显示 Token</label>
+            <p class="hint">使用管理台为浏览器设备生成的 Token，不是 Agent Key 或管理员 Token。</p>
+          </div>
+          <div id="browser-fields">
             <div class="profile-name-heading">
               <label for="label">浏览器名称</label>
               <button id="profile-account" class="secondary" type="button">使用 Profile 账户</button>
@@ -120,6 +138,15 @@
         <dl id="connection-details" class="diagnostic-list"></dl>
       </details>
     </main>
+    <dialog id="http-warning">
+      <h2>连接未加密的 Server？</h2>
+      <p id="http-address" class="hint"></p>
+      <p>此连接使用 HTTP，设备 Token、操作内容和截图可能被网络中的其他人读取。建议使用 HTTPS。</p>
+      <div class="form-actions">
+        <button id="http-cancel" type="button" autofocus>取消</button
+        ><button id="http-continue" type="button">仍然连接</button>
+      </div>
+    </dialog>
     <script src="popup.js" type="module"></script>
   </body>
 </html>

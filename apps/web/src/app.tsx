@@ -145,6 +145,7 @@ function ManagementApp() {
               revoke={(device) =>
                 setDialog({ kind: "confirm", title: "解除绑定", path: `/api/devices/${device.id}/revoke` })
               }
+              rotateToken={(device) => setDialog({ kind: "rotate-device", device })}
               mutate={mutate}
               run={run}
               notify={notify}

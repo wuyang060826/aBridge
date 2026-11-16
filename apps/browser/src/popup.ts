@@ -1,3 +1,4 @@
+import { normalizeDeviceServer, isInsecureDeviceServer } from "@abridge/protocol";
 import { element, errorDetails, type BrowserStatus, type ControlType } from "./types.js";
 import { request, describeState, renderDiagnostics } from "./browser-ui.js";
 import { fallbackProfileName, profileDeviceName, registrationDeviceName } from "./profile-name.js";
@@ -51,6 +52,9 @@ function renderControls() {
     !input("device-label").value.trim() ||
     input("device-label").value.trim() === state.label;
   input("server").disabled = pending || !state || !!state.authorizing;
+  element("binding-method", HTMLSelectElement).disabled = pending || !!state?.authorizing;
+  input("device-token").disabled = pending || !!state?.authorizing;
+  input("show-token").disabled = pending || !!state?.authorizing;
   input("label").disabled = pending || !state || !!state.authorizing;
   button("profile-account").disabled =
     pending || profilePending || !state || registered || !!state.authorizing || registrationNameDirty;
@@ -81,7 +85,12 @@ async function refresh() {
     ?.setAttribute("d", state.paused ? "M6 3.5 12 8l-6 4.5Z" : "M6 4v8M10 4v8");
   $("error").textContent = state.authorization_error || "";
   $("error").hidden = !state.authorization_error;
-  button("submit").textContent = state.authorizing ? "等待浏览器授权…" : "在浏览器授权";
+  button("submit").textContent = state.authorizing
+    ? "正在绑定…"
+    : tokenMode()
+      ? "验证并连接"
+      : "在浏览器授权";
+  if (state.configured && !state.revoked) input("device-token").value = "";
   button("cancel-authorization").hidden = !state.authorizing;
   $("authorization-status").hidden = !state.authorizing;
   if (!nameDirty) input("device-label").value = state.label || "";
@@ -183,11 +192,32 @@ $("register").addEventListener("submit", async (event) => {
   pending = true;
   renderControls();
   try {
-    const server = input("server").value.trim();
-    const url = new URL(server);
+    const candidate = input("server").value.trim();
+    const url = new URL(candidate);
+    const server = normalizeDeviceServer(candidate, url.origin);
     const allowed = await chrome.permissions.request({ origins: [`${url.origin}/*`] });
     if (!allowed) throw new Error("连接所填 Server 需要允许访问这个地址");
-    await request({ type: "authorize", server, label: input("label").value.trim() });
+    let confirmed = state.http_confirmed_origin;
+    if (isInsecureDeviceServer(server) && confirmed !== url.origin) {
+      if (!(await confirmHttp(url.origin))) return;
+      confirmed = url.origin;
+    }
+    if (tokenMode()) {
+      await request({
+        type: "bind_token",
+        server,
+        device_key: input("device-token").value.trim(),
+        http_confirmed_origin: confirmed,
+      });
+      input("device-token").value = "";
+    } else {
+      await request({
+        type: "authorize",
+        server,
+        label: input("label").value.trim(),
+        http_confirmed_origin: confirmed,
+      });
+    }
     await refresh();
   } catch (error) {
     showError(error);
@@ -196,6 +226,39 @@ $("register").addEventListener("submit", async (event) => {
     renderControls();
   }
 });
+
+function tokenMode(): boolean {
+  return element("binding-method", HTMLSelectElement).value === "token";
+}
+function confirmHttp(origin: string): Promise<boolean> {
+  const dialog = element("http-warning", HTMLDialogElement);
+  $("http-address").textContent = origin;
+  return new Promise((resolve) => {
+    const finish = (accepted: boolean) => {
+      dialog.close();
+      resolve(accepted);
+    };
+    button("http-cancel").onclick = () => finish(false);
+    button("http-continue").onclick = () => finish(true);
+    dialog.oncancel = (event) => {
+      event.preventDefault();
+      finish(false);
+    };
+    dialog.showModal();
+  });
+}
+element("binding-method", HTMLSelectElement).addEventListener("change", () => {
+  $("token-fields").hidden = !tokenMode();
+  $("browser-fields").hidden = tokenMode();
+  input("label").required = !tokenMode();
+  input("device-token").required = tokenMode();
+  input("device-token").value = "";
+  button("submit").textContent = tokenMode() ? "验证并连接" : "在浏览器授权";
+});
+input("show-token").addEventListener("change", () => {
+  input("device-token").type = input("show-token").checked ? "text" : "password";
+});
+
 chrome.runtime.onMessage.addListener((message: unknown) => {
   if (message && typeof message === "object" && "type" in message && message.type === "status_changed")
     void refresh().catch(report);

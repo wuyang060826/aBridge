@@ -52,7 +52,7 @@ function harness(local = {}, session = {}, settings = {}) {
     readyState = 0;
     constructor(url) {
       super();
-      assert.equal(url, "wss://abridge.example/ws/browser");
+      assert.equal(url, settings.socketUrl || "wss://abridge.example/ws/browser");
       sockets.push(this);
       tabsAtConnect.push([...tabs.keys()]);
       queueMicrotask(() => {
@@ -1016,4 +1016,229 @@ test("failed or invalid browser renames preserve the saved device name", async (
   assert.equal((await h.popup({ type: "rename", name: " " })).ok, false);
   assert.equal((await h.popup({ type: "rename", name: "x".repeat(121) })).ok, false);
   assert.equal((await h.popup({ type: "status" })).label, "Keep name");
+});
+
+test("manual browser Token validates identity before replacing a binding and requires exact HTTP consent", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const local = {
+    device: {
+      server: "https://abridge.example",
+      key: "abr_device_old",
+      device_id: "old-device",
+      label: "Old",
+      paused: true,
+    },
+  };
+  const h = harness(local, {}, { socketUrl: "ws://192.0.2.1:8765/ws/browser" });
+  // Keep the old binding paused and invalid so no old socket is created in this fixture.
+  local.device.revoked = true;
+  let requests = 0,
+    kind = "computer";
+  globalThis.fetch = async (url, init) => {
+    requests++;
+    assert.equal(url, "http://192.0.2.1:8765/api/device");
+    assert.equal(init.headers.Authorization, "Bearer abr_device_new");
+    assert.equal(init.credentials, "omit");
+    assert.equal(init.redirect, "error");
+    return Response.json({ id: "browser-device", name: "Token Browser", kind, capabilities: ["browser"] });
+  };
+  t.after(async () => {
+    await h.popup({ type: "authorize_cancel" });
+    for (let i = 0; i < 50; i++) {
+      if ((await h.popup({ type: "status" })).connected) break;
+      await delay(5);
+    }
+    await h.popup({ type: "unbind" });
+    await delay(10);
+    globalThis.fetch = previousFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?manual-token");
+  await delay(10);
+  const message = { type: "bind_token", server: "http://192.0.2.1:8765", device_key: "abr_device_new" };
+  assert.equal((await h.popup(message)).ok, false);
+  assert.equal(requests, 0);
+  assert.equal((await h.popup({ ...message, http_confirmed_origin: "http://other.example" })).ok, false);
+  assert.equal(requests, 0);
+  const accepted = { ...message, http_confirmed_origin: "http://192.0.2.1:8765" };
+  assert.equal((await h.popup(accepted)).ok, true);
+  for (let i = 0; i < 50; i++) {
+    if (!(await h.popup({ type: "status" })).authorizing) break;
+    await delay(5);
+  }
+  assert.equal(local.device.key, "abr_device_old");
+  assert.match((await h.popup({ type: "status" })).authorization_error, /浏览器设备/);
+  kind = "browser";
+  assert.equal((await h.popup(accepted)).ok, true);
+  for (let i = 0; i < 50; i++) {
+    if (!(await h.popup({ type: "status" })).authorizing) break;
+    await delay(5);
+  }
+  assert.equal(local.device.key, "abr_device_new");
+  assert.equal(local.device.paused, true);
+  assert.equal(local.device.http_confirmed_origin, "http://192.0.2.1:8765");
+  const status = await h.popup({ type: "status" });
+  assert.equal(status.label, "Token Browser");
+  assert.ok(!JSON.stringify(status).includes("abr_device_new"));
+});
+
+test("cancelling in-flight Token verification cannot commit a late reply", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const local = {};
+  const h = harness(local);
+  let release, entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  globalThis.fetch = async () => {
+    entered();
+    return new Promise((resolve) => {
+      release = () =>
+        resolve(
+          Response.json({ id: "browser-device", name: "Late", kind: "browser", capabilities: ["browser"] }),
+        );
+    });
+  };
+  t.after(() => {
+    release?.();
+    globalThis.fetch = oldFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?manual-token-cancel");
+  await delay(10);
+  assert.equal(
+    (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_new" }))
+      .ok,
+    true,
+  );
+  await started;
+  assert.equal((await h.popup({ type: "authorize_cancel" })).ok, true);
+  release();
+  await delay(15);
+  assert.equal(local.device?.key, undefined);
+});
+
+test("late close and revoke from a replaced browser binding cannot revoke the new Token", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const local = {
+    device: {
+      server: "https://abridge.example",
+      key: "abr_device_old",
+      device_id: "browser-device",
+      label: "Old",
+    },
+  };
+  const h = harness(local, {}, { deferredClose: true });
+  globalThis.fetch = async () =>
+    Response.json({ id: "browser-device", name: "New", kind: "browser", capabilities: ["browser"] });
+  t.after(async () => {
+    await h.popup({ type: "unbind" });
+    for (const s of h.sockets) s.finishClose?.();
+    await delay(10);
+    globalThis.fetch = oldFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?replace-active-token");
+  for (let i = 0; i < 50; i++) {
+    if ((await h.popup({ type: "status" })).connected) break;
+    await delay(5);
+  }
+  const old = h.sockets[0];
+  assert.ok(old);
+  assert.equal(
+    (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_new" }))
+      .ok,
+    true,
+  );
+  for (let i = 0; i < 50; i++) {
+    if (local.device.key === "abr_device_new") break;
+    await delay(5);
+  }
+  assert.equal(local.device.key, "abr_device_new");
+  old.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "revoke" }) }));
+  old.dispatchEvent(Object.assign(new Event("close"), { code: 4403 }));
+  await delay(10);
+  assert.equal(local.device.revoked, undefined);
+  assert.equal((await h.popup({ type: "status" })).configured, true);
+});
+
+test("manual binding during reconnect cleanup cannot create another old-Token connection", async (t) => {
+  const oldFetch = globalThis.fetch;
+  const local = {
+    device: {
+      server: "https://abridge.example",
+      key: "abr_device_old",
+      device_id: "browser-device",
+      label: "Old",
+    },
+  };
+  const h = harness(local, {}, { deferredClose: true });
+  let releaseCleanup;
+  t.after(async () => {
+    releaseCleanup?.();
+    await h.popup({ type: "authorize_cancel" });
+    await h.popup({ type: "unbind" });
+    for (const socket of h.sockets) socket.finishClose?.();
+    await delay(10);
+    globalThis.fetch = oldFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?replace-during-reconnect-cleanup");
+  for (let i = 0; i < 50; i++) {
+    if ((await h.popup({ type: "status" })).connected) break;
+    await delay(5);
+  }
+  assert.equal((await h.popup({ type: "status" })).connected, true);
+  const old = h.sockets[0];
+  const setSession = h.chrome.storage.session.set;
+  let cleanupEntered;
+  const cleaning = new Promise((resolve) => {
+    cleanupEntered = resolve;
+  });
+  let held = false;
+  h.chrome.storage.session.set = async (values) => {
+    if (!held && values.closed_sessions) {
+      held = true;
+      const released = new Promise((resolve) => {
+        releaseCleanup = resolve;
+      });
+      cleanupEntered();
+      await released;
+    }
+    await setSession(values);
+  };
+  // Recover an unhealthy socket while retaining its delayed close callback.
+  old.readyState = 2;
+  h.chrome.alarms.onAlarm.emit({ name: "abridge-connection-recovery" });
+  await cleaning;
+  globalThis.fetch = async () =>
+    Response.json({ id: "browser-device", name: "New", kind: "browser", capabilities: ["browser"] });
+  assert.equal(
+    (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_new" }))
+      .ok,
+    true,
+  );
+  // Let verification enqueue its commit, which waits for the held reconnect.
+  await delay(0);
+  releaseCleanup();
+  for (let i = 0; i < 50; i++) {
+    const status = await h.popup({ type: "status" });
+    if (!status.authorizing && status.connected) break;
+    await delay(5);
+  }
+  assert.equal(local.device.key, "abr_device_new");
+  assert.deepEqual(
+    h.messages.filter((message) => message.type === "hello").map((message) => message.device_key),
+    ["abr_device_old", "abr_device_new"],
+  );
+  assert.equal(h.sockets.length, 2);
+  old.receive({ type: "revoke" });
+  old.dispatchEvent(Object.assign(new Event("close"), { code: 4403 }));
+  await delay(0);
+  assert.equal(local.device.revoked, undefined);
+  assert.equal((await h.popup({ type: "status" })).connected, true);
 });
