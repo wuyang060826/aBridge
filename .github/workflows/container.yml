@@ -1,7 +1,10 @@
 name: Container
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -27,7 +30,7 @@ jobs:
       contents: read
       packages: write
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      RELEASE_TAG: ${{ inputs.tag }}
       IMAGE: ghcr.io/xerrors/abridge
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -80,7 +83,7 @@ jobs:
     permissions:
       packages: write
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      RELEASE_TAG: ${{ inputs.tag }}
       IMAGE: ghcr.io/xerrors/abridge
       GH_TOKEN: ${{ github.token }}
     steps:

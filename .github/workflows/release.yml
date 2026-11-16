@@ -134,3 +134,12 @@ jobs:
       - name: Explain npm status
         if: needs.npm.result == 'skipped'
         run: echo 'npm publication skipped. Configure the package trusted publisher and set NPM_PUBLISH_ENABLED=true.' >> "$GITHUB_STEP_SUMMARY"
+  container:
+    needs: github-release
+    if: startsWith(github.ref_name, 'v0.') == false && contains(github.ref_name, '-') == false
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
+      packages: write
