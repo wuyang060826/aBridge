@@ -18,6 +18,10 @@
 
 `check` 串联格式、架构、类型、测试和分发检查；发布流程见 [发布说明](../docs/releasing.md)。
 
+## 浏览器 Benchmark
+
+`npm run benchmark:miniwob` 使用固定模型的真实 Codex Agent，通过 MCP、Server、WebSocket 和实际扩展完成冻结的 MiniWoB++ 任务（6 类 × 2 个种子）。需要已登录的 Codex CLI 和 Chrome for Testing；入口为 `tools/bench/agent-run.ts`。`benchmark:smoke` 单独运行固定策略冒烟测试。真实评测不纳入 CI；CI 只核验已提交结果与 README 一致。[方法、评分与复现](../docs/benchmarks/miniwob.md)。
+
 ## macOS 构建、安装与发布
 
 | 文件                                           | 用途                                 | 入口                                       |

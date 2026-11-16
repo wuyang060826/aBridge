@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-16T14:36:27.181Z",
+  "productVersion": "0.4.12",
+  "productCommit": "df6aa8673acd671b7d47183d5511690c288c24b3",
+  "benchmarkFiles": {
+    "chrome.ts": "356ae71dc8488ff8054b9e43cb77c4c1ac45413b1fb1285c5f95113ef079fb1b",
+    "miniwob-source.json": "0b19b1adf3c87d01660f17c80fe9501200d79a7d01de163abf1c7d9becbe720b",
+    "miniwob.ts": "11943893956a5e5589520e05b3e1d117d88f82b084443711c0d3929fe9e268e9",
+    "run.ts": "ad0590f72ba7c1ef6a87b2345887d0b74694d2813b0703824dc76f415ef598a9"
+  },
+  "workerSha256": "88475f9b132169b2cfa1a46f97658cf207c62d6d005f8b849149de2c12ab5a1f",
+  "upstream": {
+    "repository": "https://github.com/Farama-Foundation/miniwob-plusplus",
+    "commit": "33c3b4ddef8c6eb67c57a29663d844b1eda7e614",
+    "files": {
+      "miniwob/html/miniwob/click-test.html": "daa326de996985f6dc7d0a9d4d071d69685e809f05576d328f0764f1c66a8aa4",
+      "miniwob/html/miniwob/enter-text.html": "cea0bd69c5070d069552879007c935fe6d715a05642127fa465b87f7e4bcaf05",
+      "miniwob/html/miniwob/read-table.html": "f6367d296342c7302f2fe303f0111b1b10104cea6a201f2fe545462f2ee4dd84",
+      "miniwob/html/core/core.js": "db8f489ab947a3194b99e718bce5e59ea9aaf0a3c35410d8c9c79e56e6123d14",
+      "miniwob/html/core/core.css": "795f8e686125b71e89a21ffe9e03406c6498f1e135175ba63321f3051a720042",
+      "miniwob/html/core/d3.v3.min.js": "8ca4da6691fb142cd76283014e887e7c3e61e3b63eff9ebb08eeb5c51d56aafb",
+      "miniwob/html/common/ui_utils.js": "65301ee11f483df7e9114f3fac2e2938e8b56933fecbed36bce310e2d8d90368"
+    }
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "24.6.0",
+    "arch": "arm64",
+    "cpu": "Apple M4",
+    "node": "v22.23.5",
+    "chrome": "Chrome/153.0.8010.12"
+  },
+  "protocol": {
+    "mode": "deterministic-visible-DOM-negative-controls",
+    "expectedRawReward": -1,
+    "chain": "HTTP MCP -> Server -> WebSocket -> actual unpacked extension -> Chrome CDP",
+    "seedType": "number",
+    "seeds": [0],
+    "taskLimitMs": 10000,
+    "timing": "solveMs excludes navigation, initialization, grading and cleanup; totalMs includes all episode lifecycle",
+    "setup": "isolated profile; disposable Device Key; pregranted loopback Server host permission",
+    "model": null,
+    "cleanupObservationMs": 10000,
+    "retries": 0,
+    "warmupEpisodes": 0
+  },
+  "summary": [
+    {
+      "task": "click-test",
+      "episodes": 1,
+      "succeeded": 0,
+      "timedEpisodes": 1,
+      "solveP50Ms": 10761.330249999999,
+      "solveP95Ms": 10761.330249999999,
+      "totalMeanMs": 10987.159625,
+      "solveMcpCalls": 1,
+      "browserSteps": 1,
+      "unknownStepEpisodes": 0,
+      "cleaned": 1
+    },
+    {
+      "task": "enter-text",
+      "episodes": 1,
+      "succeeded": 0,
+      "timedEpisodes": 1,
+      "solveP50Ms": 5180.0910410000015,
+      "solveP95Ms": 5180.0910410000015,
+      "totalMeanMs": 5269.150249999999,
+      "solveMcpCalls": 1,
+      "browserSteps": 2,
+      "unknownStepEpisodes": 0,
+      "cleaned": 1
+    },
+    {
+      "task": "read-table",
+      "episodes": 1,
+      "succeeded": 0,
+      "timedEpisodes": 1,
+      "solveP50Ms": 5080.015540999997,
+      "solveP95Ms": 5080.015540999997,
+      "totalMeanMs": 5148.365166,
+      "solveMcpCalls": 1,
+      "browserSteps": 2,
+      "unknownStepEpisodes": 0,
+      "cleaned": 1
+    }
+  ],
+  "episodes": [
+    {
+      "task": "click-test",
+      "seed": 0,
+      "success": false,
+      "done": true,
+      "rawReward": -1,
+      "envReward": -1,
+      "solveMs": 10761.330249999999,
+      "totalMs": 10987.159625,
+      "solveMcpCalls": 1,
+      "totalMcpCalls": 6,
+      "browserSteps": 1,
+      "cleanup": true
+    },
+    {
+      "task": "enter-text",
+      "seed": 0,
+      "success": false,
+      "done": true,
+      "rawReward": -1,
+      "envReward": -1,
+      "solveMs": 5180.0910410000015,
+      "totalMs": 5269.150249999999,
+      "solveMcpCalls": 1,
+      "totalMcpCalls": 6,
+      "browserSteps": 2,
+      "cleanup": true
+    },
+    {
+      "task": "read-table",
+      "seed": 0,
+      "success": false,
+      "done": true,
+      "rawReward": -1,
+      "envReward": -1,
+      "solveMs": 5080.015540999997,
+      "totalMs": 5148.365166,
+      "solveMcpCalls": 1,
+      "totalMcpCalls": 6,
+      "browserSteps": 2,
+      "cleanup": true
+    }
+  ]
+}
