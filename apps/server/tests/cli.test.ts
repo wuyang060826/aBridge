@@ -167,3 +167,49 @@ test("compiled CLI honors administrator env token, prints public links and remov
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("public HTTP OIDC opt-in works through CLI or environment and defaults to disabled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "abridge-cli-http-"));
+  const env = {
+    ABRIDGE_PUBLIC_ORIGIN: "http://bridge.example:8765",
+    ABRIDGE_OIDC_ISSUER_URL: "https://identity.example",
+    ABRIDGE_OIDC_CLIENT_ID: "fixture",
+    ABRIDGE_OIDC_CLIENT_SECRET: "fixture-secret",
+    ABRIDGE_ALLOW_INSECURE_HTTP: "false",
+  };
+  let running: ChildProcess | undefined;
+  try {
+    const disabled = spawnSync(process.execPath, [serverCli, "--data-dir", dir, "--port", "0"], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+    assert.notEqual(disabled.status, 0);
+    assert.match(disabled.stderr, /public origin requires HTTPS/);
+    for (const cli of [true, false]) {
+      const args = ["--data-dir", dir, "--port", "0"];
+      if (cli) args.push("--allow-insecure-http");
+      const task = launch(args, dir, { ...env, ABRIDGE_ALLOW_INSECURE_HTTP: cli ? "false" : "true" });
+      running = task.child;
+      const { url, adminUrl } = await task.ready;
+      assert.equal(adminUrl, env.ABRIDGE_PUBLIC_ORIGIN);
+      const script = await fetch(url + "/static/app.js", { headers: { Origin: env.ABRIDGE_PUBLIC_ORIGIN } });
+      assert.equal(script.status, 200);
+      const auth = await fetch(url + "/api/auth/oidc/config");
+      assert.equal(auth.status, 200);
+      assert.equal(((await auth.json()) as { enabled: boolean }).enabled, true);
+      await stop(running);
+      running = undefined;
+    }
+    const invalid = spawnSync(process.execPath, [serverCli, "--data-dir", dir, "--port", "0"], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, ...env, ABRIDGE_ALLOW_INSECURE_HTTP: "yes" },
+    });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /ABRIDGE_ALLOW_INSECURE_HTTP must be true or false/);
+  } finally {
+    if (running) await stop(running);
+    await rm(dir, { recursive: true, force: true });
+  }
+});

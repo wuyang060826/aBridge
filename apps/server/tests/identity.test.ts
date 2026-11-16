@@ -16,6 +16,9 @@ async function fixture(
     foreignToken?: boolean;
     redirectToken?: boolean;
     delegationEnabled?: boolean;
+    allowInsecureHttp?: boolean;
+    publicOrigin?: string;
+    httpIssuer?: boolean;
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "abridge-oidc-"));
@@ -88,14 +91,19 @@ async function fixture(
     return { token_type: "Bearer", access_token: "fixture-access", expires_in: 60, id_token: token };
   });
   const backchannelOrigin = await provider.listen({ host: "127.0.0.1", port: 0 });
-  issuer = options.backchannel ? "https://identity.example" : backchannelOrigin;
-  const origin = "http://127.0.0.1:43219";
+  issuer = options.backchannel
+    ? options.httpIssuer
+      ? "http://identity.example"
+      : "https://identity.example"
+    : backchannelOrigin;
+  const origin = options.publicOrigin ?? "http://127.0.0.1:43219";
   const config = {
     issuer,
     clientId: "abridge",
     clientName: "Yuxi",
     clientSecret: "fixture-secret",
     delegationEnabled: options.delegationEnabled ?? true,
+    allowInsecureHttp: options.allowInsecureHttp,
     ...(options.backchannel ? { backchannelOrigin } : {}),
   };
   const server = await createServer({
@@ -110,7 +118,7 @@ async function fixture(
     sub = subject;
     const start = await server.app.inject({
       url: "/api/auth/oidc/login?return_to=" + encodeURIComponent(returnTo),
-      headers: { host: "127.0.0.1:43219" },
+      headers: { host: new URL(origin).host },
     });
     assert.equal(start.statusCode, 302, start.body);
     const authorization = new URL(start.headers.location!);
@@ -120,7 +128,7 @@ async function fixture(
     const callback = new URL(auth.headers.get("location")!);
     const result = await server.app.inject({
       url: callback.pathname + callback.search,
-      headers: { host: "127.0.0.1:43219", cookie: String(start.headers["set-cookie"]).split(";")[0]! },
+      headers: { host: new URL(origin).host, cookie: String(start.headers["set-cookie"]).split(";")[0]! },
     });
     return { result, callback, binding: String(start.headers["set-cookie"]).split(";")[0]! };
   }
@@ -664,5 +672,64 @@ test("identity outages remain unavailable and local persistence failures are not
     );
   } finally {
     await f.close();
+  }
+});
+
+test("public HTTP OIDC is an explicit opt-in and still rejects invalid URLs", () => {
+  const base = { issuer: "https://identity.example", clientId: "bridge", clientSecret: "fixture" };
+  assert.throws(() => validateIdentityConfig(base, "http://bridge.example"), /requires HTTPS/);
+  const enabled = { ...base, allowInsecureHttp: true };
+  assert.doesNotThrow(() => validateIdentityConfig(enabled, "http://bridge.example"));
+  assert.doesNotThrow(() =>
+    validateIdentityConfig({ ...enabled, issuer: "http://identity.example" }, "http://bridge.example"),
+  );
+  for (const origin of [
+    "ftp://bridge.example",
+    "http://user:secret@bridge.example",
+    "http://bridge.example/path",
+    "http://bridge.example?x=1",
+    "http://bridge.example#x",
+  ]) {
+    assert.throws(() => validateIdentityConfig(enabled, origin));
+  }
+  for (const issuer of [
+    "ftp://identity.example",
+    "http://user:secret@identity.example",
+    "http://identity.example?x=1",
+    "http://identity.example#x",
+  ]) {
+    assert.throws(() => validateIdentityConfig({ ...enabled, issuer }, "http://bridge.example"));
+  }
+});
+
+test("opted-in public HTTP callback supports HTTPS and HTTP issuers without weakening identity checks", async () => {
+  for (const httpIssuer of [false, true]) {
+    const f = await fixture({
+      backchannel: true,
+      httpIssuer,
+      publicOrigin: "http://bridge.example:8765",
+      allowInsecureHttp: true,
+    });
+    try {
+      const login = await f.login();
+      assert.equal(login.result.statusCode, 302, login.result.body);
+      assert.equal(login.callback.origin, "http://bridge.example:8765");
+      assert.doesNotMatch(String(login.result.headers["set-cookie"]), /; Secure/);
+      const cookie = String(login.result.headers["set-cookie"]).split(";")[0]!;
+      const me = await f.server.app.inject({
+        url: "/api/me",
+        headers: { host: "bridge.example:8765", origin: "http://bridge.example:8765", cookie },
+      });
+      assert.equal(me.statusCode, 200, me.body);
+      assert.ok(await f.identity.authenticate(await f.token()));
+      assert.equal(
+        await f.identity.authenticate(await f.token("user-a", { aud: "http://other.example/mcp" })),
+        undefined,
+      );
+      f.setWrongNonce();
+      assert.equal((await f.login()).result.statusCode, 401);
+    } finally {
+      await f.close();
+    }
   }
 });

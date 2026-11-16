@@ -44,6 +44,6 @@ macOS 屏幕录制和辅助功能权限与实际安装的 App 身份关联。原
 
 ## 部署与报告
 
-跨机器连接使用 HTTPS/WSS 或 SSH 隧道，回环 HTTP 不作为公网入口。当前每个数据库只支持一个 Server 实例，内存路由与结果缓存不支持多 worker 或横向部署。Node 内置 SQLite 的稳定性和同步调用限制见 [架构](../docs/architecture.md)。
+跨机器连接推荐 HTTPS/WSS 或 SSH 隧道。设备客户端可对具体公网 HTTP Origin 显式确认；OIDC 的公网 HTTP 需部署管理员另行开启 `ABRIDGE_ALLOW_INSECURE_HTTP=true`，该模式不加密传输，但保持身份和访问控制校验。当前每个数据库只支持一个 Server 实例，内存路由与结果缓存不支持多 worker 或横向部署。Node 内置 SQLite 的稳定性和同步调用限制见 [架构](../docs/architecture.md)。
 
 第三方组件与许可见 [第三方说明](../docs/third-party-notices.md)。发现安全问题时先停止受影响设备或撤销相应授权，通过仓库平台已启用的私密报告渠道提交复现；未配置私密渠道时联系维护者。报告不应包含凭据、个人截图或敏感文件内容。本项目尚未指定公开漏洞邮箱或响应时限。

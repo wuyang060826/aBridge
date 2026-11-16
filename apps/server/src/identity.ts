@@ -10,6 +10,7 @@ export interface IdentityConfig {
   clientSecret?: string;
   delegationEnabled?: boolean;
   backchannelOrigin?: string;
+  allowInsecureHttp?: boolean;
 }
 interface PendingLogin {
   binding: string;
@@ -30,7 +31,10 @@ const identityFetch = async (
     url.username ||
     url.password ||
     (url.protocol !== "https:" &&
-      !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+      !(
+        url.protocol === "http:" &&
+        (config.allowInsecureHttp || ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
+      ))
   )
     throw new Error("Identity endpoint requires HTTPS");
   // 只改传输目标；issuer、浏览器授权链接及 JWT 校验仍使用公开地址。
@@ -99,19 +103,22 @@ export function validateIdentityConfig(config: IdentityConfig, origin: string | 
       issuer.search ||
       issuer.hash ||
       (issuer.protocol !== "https:" &&
-        !(issuer.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(issuer.hostname)))
+        !(
+          issuer.protocol === "http:" &&
+          (config.allowInsecureHttp || ["localhost", "127.0.0.1", "[::1]"].includes(issuer.hostname))
+        ))
     )
-      throw new Error("OIDC issuer requires HTTPS (HTTP allowed only on loopback)");
+      throw new Error("OIDC issuer requires HTTPS; enable allowInsecureHttp explicitly for public HTTP");
     const publicOrigin = new URL(origin);
     if (
       publicOrigin.origin !== origin ||
       (publicOrigin.protocol !== "https:" &&
         !(
           publicOrigin.protocol === "http:" &&
-          ["localhost", "127.0.0.1", "[::1]"].includes(publicOrigin.hostname)
+          (config.allowInsecureHttp || ["localhost", "127.0.0.1", "[::1]"].includes(publicOrigin.hostname))
         ))
     )
-      throw new Error("OIDC public origin requires HTTPS (HTTP allowed only on loopback) and a pure origin");
+      throw new Error("OIDC public origin requires HTTPS or explicit allowInsecureHttp, and a pure origin");
   }
 }
 
@@ -273,7 +280,9 @@ export class Identity {
               ),
             execute: [
               oidc.enableNonRepudiationChecks,
-              ...(this.config.issuer!.startsWith("http:") ? [oidc.allowInsecureRequests] : []),
+              ...(this.config.allowInsecureHttp || this.config.issuer!.startsWith("http:")
+                ? [oidc.allowInsecureRequests]
+                : []),
             ],
           },
         )

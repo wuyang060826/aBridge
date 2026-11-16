@@ -16,7 +16,7 @@ async function openWeb(url: string): Promise<void> {
     child.once("exit", (code) => (code === 0 ? ok() : fail(new Error("No browser opener is available"))));
   });
 }
-const help = `aBridge ${VERSION}\n\nUsage: abridge [serve] [--web] [--host 127.0.0.1] [--port 8765]\n\nServer options:\n  --db <file>              Persistent SQLite database\n  --data-dir <dir>         Persistent application state\n  --public-origin <url>    Trusted external HTTPS origin behind a proxy\n  --allowed-hosts <list>   Additional exact Host values, comma-separated\n  --allowed-origins <list> Additional MCP origins, comma-separated\n  --web                   Open the instance administration console\n  --reset-admin-token     Generate a new administrator token and invalidate admin sessions\n  --version               Print version\n`;
+const help = `aBridge ${VERSION}\n\nUsage: abridge [serve] [--web] [--host 127.0.0.1] [--port 8765]\n\nServer options:\n  --db <file>              Persistent SQLite database\n  --data-dir <dir>         Persistent application state\n  --public-origin <url>    Trusted external HTTP(S) origin\n  --allow-insecure-http   Allow public HTTP for OIDC login and delegation\n  --allowed-hosts <list>   Additional exact Host values, comma-separated\n  --allowed-origins <list> Additional MCP origins, comma-separated\n  --web                   Open the instance administration console\n  --reset-admin-token     Generate a new administrator token and invalidate admin sessions\n  --version               Print version\n`;
 export async function serverMain(args = process.argv.slice(2)): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -30,6 +30,7 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
       db: { type: "string" },
       "data-dir": { type: "string" },
       "public-origin": { type: "string" },
+      "allow-insecure-http": { type: "boolean" },
       "allowed-hosts": { type: "string" },
       "allowed-origins": { type: "string" },
       "reset-admin-token": { type: "boolean" },
@@ -63,10 +64,16 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
     !["true", "false"].includes(process.env.ABRIDGE_DELEGATION_ENABLED)
   )
     throw new Error("ABRIDGE_DELEGATION_ENABLED must be true or false");
+  if (
+    process.env.ABRIDGE_ALLOW_INSECURE_HTTP &&
+    !["true", "false"].includes(process.env.ABRIDGE_ALLOW_INSECURE_HTTP)
+  )
+    throw new Error("ABRIDGE_ALLOW_INSECURE_HTTP must be true or false");
   const server = await createServer({
     dbPath,
     identity: {
       issuer: process.env.ABRIDGE_OIDC_ISSUER_URL,
+      allowInsecureHttp: values["allow-insecure-http"] ?? process.env.ABRIDGE_ALLOW_INSECURE_HTTP === "true",
       backchannelOrigin: process.env.ABRIDGE_OIDC_BACKCHANNEL_ORIGIN,
       clientId: process.env.ABRIDGE_OIDC_CLIENT_ID,
       clientName: process.env.ABRIDGE_OIDC_CLIENT_NAME,

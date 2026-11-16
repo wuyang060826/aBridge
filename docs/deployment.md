@@ -171,9 +171,18 @@ ABRIDGE_DELEGATION_ENABLED=true
 ABRIDGE_OIDC_BACKCHANNEL_ORIGIN=http://api:5050
 ```
 
-公开 issuer 在容器内部不能直接访问时，可显式配置 `ABRIDGE_OIDC_BACKCHANNEL_ORIGIN` 为内部 HTTP(S) 纯 Origin，不含路径、结尾斜杠、凭据、查询或 fragment。只有与 issuer 相同 Origin 的服务端认证请求（discovery、token、JWKS）会改用该地址，保留原有路径和查询；浏览器链接、issuer 和令牌校验不变。不跟随重定向，不将其他域名自动映射为内部地址；未配置时保持正常公开访问。HTTP backchannel 会承载客户端秘密和令牌，仅可用于可信私有网络，不能替代公开 HTTPS。
+公开 issuer 在容器内部不能直接访问时，可显式配置 `ABRIDGE_OIDC_BACKCHANNEL_ORIGIN` 为内部 HTTP(S) 纯 Origin，不含路径、结尾斜杠、凭据、查询或 fragment。只有与 issuer 相同 Origin 的服务端认证请求（discovery、token、JWKS）会改用该地址，保留原有路径和查询；浏览器链接、issuer 和令牌校验不变。不跟随重定向，不将其他域名自动映射为内部地址；未配置时保持正常公开访问。HTTP backchannel 会承载客户端秘密和令牌，仅可用于可信私有网络；它只改变内部传输，不会自动允许公开 HTTP。
 
-必须在提供方登记固定回调 `https://bridge.example.com/api/auth/oidc/callback`，客户端认证方式为 `client_secret_post`。登录入口 `GET /api/auth/oidc/login`，可用 `return_to=/?authorize=<id>` 保留现有设备绑定确认流程，仅接受本地限定入口；发现状态 `GET /api/auth/oidc/config`；请求 scope 为 `openid profile`，显示名使用可选的 `name`。提供方 issuer 必须精确匹配 discovery。非回环端点必须使用 HTTPS；生产公开地址必须配置 HTTPS。仅提供部分配置时拒绝启动。关闭委托但保留 OIDC 时仍可登录管理台、使用手工 Agent Key。
+必须在提供方登记固定回调 `https://bridge.example.com/api/auth/oidc/callback`，客户端认证方式为 `client_secret_post`。登录入口 `GET /api/auth/oidc/login`，可用 `return_to=/?authorize=<id>` 保留现有设备绑定确认流程，仅接受本地限定入口；发现状态 `GET /api/auth/oidc/config`；请求 scope 为 `openid profile`，显示名使用可选的 `name`。提供方 issuer 必须精确匹配 discovery。默认要求非回环端点使用 HTTPS。需要公网 HTTP 时，可在 Server 启动参数中显式添加 `--allow-insecure-http`，或设置 `ABRIDGE_ALLOW_INSECURE_HTTP=true`；该开关允许 HTTP 的 aBridge 对外地址和 OIDC 提供方端点，不关闭 PKCE、state、nonce、签名、issuer 或 audience 校验。仅提供部分配置时拒绝启动。关闭委托但保留 OIDC 时仍可登录管理台、使用手工 Agent Key。
+
+例如保留单点登录并通过公网 IP 访问 aBridge：
+
+```dotenv
+ABRIDGE_PUBLIC_ORIGIN=http://bridge.example:8765
+ABRIDGE_ALLOW_INSECURE_HTTP=true
+```
+
+`public-origin` 会自动允许该地址的 Host 和同源请求，无需再对它重复设置 `allowed-hosts`。提供方须登记同一地址的 `/api/auth/oidc/callback`；提供方的浏览器登录入口也必须能被用户访问。HTTP 下 Cookie 不带 `Secure`，会话、凭据和业务数据未经传输加密；保持 `HttpOnly`、`SameSite` 及其他身份校验。此开关只能由部署管理员配置，登录页无法在启动校验之前切换它。
 
 首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，默认覆盖该账户的全部设备（含新设备）和设备支持的能力，仍与设备授权、本机开关及就绪状态取交集；用户可编辑连接缩小范围。可选 `ABRIDGE_OIDC_CLIENT_NAME` 设置平台显示名称，未配置时使用 client ID。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。当前已撤销的平台连接直接显示在 Agent 连接列表，用户可显式点击“重新授权”（`POST /api/client-grants/:id/reconnect`），确认允许访问全部设备（含新设备）后创建新的平台连接。已有连接的自定义策略不因升级或再次登录改变。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
 
@@ -231,4 +240,4 @@ macOS 设置和浏览器扩展均可选择“浏览器授权”或“Device Toke
 
 Device Token 只用于设备绑定，不能使用 Agent Key 或管理员 Token 代替。客户端先调用 `GET /api/device` 验证 Token 是否有效及设备类型是否匹配，再提交本地绑定。无效、撤销或类型不匹配的 Token 不替换旧绑定。Token 通过私有输入管道/扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
 
-HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式都会先显示完整 Origin 并提醒设备凭据、操作内容和截图未经加密；默认取消，确认后只对该 Origin 生效，换地址需重新确认。确认随成功绑定保存，重启/重连不会自动扩大允许范围。扩展仍需单独授予所填 Server 的站点访问权限。此设备连接确认不改变 Server 的 Host/Origin 防护，也不放开 Yuxi OIDC 对公网 HTTPS 的要求；旧 Server 需升级后才能使用手动 Token 验证接口。
+HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式都会先显示完整 Origin 并提醒设备凭据、操作内容和截图未经加密；默认取消，确认后只对该 Origin 生效，换地址需重新确认。确认随成功绑定保存，重启/重连不会自动扩大允许范围。扩展仍需单独授予所填 Server 的站点访问权限。此设备连接确认不改变 Server 的 Host/Origin 防护；启用 OIDC 的 Server 使用公网 HTTP 时，管理员还需显式打开 `ABRIDGE_ALLOW_INSECURE_HTTP=true`。旧 Server 需升级后才能使用手动 Token 验证接口。
