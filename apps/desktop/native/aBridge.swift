@@ -144,8 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             showWindow()
         }
         if let index = CommandLine.arguments.firstIndex(of: "--update-receipt"), index + 1 < CommandLine.arguments.count {
-            runClient(["status"]) { result in
-                if result["error"] == nil { self.writeUpdateReceipt(ready: true) }
+            runClient(["startup-check"]) { result in
+                if result["ready"] as? Bool == true { self.writeUpdateReceipt(ready: true) }
             }
         }
     }

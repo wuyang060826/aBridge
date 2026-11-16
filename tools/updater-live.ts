@@ -79,6 +79,7 @@ async function awaitCleanup(plan: string) {
   throw Error("Helper did not finish");
 }
 try {
+  await import("./updater-startup-live.js");
   await mkdir(state);
   await writeFile(join(state, "device.json"), "unchanged credential fixture");
   await run("/usr/bin/swiftc", [

@@ -129,7 +129,7 @@ App 安装器复制固定 Node、构建后的 CLI 和所需依赖到当前用户
 
 ### macOS 更新
 
-`apps/desktop/src/updater.ts` 负责正式版本选择、校验、暂存和回滚；独立 `updater.mjs` 只依赖 Node 内置模块，不经 Agent/Server 控制接口开放。Swift 壳只负责用户更新入口、停止设备进程和启动确认。安装辅助进程复制到应用旁的私有暂存目录，等待壳退出后原路径替换，确认新壳和 Node 可运行后清理备份。设备绑定与状态始终位于 App Bundle 外。
+`apps/desktop/src/updater.ts` 负责正式版本选择、校验、暂存和回滚；独立 `updater.mjs` 只依赖 Node 内置模块，不经 Agent/Server 控制接口开放。Swift 壳只负责用户更新入口、停止设备进程和启动确认。安装辅助进程复制到应用旁的私有暂存目录，等待壳退出后原路径替换，确认新壳和 Node 可运行后清理备份。启动确认使用独立的 `startup-check`，不依赖服务器连接、设备授权或系统权限状态；这些业务状态不能触发安装回滚。设备绑定与状态始终位于 App Bundle 外。
 
 ### 手动设备绑定和 HTTP 确认
 

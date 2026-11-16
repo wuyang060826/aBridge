@@ -34,12 +34,17 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "Usage: abridge-desktop <run|authorize --stdin|configure --stdin|status|control <command>|diagnose> [--state-dir <dir>]",
+      "Usage: abridge-desktop <run|authorize --stdin|configure --stdin|startup-check|status|control <command>|diagnose> [--state-dir <dir>]",
     );
     return;
   }
   const stateDir = resolve(values["state-dir"] ?? defaultDataDirectory()),
     action = positionals[0] ?? "status";
+  if (action === "startup-check") {
+    // Confirm that this runtime loads; connection errors and permissions are unrelated to installation.
+    console.log(JSON.stringify({ ready: true }));
+    return;
+  }
   if (action === "run") {
     const parent = Number(process.env.ABRIDGE_PARENT_PID);
     await startDeviceClient(stateDir, {

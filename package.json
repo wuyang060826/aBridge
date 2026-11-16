@@ -23,7 +23,8 @@
     "architecture:check": "node --import tsx tools/check-architecture.ts",
     "package:macos": "node --import tsx tools/package-macos.ts",
     "test:browser:live": "node --import tsx tools/browser-live.ts",
-    "test:desktop:update:live": "node --import tsx tools/updater-live.ts"
+    "test:desktop:update:live": "node --import tsx tools/updater-live.ts",
+    "test:desktop:update:startup": "node --import tsx tools/updater-startup-live.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
