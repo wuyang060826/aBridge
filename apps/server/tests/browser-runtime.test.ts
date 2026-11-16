@@ -137,6 +137,60 @@ test("unawaited browser actions do not begin after returning and CPU loops are i
   assert.equal((await runtime.run("task", "return 4;", async () => ({}), signal())).value, 4);
 });
 
+test("script errors retain unawaited in-flight step IDs without replacing the original error", async () => {
+  const step = {
+    operation_id: "unawaited-step-1",
+    method: "open",
+    status: "outcome_unknown" as const,
+    error: { code: "step_receipt_unconfirmed", message: "Step receipt is still pending" },
+  };
+  for (const [ending, message] of [
+    ['throw Error("original script error");', "original script error"],
+    ["return 2;", "Await every browser operation before returning"],
+  ]) {
+    const runtime = new BrowserRuntime();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    let calls = 0;
+    let reply: ((value: unknown) => void) | undefined;
+    try {
+      await assert.rejects(
+        runtime.run(
+          "task",
+          `page.goto('https://example.com'); page.observe();
+           for (let i = 0; i < 300; i++) await Promise.resolve(); ${ending}`,
+          async () => {
+            calls++;
+            return new Promise((resolve) => {
+              reply = resolve;
+            });
+          },
+          controller.signal,
+          () => step,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof BrowserRuntimeError);
+          assert.equal(calls, 1, "The first step must already be dispatched");
+          assert.equal(error.code, "browser_code_failed");
+          assert.equal(error.message, message);
+          assert.equal(error.status, "outcome_unknown");
+          assert.equal(error.result.steps_completed, 0);
+          assert.deepEqual(error.result.failed_step, step);
+          return true;
+        },
+      );
+      reply?.({ executed: true });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(calls, 1, "Queued steps must not run after the script ends");
+      assert.equal((await runtime.run("task", "return 3;", async () => ({}), signal())).value, 3);
+    } finally {
+      clearTimeout(timer);
+      reply?.({ executed: true });
+      runtime.closeAll();
+    }
+  }
+});
+
 test("session concurrency is refused and log output stays bounded", async () => {
   const runtime = new BrowserRuntime();
   const controller = new AbortController();

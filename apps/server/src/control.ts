@@ -56,6 +56,7 @@ interface Pending {
   starts: { stdout: number; stderr: number };
   parentId?: string;
   abort?: AbortController;
+  browserProgress?: () => JsonObject;
 }
 interface Cached {
   response: OperationResponse;
@@ -404,7 +405,31 @@ export class ControlService {
       const abort = new AbortController();
       this.pending.get(id)!.abort = abort;
       let stepIndex = 0;
+      let completedSteps = 0;
       let inFlightStep: { operation_id: string; method: string } | undefined;
+      this.pending.get(id)!.browserProgress = () => {
+        const receipt = inFlightStep ? this.cache.get(inFlightStep.operation_id)?.response : undefined;
+        // A receipt can arrive just before the awaiting runtime resumes. Count
+        // it once and do not label an already confirmed step as unknown.
+        return {
+          steps_completed: completedSteps + (receipt?.status === "executed" ? 1 : 0),
+          ...(inFlightStep && receipt?.status !== "executed"
+            ? {
+                failed_step: {
+                  ...inFlightStep,
+                  status:
+                    receipt && ["refused", "failed", "cancelled"].includes(receipt.status)
+                      ? receipt.status
+                      : "outcome_unknown",
+                  error: receipt?.error ?? {
+                    code: "step_receipt_unconfirmed",
+                    message: "Execution ended before this step had a confirmed terminal receipt",
+                  },
+                },
+              }
+            : {}),
+        };
+      };
       const timeout = setTimeout(
         () => abort.abort(new Error("Browser execution timed out")),
         Number(args.timeout_ms),
@@ -459,6 +484,7 @@ export class ControlService {
                   message: "Browser step did not complete",
                 },
               });
+            completedSteps++;
             return response.result;
           },
           abort.signal,
@@ -879,6 +905,7 @@ export class ControlService {
   private finish(id: string, status: OperationState, result?: unknown, error?: BrowserError): void {
     const pending = this.pending.get(id);
     if (!pending) return;
+    if (result === undefined && pending.browserProgress) result = pending.browserProgress();
     pending.abort?.abort(new Error("Browser execution ended"));
     if (pending.abort) {
       for (const child of this.pending.values())

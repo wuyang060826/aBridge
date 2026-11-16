@@ -280,9 +280,12 @@ export class BrowserRuntime {
       }
     } catch (error) {
       if (error instanceof BrowserRuntimeError) throw error;
+      const code = failedStep?.error.code ?? "browser_code_failed";
+      const message = failedStep?.error.message ?? (error instanceof Error ? error.message : String(error));
+      if (inFlight) failedStep ??= currentStep?.();
       throw new BrowserRuntimeError(
-        failedStep?.error.code ?? "browser_code_failed",
-        failedStep?.error.message ?? (error instanceof Error ? error.message : String(error)),
+        code,
+        message,
         {
           steps_completed: steps,
           output,
