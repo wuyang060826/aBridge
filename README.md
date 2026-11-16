@@ -2,6 +2,8 @@
 
 通过 MCP，让 Agent 使用你授权的电脑和浏览器。
 
+当前版本：[0.4.12](https://github.com/xerrors/aBridge/releases/tag/v0.4.12)。
+
 | 客户端                  | 能力                       | 运行环境                   |
 | ----------------------- | -------------------------- | -------------------------- |
 | **aBridge App**         | 屏幕、键鼠、Shell、文件    | Apple Silicon，macOS 14+   |
@@ -23,7 +25,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8765:8765 \
   -v abridge-data:/data \
-  ghcr.io/xerrors/abridge:0.4.9
+  ghcr.io/xerrors/abridge:0.4.12
 ```
 
 本机访问 [http://127.0.0.1:8765](http://127.0.0.1:8765)。数据和管理员凭据保存在 `abridge-data` 命名卷中，重建容器时复用该卷。
@@ -56,7 +58,7 @@ docker stats --no-stream abridge
 
 ```sh
 npx --yes \
-  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.9/xerrors-abridge-0.4.9.tgz \
+  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.12/xerrors-abridge-0.4.12.tgz \
   abridge --web
 ```
 
