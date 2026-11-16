@@ -44,13 +44,13 @@ function launch(
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
-      if (!stdout.includes("aBridge ")) fail(new Error(`CLI exited ${code}: ${stderr}`));
+      fail(new Error(`CLI exited ${code}: ${stderr}`));
     });
   });
   return { child, ready };
 }
 async function stop(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   const ended = once(child, "exit");
   child.kill("SIGTERM");
   const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
@@ -195,6 +195,7 @@ test("public HTTP OIDC opt-in works through CLI or environment and defaults to d
       assert.equal(adminUrl, env.ABRIDGE_PUBLIC_ORIGIN);
       const script = await fetch(url + "/static/app.js", { headers: { Origin: env.ABRIDGE_PUBLIC_ORIGIN } });
       assert.equal(script.status, 200);
+      await script.arrayBuffer();
       const auth = await fetch(url + "/api/auth/oidc/config");
       assert.equal(auth.status, 200);
       assert.equal(((await auth.json()) as { enabled: boolean }).enabled, true);
