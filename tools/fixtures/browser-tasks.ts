@@ -5,7 +5,7 @@ export async function browserTasks() {
   const submissions: unknown[] = [];
   const html = `<!doctype html><meta charset="utf-8"><title>aBridge browser tasks</title>
 <style>body{font:18px system-ui;margin:25px}input,select,button{margin:8px;padding:8px}#scroll{height:100px;overflow:auto}#long{white-space:pre-wrap}</style>
-<h1>Browser execution fixture</h1><input id="name" aria-label="Name"><input id="qty" aria-label="Quantity">
+<h1>Browser execution fixture</h1><p>Orchid alpha marker</p><p>Violet beta marker</p><button>Orchid Violet control</button><a href="/destination" target="_blank">Violet destination</a><input id="name" aria-label="Name"><input id="qty" aria-label="Quantity">
 <input id="number" type="number" value="123"><input id="email" type="email" value="old@example.com">
 <select id="city"><option value="sh">Shanghai</option><option value="bj">Beijing</option></select>
 <button id="save">Save</button><button id="later">Load delayed</button><output id="status">Idle</output>
@@ -56,6 +56,10 @@ document.getElementById('later').onclick=()=>setTimeout(()=>{const x=document.cr
   return {
     url: `http://127.0.0.1:${address.port}/`,
     submissions,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }

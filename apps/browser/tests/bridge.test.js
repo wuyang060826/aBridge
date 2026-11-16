@@ -237,16 +237,20 @@ test("oversized screenshots reject without storing an observation", async () => 
 test("stop during tab creation removes the late task tab and cannot resurrect a session", async () => {
   const f = fixture();
   const original = f.chrome.tabs.create;
-  let release;
+  let release, entered;
+  const started = new Promise((resolve) => (entered = resolve));
   f.chrome.tabs.create = async (params) => {
+    entered();
     await new Promise((resolve) => {
       release = resolve;
     });
     return original(params);
   };
   const opening = f.request("open", "s1", { url: "https://example.com/" });
-  await f.bridge.stop();
+  await started;
+  const stopping = f.bridge.stop();
   release();
+  await stopping;
   const result = await opening;
   assert.equal(result.error.code, "session_closed");
   assert.equal(f.bridge.sessions.size, 0);
@@ -396,6 +400,7 @@ test("failed tab cleanup remains tracked, blocks new tasks and can be retried by
   f.chrome.tabs.remove = async () => {
     throw Error("temporary removal failure");
   };
+  assert.equal((await f.request("close")).error.code, "cleanup_failed");
   assert.equal((await f.request("close")).error.code, "cleanup_failed");
   assert.deepEqual(stored.owned_task_tabs, [2]);
   assert.equal(f.bridge.ownedTabs.has(2), true);
@@ -1444,4 +1449,145 @@ test("closing during a held click cancels promptly without replaying input", asy
     f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
     1,
   );
+});
+
+test("concurrent cleanup waits for the same removal before a new task starts", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const remove = f.chrome.tabs.remove;
+  let release, entered;
+  const started = new Promise((resolve) => (entered = resolve));
+  let calls = 0;
+  f.chrome.tabs.remove = async (id) => {
+    calls++;
+    entered();
+    await new Promise((resolve) => (release = resolve));
+    await remove(id);
+  };
+  let secondDone = false;
+  const first = f.bridge.close("s1");
+  await started;
+  const second = f.bridge.close("s1").then(() => (secondDone = true));
+  const opening = f.request("open", "s2", { url: "https://example.com/new" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(secondDone, false);
+  assert.equal(f.calls.filter((entry) => entry[0] === "create").length, 1);
+  release();
+  await Promise.all([first, second]);
+  assert.equal((await opening).result.tab_id, 3);
+  assert.equal(calls, 1);
+});
+
+test("evaluate timeout waits for one cleanup and reports failure without losing the original cause", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (...args) =>
+    args[1] === "Runtime.evaluate" && args[2].expression === "pending-script"
+      ? new Promise(() => {})
+      : send(...args);
+  let release, entered;
+  const started = new Promise((resolve) => (entered = resolve));
+  let removals = 0;
+  f.chrome.tabs.remove = async () => {
+    removals++;
+    entered();
+    await new Promise((resolve) => (release = resolve));
+    throw Error("removal denied");
+  };
+  let settled = false;
+  const evaluating = f
+    .request("evaluate", "s1", { expression: "pending-script", timeout_ms: 10 })
+    .then((r) => {
+      settled = true;
+      return r;
+    });
+  await started;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(settled, false);
+  release();
+  const result = await evaluating;
+  assert.equal(result.error.code, "outcome_unknown");
+  assert.equal(removals, 1);
+  assert.ok(f.bridge.ownedTabs.has(2));
+  assert.match(JSON.stringify(result.error), /cleanup|清理/);
+  assert.match(JSON.stringify(result.error), /timeout|超时/);
+});
+
+test("missing task tab requires reopening and never replays an old action", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  await f.chrome.tabs.remove(2);
+  const missing = await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "click", element_ref: "e1" },
+  });
+  assert.equal(missing.error.code, "task_tab_missing");
+  const reopened = await f.request("open", "s1", { url: "https://example.com/new" });
+  assert.equal(reopened.result.tab_id, 3);
+  assert.equal(f.calls.filter((entry) => entry[0] === "Input.dispatchMouseEvent").length, 0);
+});
+
+test("query arrays reject empty, blank and oversized terms before changing observations", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const original = f.bridge.sessions.get("s1").observation;
+  for (const query of ["", " ", [], [""], ["valid", " "], ["x".repeat(201)], Array(21).fill("x")]) {
+    assert.equal((await f.request("observe", "s1", { query })).error.code, "invalid_params");
+    assert.equal(f.bridge.sessions.get("s1").observation, original);
+  }
+});
+
+test("stop or close while a new open waits for old cleanup prevents the new tab", async () => {
+  for (const ending of ["stop", "close"]) {
+    const f = fixture();
+    await f.request("open", "s1", { url: "https://example.com/" });
+    const remove = f.chrome.tabs.remove;
+    let release, entered;
+    const started = new Promise((resolve) => (entered = resolve));
+    f.chrome.tabs.remove = async (id) => {
+      entered();
+      await new Promise((resolve) => (release = resolve));
+      await remove(id);
+    };
+    const closing = f.bridge.close("s1");
+    await started;
+    const opening = f.request("open", "s2", { url: "https://example.com/new" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const endingTask = ending === "stop" ? f.bridge.stop() : f.bridge.close("s2");
+    release();
+    await Promise.all([closing, endingTask]);
+    const result = await opening;
+    assert.equal(result.error.code, "session_closed", ending);
+    assert.equal(f.calls.filter((entry) => entry[0] === "create").length, 1, ending);
+  }
+});
+
+test("cancelled open during tab creation removes the late tab and does not navigate or observe", async () => {
+  const f = fixture();
+  const create = f.chrome.tabs.create;
+  let release,
+    entered,
+    cancelled = false;
+  const started = new Promise((resolve) => (entered = resolve));
+  f.chrome.tabs.create = async (params) => {
+    entered();
+    await new Promise((resolve) => (release = resolve));
+    return create(params);
+  };
+  const opening = f.bridge.dispatch({
+    id: "cancel-pending-open",
+    method: "open",
+    session_id: "s1",
+    params: { url: "https://example.com/" },
+    isCancelled: () => cancelled,
+  });
+  await started;
+  cancelled = true;
+  release();
+  const result = await opening;
+  assert.ok(result.error, JSON.stringify(result));
+  assert.deepEqual(f.removed, [2]);
+  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.calls.filter((entry) => entry[0] === "Accessibility.getFullAXTree").length, 0);
 });

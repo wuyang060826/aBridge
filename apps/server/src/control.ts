@@ -7,6 +7,10 @@ import {
   requiredCapabilities,
   operationFrameSchema,
   browserExecSchema,
+  browserQuerySchema,
+  browserErrorSchema,
+  type BrowserError,
+  type BrowserStepFailure,
   browserReadSchema,
   browserWaitSchema,
   browserEvaluateSchema,
@@ -15,7 +19,7 @@ import {
   type DeviceKind,
   type DeviceTool,
 } from "@abridge/protocol";
-import { BrowserRuntime, BrowserRuntimeError } from "./browser-runtime.js";
+import { BrowserRuntime, BrowserRuntimeError, BrowserStepError } from "./browser-runtime.js";
 import { deviceAccess, grantExpired, sessionDeadline } from "./policy.js";
 import { Store, identifier } from "./store.js";
 import {
@@ -319,6 +323,8 @@ export class ControlService {
     wait = true,
     parentId?: string,
   ): Promise<OperationResponse> {
+    if (["browser_open", "browser_observe", "browser_act"].includes(tool) && args.query !== undefined)
+      args = { ...args, query: browserQuerySchema.parse(args.query) };
     if (tool === "browser_exec") args = browserExecSchema.parse(args);
     if (tool === "browser_read") args = browserReadSchema.parse(args);
     if (tool === "browser_wait") args = browserWaitSchema.parse(args);
@@ -398,6 +404,7 @@ export class ControlService {
       const abort = new AbortController();
       this.pending.get(id)!.abort = abort;
       let stepIndex = 0;
+      let inFlightStep: { operation_id: string; method: string } | undefined;
       const timeout = setTimeout(
         () => abort.abort(new Error("Browser execution timed out")),
         Number(args.timeout_ms),
@@ -413,32 +420,72 @@ export class ControlService {
             const step = `step_${createHash("sha256")
               .update(id + ":" + String(++stepIndex))
               .digest("hex")}`;
-            const response = await this.execute(
-              current,
-              sessionId,
-              `browser_${method}` as DeviceTool,
-              callArgs,
-              step,
-              true,
-              id,
-            );
-            if (response.status !== "executed")
-              throw new BridgeError(
-                response.error?.code ?? "browser_step_failed",
-                response.error?.message ?? "Browser step did not complete",
+            let response: OperationResponse;
+            inFlightStep = { operation_id: step, method };
+            try {
+              response = await this.execute(
+                current,
+                sessionId,
+                `browser_${method}` as DeviceTool,
+                callArgs,
+                step,
+                true,
+                id,
               );
+            } catch (caught) {
+              // execute only creates an operation after entry validation/authorization.
+              // If an operation exists, delivery or the receipt may already be in flight.
+              const dispatched = this.store.operation(step);
+              throw new BrowserStepError({
+                operation_id: step,
+                method,
+                status: dispatched ? "outcome_unknown" : "refused",
+                error: {
+                  code: (caught instanceof BridgeError ? caught.code : "invalid_browser_step").slice(0, 100),
+                  message: (caught instanceof Error ? caught.message : String(caught)).slice(0, 2000),
+                },
+              });
+            }
+            inFlightStep = undefined;
+            if (response.status !== "executed")
+              throw new BrowserStepError({
+                operation_id: step,
+                method,
+                status: ["refused", "failed", "cancelled"].includes(response.status)
+                  ? (response.status as "refused" | "failed" | "cancelled")
+                  : "outcome_unknown",
+                error: response.error ?? {
+                  code: "browser_step_failed",
+                  message: "Browser step did not complete",
+                },
+              });
             return response.result;
           },
           abort.signal,
+          (): BrowserStepFailure | undefined =>
+            inFlightStep
+              ? {
+                  ...inFlightStep,
+                  status: "outcome_unknown",
+                  error: {
+                    code: "step_receipt_unconfirmed",
+                    message:
+                      "Parent execution ended before this step had a confirmed terminal receipt; query its operation_id before continuing",
+                  },
+                }
+              : undefined,
         )
         .then(
           (result) => this.finish(id, "executed", result),
           (error: unknown) =>
             this.finish(
               id,
-              "outcome_unknown",
+              error instanceof BrowserRuntimeError ? error.status : "outcome_unknown",
               error instanceof BrowserRuntimeError ? error.result : undefined,
               {
+                ...(error instanceof BrowserRuntimeError && object(error.result.failed_step)
+                  ? browserErrorSchema.parse(error.result.failed_step.error)
+                  : {}),
                 code: error instanceof BrowserRuntimeError ? error.code : "browser_execution_failed",
                 message:
                   error instanceof Error
@@ -809,21 +856,27 @@ export class ControlService {
     } else if (message.type === "result") {
       if (typeof message.status !== "string" || !FINAL_STATES.has(message.status as OperationState))
         throw new BridgeError("invalid_result", "Invalid terminal operation state", 422);
-      const error =
+      const baseError =
         object(message.error) &&
         typeof message.error.code === "string" &&
         typeof message.error.message === "string"
           ? { code: message.error.code, message: message.error.message }
           : undefined;
+      const boundedError = baseError
+        ? { code: baseError.code.slice(0, 100), message: baseError.message.slice(0, 2000) }
+        : undefined;
+      const parsedError =
+        device.kind === "browser"
+          ? browserErrorSchema.safeParse(
+              boundedError ? { ...(message.error as JsonObject), ...boundedError } : undefined,
+            )
+          : undefined;
+      const error =
+        device.kind === "browser" ? (parsedError?.success ? parsedError.data : boundedError) : baseError;
       this.finish(message.operation_id, message.status as OperationState, message.result, error);
     }
   }
-  private finish(
-    id: string,
-    status: OperationState,
-    result?: unknown,
-    error?: { code: string; message: string },
-  ): void {
+  private finish(id: string, status: OperationState, result?: unknown, error?: BrowserError): void {
     const pending = this.pending.get(id);
     if (!pending) return;
     pending.abort?.abort(new Error("Browser execution ended"));

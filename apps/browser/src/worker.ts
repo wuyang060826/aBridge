@@ -214,7 +214,7 @@ function result(
       operation_id: operationId,
       status,
       result: value,
-      ...(error ? { error: { code: error.code || "browser_error", message: error.message } } : {}),
+      ...(error ? { error: { ...error, code: error.code || "browser_error", message: error.message } } : {}),
     });
   } catch {}
 }
@@ -336,16 +336,16 @@ async function dispatch(connection: WebSocket, message: DeviceDispatchEnvelope) 
       method: message.tool.slice(8),
       session_id: message.session_id,
       params: message.arguments,
+      isCancelled: () => cancelledOperations.has(id),
+      onExecutionStart: () => executingOperations.set(message.session_id, id),
     });
-    if (cancelledOperations.has(id)) throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
-    const status = response.error
-      ? response.error.code === "outcome_unknown"
-        ? "outcome_unknown"
-        : "refused"
-      : "executed";
+    if (cancelledOperations.has(id) && !response.error && response.result?.executed !== true)
+      throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
+    const status = response.status;
     journal[id].status = status;
     await saveJournal();
-    if (cancelledOperations.has(id)) throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
+    if (cancelledOperations.has(id) && !response.error && response.result?.executed !== true)
+      throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
     result(connection, id, status, response.result || {}, response.error);
   } catch (caught) {
     const error = errorDetails(caught);

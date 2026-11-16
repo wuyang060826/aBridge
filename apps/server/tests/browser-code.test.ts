@@ -104,6 +104,22 @@ test("browser code shares session state, forwards steps, deduplicates and yields
     assert.deepEqual(replay, second);
     assert.equal(messages.filter((frame) => frame.type === "dispatch").length, 1);
     await assert.rejects(run("return 9;", "code-second"), /different arguments/);
+    for (const completed of [0, 1]) {
+      const before = messages.filter((frame) => frame.type === "dispatch").length;
+      const invalid = await run(
+        `${completed ? "await page.read();" : ""} await page.evaluate('');`,
+        `code-invalid-step-${completed}`,
+      );
+      assert.equal(invalid.status, completed ? "failed" : "refused", JSON.stringify(invalid));
+      const result = invalid.result as JsonObject;
+      assert.equal(result.steps_completed, completed);
+      const step = result.failed_step as JsonObject;
+      assert.equal(step.method, "evaluate");
+      assert.equal(step.status, "refused");
+      assert.match(step.operation_id as string, /step/);
+      assert.ok((step.error as JsonObject).code);
+      assert.equal(messages.filter((frame) => frame.type === "dispatch").length, before + completed);
+    }
     const nextStep = once(socket, "message");
     const waiting = await server.control.execute(
       grant.grant,
@@ -161,7 +177,7 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       grant.grant,
       session.id,
       "browser_exec",
-      { code: "while (true) {}", timeout_ms: 20000 },
+      { code: "await page.sleep(10000);", timeout_ms: 20000 },
       "code-cancel",
       false,
     );

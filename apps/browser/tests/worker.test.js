@@ -698,7 +698,7 @@ test("independent: cancelling digest-waiting A keeps executing B and the control
   assert.equal(h.messages.find((m) => m.operation_id === "reuse-session").status, "executed");
 });
 
-test("independent: cancelling a completed page action before result publication redacts it and permits session recovery", async (t) => {
+test("independent: cancelling after navigation completion preserves its receipt and permits session recovery", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
   const session = {},
     h = harness(local, session);
@@ -730,9 +730,10 @@ test("independent: cancelling a completed page action before result publication 
   release();
   await delay(25);
   const receipt = h.messages.find((m) => m.operation_id === "late");
-  assert.equal(receipt.status, "outcome_unknown");
-  assert.deepEqual(receipt.result, {});
-  assert.equal(local.operation_journal.late.status, "outcome_unknown");
+  assert.equal(receipt.status, "executed");
+  assert.equal(receipt.result.executed, true);
+  assert.equal(receipt.result.url, "https://example.com/");
+  assert.equal(local.operation_journal.late.status, "executed");
   assert.deepEqual(session.closed_sessions ?? [], []);
   assert.equal(h.tabs.size, 1);
   h.sockets[0].receive(h.dispatch("recovery-open", 2));

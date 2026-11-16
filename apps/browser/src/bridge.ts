@@ -7,6 +7,10 @@ import {
   BROWSER_MAX_ELEMENTS,
   BROWSER_MAX_TEXT,
   actWaitAfterSchema,
+  browserQuerySchema,
+  browserErrorSchema,
+  type BrowserError,
+  type BrowserStepFailure,
 } from "@abridge/protocol";
 import { fail, errorDetails } from "./types.js";
 interface AXValue {
@@ -49,6 +53,7 @@ interface ElementResult {
   description?: string;
   value?: string;
   url?: string;
+  target?: string;
   url_truncated?: boolean;
   checked?: boolean | "mixed";
   expanded?: boolean | "mixed";
@@ -82,6 +87,8 @@ interface Session {
     coverage: string;
   };
   denied?: boolean;
+  creation?: Promise<void>;
+  closing?: Promise<void>;
   attachAttempt?: AttachAttempt | null;
   waitCancel?: (() => void) | null;
 }
@@ -97,7 +104,7 @@ interface Result {
   [key: string]: unknown;
   observation_id?: string;
   navigation_state?: string;
-  observation_error?: { code: string; message: string };
+  observation_error?: BrowserError;
   observation?: Result;
   elements?: ElementResult[];
 }
@@ -106,11 +113,14 @@ interface DispatchRequest {
   method?: string;
   session_id?: string;
   params?: BridgeParams;
+  isCancelled?: () => boolean;
+  onExecutionStart?: () => void;
 }
 export interface DispatchResponse {
   id?: string;
+  status: "executed" | BrowserStepFailure["status"];
   result?: Result;
-  error?: { code: string; message: string };
+  error?: BrowserError;
 }
 
 const MAX_ELEMENTS = BROWSER_MAX_ELEMENTS,
@@ -168,29 +178,29 @@ function options(params: BridgeParams, compound = false) {
     throw fail("invalid_params", "参数必须是对象");
   if (params.screenshot !== undefined && typeof params.screenshot !== "boolean")
     throw fail("invalid_params", "screenshot 必须是布尔值");
-  if (
-    params.query !== undefined &&
-    params.query !== null &&
-    (typeof params.query !== "string" || params.query.length > 200)
-  )
-    throw fail("invalid_params", "query 必须是最多200字符的文本");
+  if (params.query !== undefined && !browserQuerySchema.safeParse(params.query).success)
+    throw fail("invalid_params", "query 需要非空文本（最多200字符）或1–20个文本项（共最多2000字符）");
   if (compound && params.observe_after !== undefined && typeof params.observe_after !== "boolean")
     throw fail("invalid_params", "observe_after 必须是布尔值");
   if (compound && params.observe_after === false && params.screenshot === true)
     throw fail("invalid_params", "screenshot 需要 observe_after=true");
 }
-function excerpt(text: string, query: string) {
-  if (!query) return { text: text.slice(0, PAGE_TEXT_BUDGET), truncated: text.length > PAGE_TEXT_BUDGET };
-  const needle = query.toLowerCase(),
-    lower = text.toLowerCase(),
+function excerpt(text: string, terms: string[]) {
+  if (!terms.length)
+    return { text: text.slice(0, PAGE_TEXT_BUDGET), truncated: text.length > PAGE_TEXT_BUDGET };
+  const lower = text.toLowerCase(),
     snippets: string[] = [];
   let from = 0,
     lastEnd = 0;
   while (snippets.length < 12) {
-    const index = lower.indexOf(needle, from);
-    if (index < 0) break;
-    const start = Math.max(lastEnd, index - 160),
-      end = Math.min(text.length, index + needle.length + 320);
+    const hits = terms
+      .map((term) => ({ index: lower.indexOf(term, from), length: term.length }))
+      .filter((hit) => hit.index >= 0)
+      .sort((a, b) => a.index - b.index);
+    const hit = hits[0];
+    if (!hit) break;
+    const start = Math.max(lastEnd, hit.index - 160),
+      end = Math.min(text.length, hit.index + hit.length + 320);
     if (start < end) snippets.push(text.slice(start, end));
     lastEnd = end;
     from = end;
@@ -198,8 +208,22 @@ function excerpt(text: string, query: string) {
   const selected = snippets.join("\n…\n");
   return {
     text: selected.slice(0, PAGE_TEXT_BUDGET),
-    truncated: selected.length > PAGE_TEXT_BUDGET || lower.indexOf(needle, from) >= 0,
+    truncated: selected.length > PAGE_TEXT_BUDGET || terms.some((term) => lower.indexOf(term, from) >= 0),
   };
+}
+function missingTaskTab() {
+  return Object.assign(fail("task_tab_missing", "当前任务页已不存在；使用 browser_open 创建任务页"), {
+    recovery: { action: "browser_open" as const, task_tab: "missing" as const },
+  });
+}
+function diagnostic(error: ReturnType<typeof errorDetails>) {
+  return { code: (error.code || "browser_error").slice(0, 100), message: error.message.slice(0, 2000) };
+}
+function pageException(value: unknown, fallback: string) {
+  if (!value || typeof value !== "object") return fallback;
+  const details = value as { text?: unknown; exception?: { description?: unknown; value?: unknown } };
+  const message = details.exception?.description ?? details.exception?.value ?? details.text;
+  return typeof message === "string" ? message.slice(0, 2000) : fallback;
 }
 export function webURL(value: unknown) {
   let url;
@@ -221,6 +245,9 @@ export class BrowserBridge {
   generation = 0;
   ownershipWrites = Promise.resolve();
   readonly ownedTabs = new Set<number>();
+  readonly closingSessions = new Map<string, Session>();
+  readonly pendingOpens = new Map<string, { cancelled: boolean }>();
+  readonly removingTabs = new Map<number, Promise<void>>();
   readonly frameContexts = new Map<number, Map<string, number>>();
   constructor(
     chrome: typeof globalThis.chrome,
@@ -310,8 +337,14 @@ export class BrowserBridge {
     return result as CdpResults[M];
   }
   async valid(session: Session, deadline?: number) {
-    if (!session || this.sessions.get(session.id) !== session) throw fail("session_closed", "任务标签不可用");
-    const tab = await readBudget(() => this.chrome.tabs.get(session.tabId!), deadline);
+    if (!session || this.sessions.get(session.id) !== session) throw missingTaskTab();
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await readBudget(() => this.chrome.tabs.get(session.tabId!), deadline);
+    } catch (error) {
+      if (errorDetails(error).code === "observation_timeout") throw error;
+      throw missingTaskTab();
+    }
     if (this.sessions.get(session.id) !== session) throw fail("session_closed", "任务已结束");
     if (session.denied) throw fail("invalid_url", "任务重定向到了禁止访问的页面");
     webURL(tab.url);
@@ -428,6 +461,7 @@ export class BrowserBridge {
   }
   async dispatch(request: DispatchRequest): Promise<DispatchResponse> {
     const { id, method, session_id: sessionId, params = {} } = request || {};
+    const generation = this.generation;
     try {
       if (typeof id !== "string" || !id || this.seen.has(id))
         throw fail("duplicate_request", "请求标识缺失或已经处理；不会重放");
@@ -443,23 +477,53 @@ export class BrowserBridge {
         throw fail("unsupported_method", "不支持的浏览器方法");
       if (method === "stop") {
         await this.stop();
-        return { id, result: { closed: true } };
+        return { id, status: "executed", result: { closed: true } };
       }
       if (typeof sessionId !== "string" || !sessionId || sessionId.length > 256)
         throw fail("invalid_session", "缺少有效任务会话");
-      const session = this.sessions.get(sessionId);
+      let session = this.sessions.get(sessionId);
       if (method === "close") {
         await this.close(sessionId);
-        return { id, result: { closed: true } };
+        return { id, status: "executed", result: { closed: true } };
       }
       if (session?.busy) throw fail("session_busy", "同一会话操作仍在进行");
-      if (
-        method === "open" &&
-        [...this.ownedTabs].some((tabId) => ![...this.sessions.values()].some((item) => item.tabId === tabId))
-      )
-        throw fail("cleanup_failed", "仍有任务标签待清理，请先停止任务");
-      if (method === "open") return { id, result: await this.open(sessionId, params) };
-      if (!session) throw fail("session_closed", "请先创建任务标签");
+      if (method === "open") {
+        if (this.pendingOpens.has(sessionId)) throw fail("session_busy", "同一会话操作仍在进行");
+        const opening = { cancelled: false };
+        this.pendingOpens.set(sessionId, opening);
+        try {
+          const closing = this.closingSessions.get(sessionId);
+          if (closing?.closing) await closing.closing;
+          session = this.sessions.get(sessionId);
+          if (!session) {
+            // The existing orphan guard also covers pages currently being closed.
+            await Promise.all([...this.closingSessions.values()].map((item) => item.closing));
+            if (
+              [...this.ownedTabs].some(
+                (tabId) => ![...this.sessions.values()].some((item) => item.tabId === tabId),
+              )
+            )
+              throw fail("cleanup_failed", "仍有任务标签待清理，请先停止任务");
+          }
+          if (generation !== this.generation || opening.cancelled || request.isCancelled?.())
+            throw fail("session_closed", "任务已停止");
+          if (this.sessions.get(sessionId)?.busy) throw fail("session_busy", "同一会话操作仍在进行");
+          request.onExecutionStart?.();
+          return {
+            id,
+            status: "executed",
+            result: await this.open(
+              sessionId,
+              params,
+              () => opening.cancelled || request.isCancelled?.() === true,
+            ),
+          };
+        } finally {
+          if (this.pendingOpens.get(sessionId) === opening) this.pendingOpens.delete(sessionId);
+        }
+      }
+      if (!session) throw missingTaskTab();
+      request.onExecutionStart?.();
       session.busy = true;
       try {
         const result =
@@ -474,7 +538,7 @@ export class BrowserBridge {
                   : method === "locate_act"
                     ? await this.locateAct(session, params)
                     : await this.act(session, params);
-        return { id, result };
+        return { id, status: "executed", result };
       } finally {
         session.busy = false;
       }
@@ -482,11 +546,40 @@ export class BrowserBridge {
       const error = errorDetails(caught);
       return {
         id,
-        error: { code: error.code || "browser_error", message: error.message || "浏览器操作失败" },
+        status:
+          error.status ??
+          (error.code === "outcome_unknown"
+            ? "outcome_unknown"
+            : [
+                  "invalid_params",
+                  "invalid_url",
+                  "invalid_session",
+                  "session_closed",
+                  "task_tab_missing",
+                  "session_busy",
+                  "stale_observation",
+                  "invalid_action",
+                  "duplicate_request",
+                  "request_limit",
+                  "unsupported_method",
+                  "unsupported_frame",
+                  "cleanup_failed",
+                  "target_not_unique",
+                ].includes(error.code || "")
+              ? "refused"
+              : "failed"),
+        error: {
+          ...diagnostic(error),
+          ...(browserErrorSchema.shape.cause.safeParse(error.cause).success && error.cause
+            ? { cause: browserErrorSchema.shape.cause.parse(error.cause) }
+            : {}),
+          ...(error.cleanup_error ? { cleanup_error: error.cleanup_error } : {}),
+          ...(error.recovery ? { recovery: error.recovery } : {}),
+        },
       };
     }
   }
-  async open(id: string, params: BridgeParams): Promise<Result> {
+  async open(id: string, params: BridgeParams, isCancelled: () => boolean = () => false): Promise<Result> {
     options(params, true);
     const url = webURL(params.url),
       generation = this.generation;
@@ -496,19 +589,35 @@ export class BrowserBridge {
       session = { id, tabId: null, observation: null, attached: false, revision: 0, busy: true };
       this.sessions.set(id, session);
       try {
-        const tab = await this.chrome.tabs.create({ url, active: false });
-        if (tab.id === undefined) throw fail("invalid_tab", "浏览器未返回任务标签标识");
-        session.tabId = tab.id;
-        this.ownedTabs.add(tab.id);
-        if (generation !== this.generation || this.sessions.get(id) !== session) {
-          await this.removeOwned(tab.id);
-          throw fail("session_closed", "创建期间任务已结束");
+        const reserved = session;
+        session.creation = this.chrome.tabs.create({ url, active: false }).then((tab) => {
+          if (tab.id === undefined) throw fail("invalid_tab", "浏览器未返回任务标签标识");
+          reserved.tabId = tab.id;
+          this.ownedTabs.add(tab.id);
+        });
+        await session.creation;
+        if (generation !== this.generation || this.sessions.get(id) !== session || isCancelled()) {
+          throw Object.assign(fail("session_closed", "创建期间任务已结束；不要重放"), {
+            status: "outcome_unknown" as const,
+          });
         }
         await this.persistOwnership();
+        if (isCancelled())
+          throw Object.assign(fail("operation_cancelled", "创建期间任务已取消；不要重放"), {
+            status: "outcome_unknown" as const,
+          });
       } catch (caught) {
         const error = errorDetails(caught);
-        if (this.sessions.get(id) === session) this.sessions.delete(id);
-        if (session.tabId !== null) await this.removeOwned(session.tabId!);
+        try {
+          await this.close(id, session);
+        } catch (cleanup) {
+          throw await this.uncertainFailure(
+            session,
+            Object.assign(error, { cleanup_error: diagnostic(errorDetails(cleanup)) }),
+          );
+        }
+        if (error.status === "outcome_unknown")
+          error.recovery = { action: "browser_open", task_tab: "closed" };
         throw error;
       }
     } else {
@@ -518,27 +627,41 @@ export class BrowserBridge {
       session.denied = false;
       try {
         await this.chrome.tabs.update(session.tabId!, { url });
+        if (isCancelled()) throw fail("operation_cancelled", "导航期间任务已取消；不要重放");
       } catch (caught) {
-        const error = errorDetails(caught);
         session.busy = false;
-        throw error;
+        throw await this.uncertainFailure(session, caught);
       }
     }
     try {
       const deadline = performance.now() + this.navigationTimeout;
       const tab = await this.waitReady(session);
-      return await this.afterObservation(
+      const result = await this.afterObservation(
         session,
         params,
-        { url: tab.url, title: tab.title || "", tab_id: tab.id, navigation_state: "ready" },
+        { executed: true, url: tab.url, title: tab.title || "", tab_id: tab.id, navigation_state: "ready" },
         false,
         deadline,
       );
+      if (isCancelled()) {
+        const interrupted = await this.uncertainFailure(
+          session,
+          fail("operation_cancelled", "导航已完成，后观察期间任务已取消；不要重放"),
+        );
+        result.observation_error = {
+          ...(result.observation_error ?? { code: "operation_cancelled", message: interrupted.message }),
+          ...(interrupted.cleanup_error ? { cleanup_error: interrupted.cleanup_error } : {}),
+          recovery: interrupted.recovery,
+        };
+      }
+      return result;
     } catch (caught) {
       const error = errorDetails(caught);
-      if (error.code === "navigation_pending") return await this.loading(session, url);
-      await this.close(id, session);
-      throw error;
+      if (error.code === "navigation_pending" && !isCancelled()) {
+        const result = await this.loading(session, url);
+        if (!isCancelled()) return result;
+      }
+      throw await this.uncertainFailure(session, error, error.code === "invalid_url");
     } finally {
       session.busy = false;
     }
@@ -642,8 +765,20 @@ export class BrowserBridge {
     deadline = performance.now() + this.navigationTimeout,
   ): Promise<Result> {
     options(params);
-    const query = typeof params.query === "string" ? params.query.trim() : "";
-    const initial = await readBudget(() => this.chrome.tabs.get(session.tabId!), deadline);
+    const query = params.query === undefined ? undefined : browserQuerySchema.parse(params.query);
+    const terms = [
+      ...new Set(
+        (query === undefined ? [] : typeof query === "string" ? [query] : query).map((term) =>
+          term.toLowerCase(),
+        ),
+      ),
+    ];
+    const initial = await readBudget(() => this.chrome.tabs.get(session.tabId!), deadline).catch(
+      (caught: unknown) => {
+        if (errorDetails(caught).code === "observation_timeout") throw caught;
+        throw missingTaskTab();
+      },
+    );
     if (initial.status === "loading" || initial.pendingUrl) {
       session.observation = null;
       try {
@@ -678,11 +813,11 @@ export class BrowserBridge {
     if (visible.exceptionDetails || !page || typeof page.text !== "string")
       throw fail("observation_failed", "无法读取页面可见内容，请重新观察");
     const candidates: { item: ElementResult; backendNodeId: number }[] = [];
-    const needle = query.toLowerCase();
+    const seenNodes = new Set<number>();
     let matches = 0,
       truncated = page.truncated === true || page.text.length > MAX_PAGE_SCAN;
     for (const node of nodes) {
-      if (node.ignored || !node.backendDOMNodeId) continue;
+      if (node.ignored || !node.backendDOMNodeId || seenNodes.has(node.backendDOMNodeId)) continue;
       const role = String(node.role?.value || "").toLowerCase();
       const properties = Object.fromEntries(
         (node.properties || []).map((item) => [item.name, item.value?.value]),
@@ -706,7 +841,12 @@ export class BrowserBridge {
       const description = String(node.description?.value || "");
       const name = String(node.name?.value || description),
         value = properties.protected === true ? "" : String(node.value?.value || "");
-      if (needle && !`${name}\n${description}\n${value}`.toLowerCase().includes(needle)) continue;
+      if (
+        terms.length &&
+        !terms.some((term) => `${name}\n${description}\n${value}`.toLowerCase().includes(term))
+      )
+        continue;
+      seenNodes.add(node.backendDOMNodeId);
       matches++;
       if (candidates.length >= MAX_ELEMENTS) {
         truncated = true;
@@ -729,7 +869,7 @@ export class BrowserBridge {
       candidates.push({ item, backendNodeId: node.backendDOMNodeId });
     }
     const tab = await this.valid(session, deadline);
-    const selectedText = excerpt(page.text.slice(0, MAX_PAGE_SCAN), query);
+    const selectedText = excerpt(page.text.slice(0, MAX_PAGE_SCAN), terms);
     const result: Result & { elements: ElementResult[] } = {
       observation_id: this.uuid(),
       expires_in: OBSERVATION_SECONDS,
@@ -746,7 +886,12 @@ export class BrowserBridge {
       result.url_truncated = true;
       result.truncated = true;
     }
-    if (query) result.query = query;
+    if (query !== undefined) {
+      result.query = query;
+      if (!selectedText.text && !matches)
+        result.query_note =
+          "No matches in this observation's scanned loaded text and controls; this does not establish that the page has no content.";
+    }
     // Reserve space before enriching links, so a bounded response does not
     // incur one CDP round trip for every link in a large document.
     const selected: typeof candidates = [];
@@ -771,6 +916,8 @@ export class BrowserBridge {
             deadline,
           );
           const attributes = domNode?.attributes || [];
+          const targetIndex = attributes.findIndex((name, i) => i % 2 === 0 && name === "target");
+          if (targetIndex >= 0) candidate.item.target = attributes[targetIndex + 1].slice(0, 200);
           const index = attributes.findIndex((name, i) => i % 2 === 0 && name === "href");
           if (index >= 0) {
             try {
@@ -927,6 +1074,7 @@ export class BrowserBridge {
     expression: string,
     timeout = 10000,
     frameSelector?: unknown,
+    submitted?: () => void,
   ): Promise<unknown> {
     const deadline = performance.now() + timeout;
     await this.valid(session, deadline);
@@ -938,6 +1086,7 @@ export class BrowserBridge {
       const contextId = frame && this.frameContexts.get(session.tabId!)?.get(frame.frameId);
       if (frame && contextId === undefined)
         throw fail("unsupported_frame", "iframe 执行上下文不可用；不会转投主文档");
+      submitted?.();
       result = await this.command(
         session,
         "Runtime.evaluate",
@@ -950,25 +1099,48 @@ export class BrowserBridge {
           () => {},
         );
     }
-    if (result.exceptionDetails) throw fail("page_script_failed", "页面脚本执行失败");
+    if (result.exceptionDetails)
+      throw fail("page_script_failed", pageException(result.exceptionDetails, "页面脚本执行失败"));
     return result.result?.value ?? null;
   }
+  async uncertainFailure(session: Session, caught: unknown, definite = false) {
+    const cause = diagnostic(errorDetails(caught));
+    let cleanupError: BrowserError["cleanup_error"];
+    try {
+      await this.close(session.id, session);
+    } catch (error) {
+      cleanupError = diagnostic(errorDetails(error));
+    }
+    return Object.assign(fail(definite ? cause.code : "outcome_unknown", cause.message), {
+      status: definite ? ("failed" as const) : ("outcome_unknown" as const),
+      cause,
+      ...(cleanupError ? { cleanup_error: cleanupError } : {}),
+      recovery: {
+        action: cleanupError ? ("stop" as const) : ("browser_open" as const),
+        task_tab: cleanupError ? ("cleanup_failed" as const) : ("closed" as const),
+      },
+    });
+  }
   async evaluate(session: Session, params: BridgeParams): Promise<Result> {
-    if (typeof params.expression !== "string" || params.expression.length > 65536)
+    if (typeof params.expression !== "string" || !params.expression || params.expression.length > 65536)
       throw fail("invalid_params", "expression 过长或无效");
     const timeout = typeof params.timeout_ms === "number" ? params.timeout_ms : 10000;
     if (!Number.isInteger(timeout) || timeout < 1 || timeout > 20000)
       throw fail("invalid_params", "timeout_ms 无效");
     session.observation = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let submitted = false,
+      timedOut = false;
     try {
       const value = await Promise.race([
-        this.pageValue(session, params.expression, timeout, params.frame_selector),
+        this.pageValue(session, params.expression, timeout, params.frame_selector, () => {
+          if (timedOut) throw fail("evaluation_timeout", "页面脚本提交前已超时");
+          submitted = true;
+        }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            // A timed-out script may already have written: terminate and release its tab.
-            void this.close(session.id, session);
-            reject(fail("outcome_unknown", "脚本超时，任务已释放；不要重放"));
+            timedOut = true;
+            reject(fail("evaluation_timeout", "页面脚本超时；不要重放"));
           }, timeout);
         }),
       ]);
@@ -976,12 +1148,8 @@ export class BrowserBridge {
         throw fail("result_too_large", "脚本结果超过24000字符，请在代码中分页或汇总");
       return { value, executed: true };
     } catch (caught) {
-      const error = errorDetails(caught);
-      if (!["invalid_params", "unsupported_frame", "result_too_large"].includes(error.code || "")) {
-        await this.close(session.id, session);
-        throw fail("outcome_unknown", "脚本可能已有副作用，任务已释放；不要重放");
-      }
-      throw error;
+      if (submitted) throw await this.uncertainFailure(session, caught);
+      throw caught;
     } finally {
       clearTimeout(timer);
     }
@@ -1186,52 +1354,59 @@ export class BrowserBridge {
       let response: CdpResults["Runtime.callFunctionOn"] = {};
       const native = ["click", "fill", "hover", "press", "scroll"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
-      if (native) {
-        const prepared = await this.command(session, "Runtime.callFunctionOn", {
-          objectId: object.objectId,
-          functionDeclaration: prepareInput.toString(),
-          returnByValue: true,
-        });
-        if (prepared.exceptionDetails) throw fail("action_failed", "元素不可见、被遮挡或不可用");
-        point = prepared.result?.value as { x: number; y: number } | undefined;
-        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
-          throw fail("action_failed", "无法确定输入位置");
-        // Hidden task tabs can have fresh DOM geometry but a stale compositor
-        // hit-test surface. A discarded one-pixel capture prepares a frame
-        // without activating the tab or moving the user's system pointer.
-        await this.command(
-          session,
-          "Page.captureScreenshot",
-          {
-            format: "jpeg",
-            quality: 1,
-            clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
-            captureBeyondViewport: false,
-          },
-          performance.now() + 2000,
-        );
-        const refreshed = await this.command(session, "Runtime.callFunctionOn", {
-          objectId: object.objectId,
-          functionDeclaration: prepareInput.toString(),
-          returnByValue: true,
-        });
-        point = refreshed.result?.value as { x: number; y: number } | undefined;
-        if (refreshed.exceptionDetails || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
-          throw fail("action_failed", "渲染后目标不可用");
-      }
-      const assertCurrentDocument = async () => {
-        const currentTab = await this.valid(session);
-        if (
-          session.revision !== observation.revision ||
-          currentTab.url !== observation.url ||
-          currentTab.status === "loading" ||
-          currentTab.pendingUrl
-        )
-          throw fail("stale_observation", "准备输入期间页面已导航，请重新观察");
-      };
-      await assertCurrentDocument();
-      session.observation = null;
+      let preparedSideEffects = false;
       try {
+        if (native) {
+          preparedSideEffects = true;
+          const prepared = await this.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: prepareInput.toString(),
+            returnByValue: true,
+          });
+          if (prepared.exceptionDetails)
+            throw fail(
+              "action_failed",
+              pageException(prepared.exceptionDetails, "元素不可见、被遮挡或不可用"),
+            );
+          point = prepared.result?.value as { x: number; y: number } | undefined;
+          if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
+            throw fail("action_failed", "无法确定输入位置");
+          // Hidden task tabs can have fresh DOM geometry but a stale compositor
+          // hit-test surface. A discarded one-pixel capture prepares a frame
+          // without activating the tab or moving the user's system pointer.
+          await this.command(
+            session,
+            "Page.captureScreenshot",
+            {
+              format: "jpeg",
+              quality: 1,
+              clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+              captureBeyondViewport: false,
+            },
+            performance.now() + 2000,
+          );
+          const refreshed = await this.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: prepareInput.toString(),
+            returnByValue: true,
+          });
+          point = refreshed.result?.value as { x: number; y: number } | undefined;
+          if (refreshed.exceptionDetails || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
+            throw fail("action_failed", "渲染后目标不可用");
+        }
+        const assertCurrentDocument = async () => {
+          const currentTab = await this.valid(session);
+          if (
+            session.revision !== observation.revision ||
+            currentTab.url !== observation.url ||
+            currentTab.status === "loading" ||
+            currentTab.pendingUrl
+          )
+            throw fail("stale_observation", "准备输入期间页面已导航，请重新观察");
+        };
+        await assertCurrentDocument();
+        session.observation = null;
+        preparedSideEffects = true;
         if (action.type === "click" || action.type === "hover" || action.type === "scroll") {
           await this.command(session, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
           await assertCurrentDocument();
@@ -1351,21 +1526,15 @@ export class BrowserBridge {
             returnByValue: true,
           });
         }
-      } catch {
-        let cleanupFailed = false;
-        try {
-          await this.close(session.id, session);
-        } catch {
-          cleanupFailed = true;
-        }
-        throw fail(
-          "outcome_unknown",
-          cleanupFailed
-            ? "动作结果未知且任务标签清理失败，已保留清理记录；不会重放"
-            : "动作结果未知，任务已释放；不会重放",
-        );
+        if (response.exceptionDetails)
+          throw fail(
+            "action_failed",
+            pageException(response.exceptionDetails, "网页拒绝了 DOM 操作，请重新观察"),
+          );
+      } catch (caught) {
+        if (preparedSideEffects) throw await this.uncertainFailure(session, caught);
+        throw caught;
       }
-      if (response.exceptionDetails) throw fail("action_failed", "网页拒绝了 DOM 操作，请重新观察");
       return await this.afterObservation(
         session,
         params,
@@ -1383,45 +1552,71 @@ export class BrowserBridge {
       } catch {}
     }
   }
-  async removeOwned(tabId: number) {
-    if (!this.ownedTabs.has(tabId)) return;
-    this.frameContexts.delete(tabId);
-    try {
-      await this.chrome.tabs.remove(tabId);
-    } catch {
-      let exists = true;
-      try {
-        await this.chrome.tabs.get(tabId);
-      } catch {
-        exists = false;
-      }
-      if (exists) {
+  removeOwned(tabId: number): Promise<void> {
+    const existing = this.removingTabs.get(tabId);
+    if (existing) return existing;
+    const removing = Promise.resolve()
+      .then(async () => {
+        if (!this.ownedTabs.has(tabId)) return;
+        this.frameContexts.delete(tabId);
+        try {
+          await this.chrome.tabs.remove(tabId);
+        } catch {
+          let exists = true;
+          try {
+            await this.chrome.tabs.get(tabId);
+          } catch (caught) {
+            exists =
+              this.ownedTabs.has(tabId) &&
+              !/No tab with id|Missing tab|Invalid tab ID/i.test(errorDetails(caught).message);
+          }
+          if (exists) {
+            await this.persistOwnership();
+            throw fail("cleanup_failed", "任务标签关闭失败，已保留待清理记录");
+          }
+        }
+        this.ownedTabs.delete(tabId);
         await this.persistOwnership();
-        throw fail("cleanup_failed", "任务标签关闭失败，已保留待清理记录");
-      }
-    }
-    this.ownedTabs.delete(tabId);
-    await this.persistOwnership();
+      })
+      .finally(() => {
+        this.removingTabs.delete(tabId);
+      });
+    this.removingTabs.set(tabId, removing);
+    return removing;
   }
-  async close(id: string, expected?: Session) {
-    const session = this.sessions.get(id);
-    if (expected && session !== expected) return;
-    this.sessions.delete(id);
-    if (session) {
-      session.observation = null;
-      session.waitCancel?.();
-      if (session.tabId !== null) await this.removeOwned(session.tabId!);
+  close(id: string, expected?: Session): Promise<void> {
+    if (!expected) {
+      const opening = this.pendingOpens.get(id);
+      if (opening) opening.cancelled = true;
     }
+    const session = expected ?? this.sessions.get(id) ?? this.closingSessions.get(id);
+    if (!session) return Promise.resolve();
+    if (session.closing) return session.closing;
+    if (expected && this.sessions.get(id) !== expected) return Promise.resolve();
+    this.sessions.delete(id);
+    session.observation = null;
+    session.waitCancel?.();
+    this.closingSessions.set(id, session);
+    session.closing = Promise.resolve()
+      .then(async () => {
+        // Creation may still be in flight when stop/cancel retires the session.
+        await session.creation?.catch(() => {});
+        if (session.tabId !== null) await this.removeOwned(session.tabId);
+      })
+      .then(() => {
+        if (this.closingSessions.get(id) === session) this.closingSessions.delete(id);
+      });
+    return session.closing;
   }
   async stop() {
     this.generation++;
-    for (const session of this.sessions.values()) {
-      session.observation = null;
-      session.waitCancel?.();
-    }
-    this.sessions.clear();
-    const results = await Promise.allSettled([...this.ownedTabs].map((id) => this.removeOwned(id)));
-    if (results.some((result) => result.status === "rejected"))
-      throw fail("cleanup_failed", "部分任务标签仍待清理，已保留记录");
+    for (const opening of this.pendingOpens.values()) opening.cancelled = true;
+    const closing = [...this.sessions.values()].map((session) => this.close(session.id, session));
+    closing.push(...[...this.closingSessions.values()].map((session) => session.closing!));
+    await Promise.allSettled([...closing, ...[...this.ownedTabs].map((id) => this.removeOwned(id))]);
+    // A prior failed close remains observable until stop explicitly retries it.
+    await this.persistOwnership();
+    if (this.ownedTabs.size) throw fail("cleanup_failed", "部分任务标签仍待清理，已保留记录");
+    this.closingSessions.clear();
   }
 }

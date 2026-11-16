@@ -289,6 +289,37 @@ export const computerActionSchema = z.discriminatedUnion("type", [
   dragSchema,
   scrollSchema,
 ]);
+// Browser diagnostics stay bounded across extension, server and script receipts.
+const browserErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
+export const browserErrorSchema = browserErrorDetailSchema.extend({
+  cause: browserErrorDetailSchema.optional(),
+  cleanup_error: browserErrorDetailSchema.optional(),
+  recovery: z
+    .object({
+      action: z.enum(["browser_open", "stop"]),
+      task_tab: z.enum(["missing", "closed", "cleanup_failed", "cleanup_unconfirmed"]),
+    })
+    .optional(),
+});
+export type BrowserError = z.infer<typeof browserErrorSchema>;
+export const browserStepFailureSchema = z.object({
+  operation_id: z.string().min(1).max(100),
+  method: z.string().min(1).max(32),
+  status: z.enum(["refused", "failed", "outcome_unknown", "cancelled"]),
+  error: browserErrorSchema,
+});
+export type BrowserStepFailure = z.infer<typeof browserStepFailureSchema>;
+export const browserQuerySchema = z.union([
+  z.string().trim().min(1).max(200),
+  z
+    .array(z.string().trim().min(1).max(200))
+    .min(1)
+    .max(20)
+    .refine(
+      (terms) => terms.reduce((length, term) => length + term.length, 0) <= 2000,
+      "Query terms exceed 2000 characters",
+    ),
+]);
 export const browserActionSchema = z.discriminatedUnion("type", [
   z
     .object({

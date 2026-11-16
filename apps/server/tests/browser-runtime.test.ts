@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserRuntime, BrowserRuntimeError } from "../src/browser-runtime.js";
+import { BrowserRuntime, BrowserRuntimeError, BrowserStepError } from "../src/browser-runtime.js";
 
 const signal = () => new AbortController().signal;
 
@@ -103,6 +103,8 @@ test("cancellation releases a run even when its browser RPC has not replied", as
   await assert.rejects(task, (error: unknown) => {
     assert.ok(error instanceof BrowserRuntimeError);
     assert.equal(error.code, "operation_cancelled");
+    assert.equal(error.status, "outcome_unknown");
+    assert.equal(error.result.steps_completed, 0);
     return true;
   });
   reply({ executed: true });
@@ -234,5 +236,61 @@ test("explicit sleep preserves browser step counts and is cancellable", async ()
   setTimeout(() => controller.abort(), 30);
   await assert.rejects(pending, /cancel/i);
   assert.equal(calls.length, 2);
+  runtime.closeAll();
+});
+
+test("browser script preserves the failed step receipt and classifies partial execution", async () => {
+  const receipt = {
+    operation_id: "script-step-2",
+    method: "locate_act",
+    status: "refused" as const,
+    error: { code: "target_not_unique", message: "Multiple targets" },
+  };
+  for (const completed of [0, 1]) {
+    const runtime = new BrowserRuntime();
+    let calls = 0;
+    await assert.rejects(
+      runtime.run(
+        "task",
+        `${completed ? "await page.observe();" : ""} await page.locator('#save').click();`,
+        async () => {
+          if (calls++ < completed) return { observed: true };
+          throw new BrowserStepError(receipt);
+        },
+        signal(),
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof BrowserRuntimeError);
+        assert.equal(error.status, completed ? "failed" : "refused");
+        assert.equal(error.result.steps_completed, completed);
+        assert.deepEqual(error.result.failed_step, receipt);
+        return true;
+      },
+    );
+    runtime.closeAll();
+  }
+  const runtime = new BrowserRuntime();
+  const unknown = {
+    ...receipt,
+    status: "outcome_unknown" as const,
+    error: { code: "outcome_unknown", message: "Connection lost" },
+  };
+  await assert.rejects(
+    runtime.run(
+      "task",
+      "await page.locator('#save').click();",
+      async () => {
+        throw new BrowserStepError(unknown);
+      },
+      signal(),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof BrowserRuntimeError);
+      assert.equal(error.status, "outcome_unknown");
+      assert.equal(error.result.steps_completed, 0);
+      assert.deepEqual(error.result.failed_step, unknown);
+      return true;
+    },
+  );
   runtime.closeAll();
 });

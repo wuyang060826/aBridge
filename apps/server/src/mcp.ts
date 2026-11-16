@@ -6,6 +6,7 @@ import {
   capabilitySchema,
   computerActionSchema,
   browserActionSchema,
+  browserQuerySchema,
   browserReadSchema,
   browserWaitSchema,
   browserExecSchema,
@@ -190,19 +191,19 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_open",
-    "Navigate this session task tab using the existing Chrome Profile/login and return its observation. Do not reopen to wait for loading.",
+    "Navigate the current task tab using the existing Profile/login and return its observation. To visit a link whose URL was observed, navigate to that URL here. Do not reopen to wait for loading.",
     { ...base, url: z.string().min(1).max(8192), screenshot: z.boolean().default(false) },
     (a) => exec("browser_open", { ...a, observe_after: true }),
   );
   register(
     "browser_observe",
-    "Refresh the existing task tab. Open and act already return observations; query narrows truncated text. References expire after 10s and actions/navigation.",
-    { ...base, screenshot: z.boolean().default(false), query: z.string().max(200).optional() },
+    "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after 10s and actions/navigation.",
+    { ...base, screenshot: z.boolean().default(false), query: browserQuerySchema.optional() },
     (a) => exec("browser_observe", a),
   );
   register(
     "browser_act",
-    "Click, fill, press, select, hover or scroll a reference from the current page observation. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
+    "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native actions already scroll and check the target. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
     { ...base, observation_id: id, action: browserActionSchema, ...after },
     (a) => {
       if (a.screenshot && !a.observe_after)
@@ -240,7 +241,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_exec",
-    "Run an async JavaScript function body; use await and return a JSON value. Available: page.goto(url), page.observe(options), page.locator(css).click({hold_ms:1500})/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. No setTimeout/setInterval in this outer runtime: prefer page.wait or locator.waitFor for conditions; use await page.sleep(ms) for a cancellable 0-10000 ms delay. click() is a normal native click; click({hold_ms:1500}) holds the native mouse button before release. DOM dispatchEvent is synthetic input, not a native gesture. An unsupported tool gesture does not prove the website lacks that gesture. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use command_status for that same operation; command_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.",
+    "Run an async JavaScript function body for batch actions or custom extraction; use await and return a JSON value. page always addresses the current task tab; a clicked link's new tab is not automatically adopted. Native locator actions already scroll and check their target. Available: page.goto(url), page.observe(options), page.locator(css).click({hold_ms:1500})/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. No setTimeout/setInterval in this outer runtime: prefer page.wait or locator.waitFor for conditions; use await page.sleep(ms) for a cancellable 0-10000 ms delay. click() is a normal native click; click({hold_ms:1500}) holds the native mouse button before release. DOM dispatchEvent is synthetic input, not a native gesture. An unsupported tool gesture does not prove the website lacks that gesture. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use command_status for that same operation; command_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.",
     { ...base, ...browserExecSchema.shape, wait_seconds: wait },
     async (a) => {
       const { session_id, operation_id, wait_seconds, ...args } = a;

@@ -1,3 +1,4 @@
+import type { BrowserError } from "@abridge/protocol";
 import type { Capability, DeviceKind, ConnectionPolicy } from "@abridge/protocol";
 
 export type JsonObject = Record<string, unknown>;
@@ -66,7 +67,7 @@ export interface OperationResponse extends JsonObject {
   operation_id: string;
   status: OperationState | "cancel_requested";
   result?: unknown;
-  error?: { code: string; message: string };
+  error?: BrowserError;
   output?: { stdout: string; stderr: string };
 }
 

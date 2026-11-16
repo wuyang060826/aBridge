@@ -1,3 +1,4 @@
+import { browserStepFailureSchema, type BrowserStepFailure } from "@abridge/protocol";
 import { setTimeout as sleep } from "node:timers/promises";
 import { getQuickJS, type QuickJSDeferredPromise } from "quickjs-emscripten";
 
@@ -7,11 +8,20 @@ const MAX_BYTES = 1024 * 1024;
 const MAX_STEPS = 1000;
 const METHODS = new Set(["open", "observe", "read", "wait", "evaluate", "locate_act", "sleep"]);
 
+export class BrowserStepError extends Error {
+  readonly failure: BrowserStepFailure;
+  constructor(failure: BrowserStepFailure) {
+    super(failure.error.message);
+    this.failure = browserStepFailureSchema.parse(failure);
+  }
+}
+
 export class BrowserRuntimeError extends Error {
   constructor(
     readonly code: string,
     message: string,
     readonly result: JsonObject,
+    readonly status: "refused" | "failed" | "outcome_unknown" | "cancelled" = "failed",
   ) {
     super(message.slice(0, 2000));
   }
@@ -32,21 +42,29 @@ export class BrowserRuntime {
     this.states.clear();
   }
 
-  async run(sessionId: string, code: string, call: BrowserCall, signal: AbortSignal): Promise<JsonObject> {
+  async run(
+    sessionId: string,
+    code: string,
+    call: BrowserCall,
+    signal: AbortSignal,
+    currentStep?: () => BrowserStepFailure | undefined,
+  ): Promise<JsonObject> {
     if (this.active.has(sessionId))
-      throw new BrowserRuntimeError("session_busy", "Browser code is already running", {});
+      throw new BrowserRuntimeError("session_busy", "Browser code is already running", {}, "refused");
     if (Buffer.byteLength(code, "utf8") > 65536)
-      throw new BrowserRuntimeError("invalid_code", "Code exceeds 65536 bytes", {});
-    if (signal.aborted) throw new BrowserRuntimeError("operation_cancelled", "Browser code cancelled", {});
+      throw new BrowserRuntimeError("invalid_code", "Code exceeds 65536 bytes", {}, "refused");
+    if (signal.aborted)
+      throw new BrowserRuntimeError("operation_cancelled", "Browser code cancelled", {}, "cancelled");
     if (!this.states.has(sessionId) && this.states.size >= 64)
       throw new BrowserRuntimeError(
         "runtime_full",
         "Close an idle browser session before starting another",
         {},
+        "refused",
       );
     const controller = new AbortController();
     this.active.set(sessionId, controller);
-    const abort = () => controller.abort();
+    const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     let QuickJS;
     try {
@@ -56,6 +74,7 @@ export class BrowserRuntime {
           "operation_cancelled",
           "Browser code cancelled during initialization",
           {},
+          "cancelled",
         );
     } catch (error) {
       signal.removeEventListener("abort", abort);
@@ -71,6 +90,9 @@ export class BrowserRuntime {
     const deferred = new Set<QuickJSDeferredPromise>();
     let steps = 0;
     let pendingCalls = 0;
+    let inFlight = false;
+    let uncertain = false;
+    let failedStep: BrowserStepFailure | undefined;
     let stopped = false;
     let fatal: Error | undefined;
     let queue = Promise.resolve();
@@ -102,8 +124,19 @@ export class BrowserRuntime {
               throw new Error("page.sleep requires an integer from 0 to 10000 milliseconds");
             await sleep(ms, undefined, { signal: controller.signal });
           } else {
-            value = await call(request.method, request.args);
-            steps++;
+            inFlight = true;
+            try {
+              value = await call(request.method, request.args);
+              steps++;
+            } catch (error) {
+              if (error instanceof BrowserStepError) {
+                failedStep = error.failure;
+                uncertain = failedStep.status === "outcome_unknown";
+              } else uncertain = true;
+              throw error;
+            } finally {
+              inFlight = false;
+            }
           }
           if (stopped || controller.signal.aborted) return;
           const json = JSON.stringify(value ?? null);
@@ -184,16 +217,22 @@ export class BrowserRuntime {
       cpuDeadline = Date.now() + 250;
       promiseHandle = vm.unwrapResult(vm.evalCode(source, "browser-exec.js"));
       for (;;) {
-        if (controller.signal.aborted)
+        if (fatal && (!controller.signal.aborted || fatal instanceof BrowserStepError)) throw fatal;
+        if (controller.signal.aborted) {
+          failedStep ??= currentStep?.();
           throw new BrowserRuntimeError(
             "operation_cancelled",
-            "Browser code cancelled; inspect completed steps",
+            controller.signal.reason instanceof Error && controller.signal.reason.name !== "AbortError"
+              ? controller.signal.reason.message
+              : "Browser code cancelled; inspect completed steps",
             {
               steps_completed: steps,
               output,
+              ...(failedStep ? { failed_step: failedStep } : {}),
             },
+            inFlight || uncertain ? "outcome_unknown" : "cancelled",
           );
-        if (fatal) throw fatal;
+        }
         if (Date.now() > deadline) throw new Error("Browser execution exceeded 120 seconds");
         cpuDeadline = Date.now() + 250;
         const jobs = runtime.executePendingJobs(100);
@@ -242,12 +281,14 @@ export class BrowserRuntime {
     } catch (error) {
       if (error instanceof BrowserRuntimeError) throw error;
       throw new BrowserRuntimeError(
-        "browser_code_failed",
-        error instanceof Error ? error.message : String(error),
+        failedStep?.error.code ?? "browser_code_failed",
+        failedStep?.error.message ?? (error instanceof Error ? error.message : String(error)),
         {
           steps_completed: steps,
           output,
+          ...(failedStep ? { failed_step: failedStep } : {}),
         },
+        inFlight || uncertain ? "outcome_unknown" : failedStep && steps === 0 ? failedStep.status : "failed",
       );
     } finally {
       stopped = true;
