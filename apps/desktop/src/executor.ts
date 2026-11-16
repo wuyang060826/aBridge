@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { constants } from "node:fs";
 import { open, stat, opendir, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -49,7 +50,7 @@ export class LocalExecutor {
       if (
         error instanceof Error &&
         "code" in error &&
-        ["ENOENT", "EEXIST", "EACCES", "EPERM", "ENOTDIR", "EISDIR"].includes(String(error.code)) &&
+        ["ENOENT", "EEXIST", "EACCES", "EPERM", "ENOTDIR", "EISDIR", "ENXIO"].includes(String(error.code)) &&
         !tool.startsWith("computer_")
       )
         throw new DesktopError(
@@ -227,9 +228,11 @@ export class LocalExecutor {
   async fileRead(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const path = expand(stringArg(args, "path")),
       max = integer(args.max_bytes ?? MAX_FILE_BYTES, "max_bytes", 1, MAX_FILE_BYTES);
-    const file = await open(path, "r");
+    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       checkAbort(signal);
+      if (!(await file.stat()).isFile())
+        throw new DesktopError("unsupported_file_type", "File access requires a regular file");
       const bytes = await readBounded(file, max);
       const bytesRead = bytes.length;
       checkAbort(signal);
@@ -255,9 +258,17 @@ export class LocalExecutor {
     const overwrite = args.overwrite ?? false;
     if (typeof overwrite !== "boolean") invalid("overwrite must be a boolean");
     checkAbort(signal);
-    const file = await open(path, overwrite ? "w" : "wx");
+    // Do not block on special files or truncate before validating the opened target.
+    // Following symlinks remains supported for ordinary user files.
+    const file = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NONBLOCK | (overwrite ? 0 : constants.O_EXCL),
+    );
     try {
+      if (!(await file.stat()).isFile())
+        throw new DesktopError("unsupported_file_type", "File access requires a regular file");
       checkAbort(signal);
+      if (overwrite) await file.truncate(0);
       await file.writeFile(bytes);
       return { path, size: bytes.length, overwritten: overwrite };
     } finally {

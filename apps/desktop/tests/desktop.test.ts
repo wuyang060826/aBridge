@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, readFile, symlink, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,6 +93,58 @@ test("files use exclusive writes, strict UTF8 and sorted truncated listings", as
     assert.equal(list.truncated, true);
     const names = (list.entries as { name: string }[]).map((e) => e.name);
     assert.deepEqual(names, [...names].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test(
+  "file tools reject FIFOs without blocking worker threads",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = await directory();
+    try {
+      const path = join(dir, "pipe");
+      execFileSync("mkfifo", [path]);
+      // Bound the entire child: a blocking fs.open cannot be cancelled by a JS timer,
+      // and would otherwise keep the test runner alive after an assertion timeout.
+      const code = `
+      import assert from "node:assert/strict";
+      import { constants } from "node:fs";
+      import { open } from "node:fs/promises";
+      import { LocalExecutor } from ${JSON.stringify(new URL("../src/executor.ts", import.meta.url).href)};
+      const executor = new LocalExecutor();
+      const path = ${JSON.stringify(path)};
+      await assert.rejects(executor.execute("read", "file_read", { path }), { code: "unsupported_file_type" });
+      await assert.rejects(executor.execute("write", "file_write", { path, content: "bad", overwrite: true }), { code: "execution_failed" });
+      const peer = await open(path, constants.O_RDWR | constants.O_NONBLOCK);
+      try {
+        await assert.rejects(executor.execute("write-with-peer", "file_write", { path, content: "bad", overwrite: true }), { code: "unsupported_file_type" });
+      } finally { await peer.close(); }
+    `;
+      const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
+        timeout: 5000,
+        killSignal: "SIGKILL",
+        encoding: "utf8",
+      });
+      assert.equal(result.error, undefined, `Child failed: ${result.error?.message}`);
+      assert.equal(result.status, 0, `Child signal=${result.signal}\n${result.stdout}\n${result.stderr}`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+test("regular files remain readable and overwritable through symlinks", async () => {
+  const dir = await directory();
+  try {
+    const path = join(dir, "target"),
+      link = join(dir, "link");
+    const executor = new LocalExecutor(new Native());
+    await writeFile(path, "original long content");
+    await symlink(path, link);
+    assert.equal((await executor.fileRead({ path: link })).content, "original long content");
+    await executor.fileWrite({ path: link, content: "short", overwrite: true });
+    assert.equal(await readFile(path, "utf8"), "short");
+    await assert.rejects(executor.fileRead({ path: dir }), { code: "unsupported_file_type" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
