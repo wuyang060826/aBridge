@@ -12,7 +12,9 @@ import {
   browserLocateActSchema,
 } from "@abridge/protocol";
 import { createServer } from "../src/server.js";
-import type { JsonObject, OperationResponse } from "../src/types.js";
+import type { AttachedDevice, JsonObject, OperationResponse } from "../src/types.js";
+import { Store } from "../src/store.js";
+import { ControlService } from "../src/control.js";
 
 test("browser code shares session state, forwards steps, deduplicates and yields cancellation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "abridge-browser-code-"));
@@ -206,6 +208,99 @@ test("browser code shares session state, forwards steps, deduplicates and yields
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-receipt"] as const)
+  test(`browser execution preserves step diagnostics on ${ending}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "abridge-browser-progress-"));
+    const store = new Store(join(directory, "server.db"));
+    const control = new ControlService(store);
+    let ticket: AttachedDevice | undefined;
+    let reached!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const frames: JsonObject[] = [];
+    try {
+      const user = await store.createUser("progress-fixture", "progress-fixture-password");
+      const device = store.createDevice(user.id, "Progress browser", ["browser"], "browser");
+      let { grant } = store.createGrant(user.id, "Progress agent", {
+        mode: "all",
+        capabilities: ["browser"],
+        overrides: [],
+      });
+      ticket = await control.attachConnection(
+        device.key,
+        "browser",
+        { capabilities: { browser: true } },
+        {
+          async send(frame) {
+            if (frame.type !== "dispatch") return;
+            frames.push(frame);
+            if (ending === "disconnect-zero") {
+              reached();
+              return;
+            }
+            if (frames.length === 1) {
+              await control.receive(ticket!, {
+                type: "result",
+                connection_epoch: ticket!.epoch,
+                operation_id: frame.operation_id,
+                status: "executed",
+                result: { text: "fixture" },
+              });
+              if (ending === "confirmed-receipt") {
+                // Disconnect before execute's awaiting continuation counts the receipt.
+                control.dropConnection(ticket!);
+                reached();
+              }
+            } else reached();
+          },
+          async close() {},
+        },
+      );
+      const session = control.openSession(grant, device.device.id, ["browser"]);
+      const started = await control.execute(
+        grant,
+        session.id,
+        "browser_exec",
+        {
+          code: "await page.read(); await page.locator('#hold').click(); await page.read();",
+          timeout_ms: 20000,
+        },
+        "progress-outer",
+        false,
+      );
+      await dispatched;
+      if (ending === "disconnect" || ending === "disconnect-zero") control.dropConnection(ticket);
+      if (ending === "rotate") ({ grant } = await control.rotateGrant(grant));
+      const result = control.operationStatus(grant, started.operation_id);
+      assert.equal(result.status, "outcome_unknown");
+      const progress = result.result as JsonObject;
+      assert.equal(progress.steps_completed, ending === "disconnect-zero" ? 0 : 1, JSON.stringify(result));
+      if (ending === "confirmed-receipt") assert.equal(progress.failed_step, undefined);
+      else {
+        const failed = progress.failed_step as JsonObject;
+        assert.equal(failed.operation_id, frames[ending === "disconnect-zero" ? 0 : 1]!.operation_id);
+        assert.equal(failed.method, ending === "disconnect-zero" ? "read" : "locate_act");
+        assert.equal(failed.status, "outcome_unknown");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(
+        frames.length,
+        ending === "confirmed-receipt" || ending === "disconnect-zero" ? 1 : 2,
+        "No queued step may run",
+      );
+      assert.deepEqual(
+        control.operationStatus(grant, started.operation_id),
+        result,
+        "Late runtime completion cannot replace diagnostics",
+      );
+    } finally {
+      await control.shutdown();
+      store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 
 test("browser conditions compose selector and text and frame scope stays explicit", () => {
   assert.equal(browserWaitSchema.safeParse({ selector: "#status", text: "Saved 1" }).success, true);

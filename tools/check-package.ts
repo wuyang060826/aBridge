@@ -3,6 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { unzipSync } from "fflate";
+import { serverShrinkwrap, type PackageLock, type DistributionManifest } from "./lib/server-lock.js";
 const root = resolve(import.meta.dirname, ".."),
   dist = join(root, "dist/releases");
 const files = await readdir(dist),
@@ -19,17 +20,25 @@ for (const name of entries) {
   )
     throw new Error(`Unexpected Server package entry: ${name}`);
 }
-const pkg = JSON.parse(await readFile(join(root, ".local/release/server/package.json"), "utf8")) as Record<
-  string,
-  unknown
->;
+function archiveJson(name: string): unknown {
+  const result = spawnSync("tar", ["-xOf", join(dist, tarballs[0]!), `package/${name}`], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) throw new Error(`Cannot read ${name} from Server tarball`);
+  return JSON.parse(result.stdout) as unknown;
+}
+const pkg = archiveJson("package.json") as Record<string, unknown>;
 if (pkg.optionalDependencies || JSON.stringify(pkg.dependencies).includes("cua-driver"))
   throw new Error("Server must not install desktop native dependencies");
-const lock = JSON.parse(await readFile(join(root, ".local/release/server/npm-shrinkwrap.json"), "utf8")) as {
+const lock = archiveJson("npm-shrinkwrap.json") as {
   packages: Record<string, unknown>;
 };
 if (Object.keys(lock.packages).some((name) => /cua-driver|@ubjs|typescript|esbuild/.test(name)))
   throw new Error("Server dependency lock contains desktop or build dependencies");
+const sourceLock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8")) as PackageLock;
+const expectedLock = serverShrinkwrap(sourceLock, pkg as DistributionManifest);
+if (JSON.stringify(lock) !== JSON.stringify(expectedLock))
+  throw new Error("Server dependency lock differs from the tested production graph");
 const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string };
 const browser = `abridge-browser-${metadata.version}.zip`;
 if (!files.includes(browser)) throw new Error("Browser ZIP for the current version is missing");

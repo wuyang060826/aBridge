@@ -133,7 +133,7 @@ function ManagementApp() {
             </button>
           )}
         </nav>
-        <main id="main" tabIndex={-1}>
+        <main id="main" tabIndex={-1} key={identityRevision}>
           {visibleTab === "admin" ? (
             <InstanceAdminPage requireLogin={admin.requireLogin} notify={notify} />
           ) : visibleTab === "devices" && deviceId ? (
