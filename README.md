@@ -1,15 +1,16 @@
 <img src="docs/assets/overview.png" width="100%" alt="aBridge connects agents to macOS and browsers through MCP; Windows and Android are planned." />
 
-通过 MCP，让 Agent 使用你授权的电脑和浏览器。
+aBridge 希望解决的是我们的云端Agent 所面临的用户 Profile 缺失的问题，希望通过这个工具可以接入用户的多台设备、浏览器（操作OA系统、填写表单、复用登录状态）。
 
-当前版本：[0.4.12](https://github.com/xerrors/aBridge/releases/tag/v0.4.12)。
+aBridge 本身分为**服务端和客户端**，服务端负责连接安装在用户设备上的客户端，**同时对外暴露 MCP 服务**，MCP服务的鉴权分为 Token 和 OAuth 两种。可以接入 Codex、OpenCode、Zcode。
+
+aBridge 可以和 [Yuxi](https://github.com/xerrors/Yuxi)一起部署，使用 **Yuxi 的账户体系**认证，同时不需要对外暴露额外的 IP 和端口，Yuxi 和 aBridge 使用**容器内网络通信**。
 
 | 客户端                  | 能力                       | 运行环境                   |
 | ----------------------- | -------------------------- | -------------------------- |
 | **aBridge App**         | 屏幕、键鼠、Shell、文件    | Apple Silicon，macOS 14+   |
 | **aBridge for Browser** | 网页观察、导航、点击和填充 | Chromium 扩展，Chrome 116+ |
 
-两种客户端独立连接 Server。浏览器扩展复用当前 Profile 的网站登录态，不依赖 App。
 
 [GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供 Server tarball、浏览器 ZIP 和 macOS 包。
 
@@ -17,12 +18,8 @@
 
 ### Docker（推荐）
 
-无需安装 Node.js 或下载源码。镜像支持 Linux amd64 / arm64，包含 Server 和管理台，不含桌面驱动。
-
 ```sh
 docker run -d \
-  --name abridge \
-  --restart unless-stopped \
   -p 8765:8765 \
   -v abridge-data:/data \
   ghcr.io/xerrors/abridge:0.4.12
