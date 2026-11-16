@@ -54,6 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var reconnectItem: NSMenuItem!
     private var menuCapabilities: [String: NSMenuItem] = [:]
     private var pendingCapabilities: Set<String> = []
+    private var updateButton: NSButton!
+    private var updateItem: NSMenuItem!
+    private let updateLabel = StatusTextField(labelWithString: "")
+    private var updateVersion: String?
+    private var updatePlan: String?
+    private var updateProcess: Process?
+    private var updateBusy = false
+    private var installingUpdate = false
     private var daemon: Process?
     private var runtime: [String: String] = [:]
     private var current: [String: Any] = [:]
@@ -65,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var logURL: URL!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        writeUpdateReceipt(ready: false)
         NSApp.setActivationPolicy(.accessory)
         if let location = Bundle.main.url(forResource: "runtime", withExtension: "json"),
            let data = try? Data(contentsOf: location),
@@ -76,6 +85,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             runtime["cli_path"] = resources.appendingPathComponent("runtime/cli.js").path
             runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/aBridge").path
+        }
+        let savedDirectories = UserDefaults.standard.dictionary(forKey: "aBridgeStateDirectories") as? [String: String] ?? [:]
+        if runtime["runtime_mode"] == "bundled", let saved = savedDirectories[Bundle.main.bundleURL.path] {
+            runtime["state_dir"] = saved
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--state-dir"),
+           index + 1 < CommandLine.arguments.count,
+           CommandLine.arguments[index + 1].hasPrefix("/") {
+            runtime["state_dir"] = CommandLine.arguments[index + 1]
+            var directories = savedDirectories
+            directories[Bundle.main.bundleURL.path] = CommandLine.arguments[index + 1]
+            UserDefaults.standard.set(directories, forKey: "aBridgeStateDirectories")
         }
         guard let state = runtime["state_dir"], state.hasPrefix("/") else {
             NSLog("aBridge runtime metadata requires an absolute state_dir")
@@ -110,10 +131,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if boundServerAddress() == nil {
             showWindow()
         }
+        let updateError = stateDirectory.appendingPathComponent("logs/update-error.log")
+        if let message = try? String(contentsOf: updateError, encoding: .utf8) {
+            updateStatus("上次更新未完成：" + message, busy: false)
+            try? FileManager.default.removeItem(at: updateError)
+            showWindow()
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--update-receipt"), index + 1 < CommandLine.arguments.count {
+            runClient(["status"]) { result in
+                if result["error"] == nil { self.writeUpdateReceipt(ready: true) }
+            }
+        }
+    }
+
+    private func writeUpdateReceipt(ready: Bool) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--update-receipt"), index + 1 < CommandLine.arguments.count else { return }
+        let receipt = ["version": appVersion, "pid": ProcessInfo.processInfo.processIdentifier, "ready": ready] as [String: Any]
+        if let data = try? JSONSerialization.data(withJSONObject: receipt) {
+            try? data.write(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]), options: .atomic)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         cancelAuthorization()
+        if updateProcess?.isRunning == true { updateProcess?.terminate() }
+        if !installingUpdate, let plan = updatePlan {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: plan).deletingLastPathComponent())
+        }
         stopDaemon()
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
@@ -166,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         reconnectItem = menu.addItem(withTitle: "重新连接", action: #selector(reconnectFromMenu), keyEquivalent: "")
         reconnectItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
         menu.addItem(withTitle: "重新检查运行环境", action: #selector(checkEnvironment), keyEquivalent: "")
+        updateItem = menu.addItem(withTitle: "检查更新…", action: #selector(updateAction), keyEquivalent: "")
         menu.addItem(withTitle: "查看运行日志", action: #selector(openLogs), keyEquivalent: "")
         let settings = menu.addItem(withTitle: "设置…", action: #selector(showWindow), keyEquivalent: ",")
         settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
@@ -369,6 +414,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         permissionButtons["screen"] = addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: access)
         addDivider(to: access)
         permissionButtons["input"] = addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: access)
+
+        let updates = addSettingsGroup("软件更新", to: root)
+        updateLabel.stringValue = "当前版本 \(appVersion)"
+        updateLabel.font = .systemFont(ofSize: 12)
+        updateLabel.textColor = .secondaryLabelColor
+        updateButton = actionButton("检查更新", action: #selector(updateAction))
+        let updateRow = NSStackView(views: [updateLabel, NSView(), updateButton])
+        updateRow.alignment = .centerY
+        updateRow.spacing = 8
+        addFullWidth(updateRow, to: updates)
 
         let diagnostics = verticalStack(spacing: 10)
         diagnosticsDisclosure = NSButton(title: "运行诊断", target: self, action: #selector(toggleDiagnostics))
@@ -834,6 +889,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(logURL) }
     }
 
+
+    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
+
+    private func updateStatus(_ text: String, busy: Bool) {
+        updateBusy = busy
+        updateLabel.stringValue = text
+        let action = updatePlan != nil ? "安装并重启" : updateVersion != nil ? "下载更新" : "检查更新"
+        updateButton.title = action
+        updateButton.isEnabled = !busy
+        updateItem.title = busy ? text : action + "…"
+        updateItem.isEnabled = !busy
+        resizeSettingsWindow()
+    }
+
+    @objc private func updateAction() {
+        guard !updateBusy else { return }
+        showWindow()
+        if let plan = updatePlan {
+            let alert = NSAlert()
+            alert.messageText = "安装更新并重启 aBridge？"
+            alert.informativeText = "当前执行会结束，设备绑定和设置会保留。"
+            alert.addButton(withTitle: "安装并重启")
+            alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            cancelAuthorization()
+            updateStatus("正在停止当前执行…", busy: true)
+            stopDaemon { [weak self] in
+                guard let self else { return }
+                self.runUpdater(["install", plan, String(ProcessInfo.processInfo.processIdentifier)]) { result in
+                    if result["ready"] as? Bool == true {
+                        self.installingUpdate = true
+                        NSApp.terminate(nil)
+                    } else {
+                        self.updateStatus(result["error"] as? String ?? "无法开始安装", busy: false)
+                        self.startDaemon()
+                    }
+                }
+            }
+        } else if let version = updateVersion {
+            updateStatus("正在下载并校验 \(version)…", busy: true)
+            runUpdater(["download", Bundle.main.bundleURL.path, appVersion, version, stateDirectory.path]) { [weak self] result in
+                guard let self else { return }
+                if let plan = result["plan"] as? String {
+                    self.updatePlan = plan
+                    self.updateStatus("\(version) 已就绪", busy: false)
+                } else {
+                    self.updateVersion = nil
+                    self.updateStatus(result["error"] as? String ?? "下载失败，请重试", busy: false)
+                }
+            }
+        } else {
+            updateStatus("正在检查更新…", busy: true)
+            runUpdater(["check", appVersion]) { [weak self] result in
+                guard let self else { return }
+                if let error = result["error"] as? String {
+                    self.updateStatus(error, busy: false)
+                } else if let update = result["update"] as? [String: Any], let version = update["version"] as? String {
+                    self.updateVersion = version
+                    self.updateStatus("发现新版本 \(version)", busy: false)
+                } else {
+                    self.updateStatus("已是最新版本 \(self.appVersion)", busy: false)
+                }
+            }
+        }
+    }
+
+    private func runUpdater(_ arguments: [String], completion: @escaping ([String: Any]) -> Void) {
+        guard let node = runtime["node_path"], let cli = runtime["cli_path"] else {
+            completion(["error": "运行时文件缺失"]); return
+        }
+        let process = Process(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [URL(fileURLWithPath: cli).deletingLastPathComponent().appendingPathComponent("updater.mjs").path] + arguments
+        process.standardOutput = output
+        process.standardError = errorLog()
+        updateProcess = process
+        do { try process.run() } catch {
+            updateProcess = nil
+            completion(["error": "无法启动更新程序"]); return
+        }
+        DispatchQueue.global().async {
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? ["error": "更新程序异常，请查看日志"]
+            DispatchQueue.main.async { [weak self] in
+                self?.updateProcess = nil
+                completion(result)
+            }
+        }
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     private func loadConfig() {
@@ -910,6 +1056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             daemonStopActions.removeAll()
             if process.isRunning {
                 statusLabel.stringValue = "客户端未能停止，请查看日志"
+                if updateBusy && updatePlan != nil { updateStatus("客户端未能停止，尚未安装更新", busy: false) }
             } else {
                 actions.forEach { $0() }
             }

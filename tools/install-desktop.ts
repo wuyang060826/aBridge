@@ -178,6 +178,7 @@ export async function installDesktop(
     await chmod(join(staging, "node"), 0o700);
     await cp(selected.license, join(staging, "Node-LICENSE"));
     await cp(options.cli, join(staging, "cli.js"));
+    await cp(join(dirname(options.cli), "updater.mjs"), join(staging, "updater.mjs"));
     await chmod(join(staging, "cli.js"), 0o600);
     const dependencies = await copyDependencyClosure(root, join(staging, "node_modules"), roots, {
       resolveFrom: desktopRoot,

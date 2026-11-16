@@ -126,3 +126,7 @@ App 安装器复制固定 Node、构建后的 CLI 和所需依赖到当前用户
 桌面接管保护只覆盖在途输入，读取和普通鼠标移动不触发暂停。手动暂停持久保存，远程请求不能解除。依赖及许可见 [第三方说明](third-party-notices.md)。
 
 安装、更新与维护见 [部署说明](deployment.md)，开发和验证要求见 [贡献指南](../.github/CONTRIBUTING.md)，安全限制见 [SECURITY.md](../.github/SECURITY.md)。
+
+### macOS 更新
+
+`apps/desktop/src/updater.ts` 负责正式版本选择、校验、暂存和回滚；独立 `updater.mjs` 只依赖 Node 内置模块，不经 Agent/Server 控制接口开放。Swift 壳只负责用户更新入口、停止设备进程和启动确认。安装辅助进程复制到应用旁的私有暂存目录，等待壳退出后原路径替换，确认新壳和 Node 可运行后清理备份。设备绑定与状态始终位于 App Bundle 外。

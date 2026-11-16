@@ -75,3 +75,14 @@ await build({
   sourcemap: true,
 });
 console.log(`Built Server, Desktop, management console and Browser ${packageInfo.version}`);
+
+// Standalone updater remains runnable after the App bundle is replaced.
+await build({
+  entryPoints: [join(root, "apps/desktop/src/updater-cli.ts")],
+  outfile: join(out, "desktop/updater.mjs"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node22.13",
+  packages: "external",
+});

@@ -110,7 +110,7 @@ node --import tsx tools/build-native.ts \
   --cli /absolute/path/to/cli.js
 ```
 
-使用 `--signing-identity` 或 `ABRIDGE_SIGNING_IDENTITY` 指定本机已有证书；默认 ad hoc 签名。原生代码或签名变化后，macOS 可能要求重新授予屏幕录制或辅助功能权限。项目不提供公证自动更新渠道，候选构建成功不能代表真实安装和系统权限验收已通过。
+使用 `--signing-identity` 或 `ABRIDGE_SIGNING_IDENTITY` 指定本机已有证书；默认 ad hoc 签名。原生代码或签名变化后，macOS 可能要求重新授予屏幕录制或辅助功能权限。应用内更新使用 GitHub Latest 正式 Release；候选构建成功不能代表真实安装和系统权限验收已通过。
 
 ### 绑定与控制
 
@@ -182,3 +182,13 @@ ABRIDGE_OIDC_BACKCHANNEL_ORIGIN=http://api:5050
 浏览器会话仍由 aBridge 持有，有效期 12 小时。退出/停用提供方账户不会立即注销已有 aBridge Cookie；平台停用用户后应停止签发委托，已签发令牌最多保留 60 秒。aBridge 本地撤权即时应用于后续操作与已有控制会话，不能回滚已发生副作用。身份提供方不可用时新登录和委托验证可能失败，本地账号与 Agent Key 继续工作。密钥轮换须保留旧验证公钥至少到已签发令牌过期，JWKS 缓存也需要考虑。
 
 数据库开发 schema 为 3。历史开发数据库不能直接打开；请备份并在隔离副本中明确转换或重新初始化，禁止用现有服务的数据目录试运行。更换 issuer 或 sub 会建立新身份，必须事先安排设备归属恢复，不能靠显示名自动合并。
+
+### 应用内更新
+
+在 macOS 菜单选择“检查更新…”，或在设置的“软件更新”中检查。发现正式新版后，依次点击“下载更新”和“安装并重启”。下载期间可以继续使用；安装会结束当前执行，保留设备绑定、能力开关、暂停状态和数据目录。应用必须位于可写的本机目录；从磁盘镜像或 App Translocation 启动时先移入 Applications。
+
+更新器读取 `xerrors/aBridge` 的 GitHub Latest 正式 Release，优先选择公证的 Apple Silicon ZIP，否则选择现有 unsigned 包。下载校验 GitHub 提供的 SHA-256 和大小，再核对 Bundle ID、版本与代码签名；已使用团队签名的应用拒绝换成其他团队或 ad hoc 包。应用在原安装路径替换，收到新版壳及 Node 状态命令的启动确认后才清理旧版；启动失败恢复并重新打开旧版，错误写入数据目录的 `logs/update-error.log` 并在设置显示。
+
+Bundle ID、安装路径和用户状态保持稳定，更新器不重置系统权限。ad hoc 签名绑定具体代码版本，更新仍可能触发录屏/辅助功能重新授权；要稳定延续签名身份，应持续使用同一 Developer ID 签名，不能靠放宽代码要求规避系统校验。自定义数据目录在更新重启后按安装路径保存在 macOS 偏好中，后续从 Finder 打开仍使用该目录。
+
+开发验证：`npm run check`；macOS 可另运行 `npm run test:desktop:update:live`，使用独立临时 App 验证真实下载、原路径替换、启动确认与失败回滚，不替换已安装客户端。
