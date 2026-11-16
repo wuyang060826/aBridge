@@ -4,6 +4,7 @@ import { join, resolve, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { zipSync } from "fflate";
+import { serverShrinkwrap, type PackageLock } from "./lib/server-lock.js";
 const { values } = parseArgs({ options: { public: { type: "boolean" } } });
 const publish = values.public ?? false;
 const root = resolve(import.meta.dirname, ".."),
@@ -56,22 +57,21 @@ await writeFile(
     2,
   ) + "\n",
 );
+const sourceLock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8")) as PackageLock;
+await writeFile(
+  join(stage, "npm-shrinkwrap.json"),
+  JSON.stringify(
+    serverShrinkwrap(sourceLock, { name: packageName, version: metadata.version, dependencies }),
+    null,
+    2,
+  ) + "\n",
+);
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-for (const args of [
-  [
-    "install",
-    "--package-lock-only",
-    "--ignore-scripts",
-    "--no-audit",
-    "--no-fund",
-    "--fetch-retry-mintimeout=1000",
-  ],
-  ["shrinkwrap", "--ignore-scripts"],
-  ["pack", "--ignore-scripts", "--pack-destination", dist],
-]) {
-  const result = spawnSync(npm, args, { cwd: stage, stdio: "inherit" });
-  if (result.status !== 0) throw new Error(`npm ${args[0]} failed`);
-}
+const packed = spawnSync(npm, ["pack", "--ignore-scripts", "--pack-destination", dist], {
+  cwd: stage,
+  stdio: "inherit",
+});
+if (packed.status !== 0) throw new Error("npm pack failed");
 const archive: Record<string, Uint8Array> = {};
 async function collect(directory: string): Promise<void> {
   for (const item of await readdir(directory, { withFileTypes: true })) {
