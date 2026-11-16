@@ -276,28 +276,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func buildWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 580),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false
         )
         window.title = "aBridge 设置"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = verticalStack(spacing: 18)
+        window.backgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.12, alpha: 1) : NSColor(calibratedWhite: 0.96, alpha: 1)
+        }
+        let root = verticalStack(spacing: 14)
         settingsRoot = root
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
-            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24),
-            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 22),
+            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 20),
+            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -20),
+            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 18),
         ])
 
-        let identity = verticalStack(spacing: 6)
+        let identity = verticalStack(spacing: 5)
         if let wordmark = NSImage(named: "Wordmark") {
             let heading = NSImageView(image: wordmark)
             heading.imageScaling = .scaleProportionallyUpOrDown
             heading.setAccessibilityLabel("aBridge")
-            heading.widthAnchor.constraint(equalToConstant: 112).isActive = true
-            heading.heightAnchor.constraint(equalToConstant: 31).isActive = true
+            heading.widthAnchor.constraint(equalToConstant: 84).isActive = true
+            heading.heightAnchor.constraint(equalToConstant: 23).isActive = true
             identity.addArrangedSubview(heading)
         } else {
             let heading = NSTextField(labelWithString: "aBridge")
@@ -305,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             heading.textColor = .systemBlue
             identity.addArrangedSubview(heading)
         }
-        statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.allowsExpansionToolTips = true
@@ -315,14 +319,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let header = NSStackView(views: [identity, pauseButton])
         header.distribution = .fill
         header.alignment = .centerY
-        header.spacing = 20
+        header.spacing = 12
         identity.setHuggingPriority(.defaultLow, for: .horizontal)
         pauseButton.setContentHuggingPriority(.required, for: .horizontal)
         addFullWidth(header, to: root)
 
         let connection = addSettingsGroup("连接", to: root)
         let addressLabel = textLabel("服务地址")
-        addressLabel.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        addressLabel.widthAnchor.constraint(equalToConstant: 66).isActive = true
         urlField.placeholderString = "https://…"
         urlField.font = .systemFont(ofSize: 13)
         urlField.bezelStyle = .roundedBezel
@@ -336,7 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         addressRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         addFullWidth(addressRow, to: connection)
         let nameLabel = textLabel("设备名称")
-        nameLabel.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        nameLabel.widthAnchor.constraint(equalToConstant: 66).isActive = true
         deviceNameField.placeholderString = "这台 Mac 的名称"
         deviceNameField.font = .systemFont(ofSize: 13)
         deviceNameField.bezelStyle = .roundedBezel
@@ -422,7 +426,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         updateButton = actionButton("检查更新", action: #selector(updateAction))
         let updateRow = NSStackView(views: [updateLabel, NSView(), updateButton])
         updateRow.alignment = .centerY
-        updateRow.spacing = 8
+        updateRow.spacing = 12
+        updateRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+        updateLabel.lineBreakMode = .byTruncatingTail
+        updateLabel.allowsExpansionToolTips = true
+        updateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        updateButton.setContentHuggingPriority(.required, for: .horizontal)
         addFullWidth(updateRow, to: updates)
 
         let diagnostics = verticalStack(spacing: 10)
@@ -492,32 +501,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let box = NSBox()
         box.boxType = .custom
         box.titlePosition = .noTitle
+        box.borderColor = .clear
         box.borderWidth = 0
         box.isTransparent = false
         box.fillColor = NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? .quaternaryLabelColor : .underPageBackgroundColor
+                ? NSColor(calibratedWhite: 0.18, alpha: 1) : NSColor(calibratedWhite: 1, alpha: 1)
         }
         box.cornerRadius = 10
-        box.contentViewMargins = NSSize(width: 14, height: 12)
+        box.contentViewMargins = .zero
         let container = box.contentView!
         container.addSubview(content)
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            content.topAnchor.constraint(equalTo: container.topAnchor),
-            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            box.heightAnchor.constraint(equalTo: content.heightAnchor, constant: 20),
         ])
         return box
     }
 
     private func addSettingsGroup(_ title: String, to root: NSStackView) -> NSStackView {
-        let section = verticalStack(spacing: 8)
+        let section = verticalStack(spacing: 6)
         let heading = textLabel(title)
-        heading.font = .systemFont(ofSize: 12, weight: .semibold)
+        heading.font = .systemFont(ofSize: 11, weight: .medium)
         heading.textColor = .secondaryLabelColor
-        section.addArrangedSubview(heading)
-        let content = verticalStack(spacing: 9)
+        let titleRow = NSStackView(views: [heading, NSView()])
+        titleRow.edgeInsets = NSEdgeInsets(top: 0, left: 3, bottom: 0, right: 0)
+        addFullWidth(titleRow, to: section)
+        let content = verticalStack(spacing: 8)
         addFullWidth(settingsBox(content), to: section)
         addFullWidth(section, to: root)
         return content
@@ -570,9 +583,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private func resizeSettingsWindow() {
         guard let root = settingsRoot else { return }
         window.contentView?.layoutSubtreeIfNeeded()
-        let height = ceil(root.fittingSize.height) + 44
+        let height = ceil(root.fittingSize.height) + 36
         let previousTop = window.frame.maxY
-        window.setContentSize(NSSize(width: 580, height: height))
+        window.setContentSize(NSSize(width: 520, height: height))
         var frame = window.frame
         frame.origin.y = previousTop - frame.height
         window.setFrame(frame, display: true)
@@ -1198,7 +1211,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         } else {
             statusLabel.stringValue = connection == "connecting" ? "正在连接" : "连接已断开"
         }
-        if let error = status["error"] as? String, !error.isEmpty { statusLabel.stringValue = error }
+        statusLabel.toolTip = nil
+        if let error = status["error"] as? String, !error.isEmpty {
+            statusLabel.toolTip = error
+            if error.contains("Device credential revoked") {
+                statusLabel.stringValue = authorizationProcess != nil ? "正在重新绑定，请在浏览器确认授权" : "设备授权已撤销，请重新绑定这台 Mac"
+            } else {
+                statusLabel.stringValue = error
+            }
+        }
         let pauseTitle = paused ? "恢复访问" : "暂停访问"
         pauseItem.title = pauseTitle
         pauseButton.title = pauseTitle

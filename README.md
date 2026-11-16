@@ -9,27 +9,68 @@
 
 两种客户端独立注册为设备并连接 Server。浏览器扩展复用当前 Profile 的网站登录态，不依赖 App。Server、桌面运行时、扩展和管理台统一使用 TypeScript，macOS 界面由 Swift 提供。
 
-当前为 **0.4 开发候选版本**。本仓库尚未发布可直接安装的公共 npm 包、公证 App 或扩展商店版本；[GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供候选构建：macOS 包使用 ad hoc 签名且未公证，浏览器 ZIP 供开发者加载或提交商店，Server tarball 尚未发布至 npm。源码运行方式见下文。
+浏览器扩展已在 [Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) 发布，可直接安装。[GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供 Server tarball、浏览器 ZIP 和 macOS 包；macOS 包使用 ad hoc 签名且未公证，Server 可使用 Docker 镜像或通过 npx 运行 Release 包。
 
-## 启动 Server
+## 部署 Server
 
-需要 Node.js 22.13.0+ 与 npm。在仓库根目录运行：
+### Docker（推荐）
+
+无需安装 Node.js 或下载源码。镜像支持 Linux amd64 / arm64，包含 Server 和管理台，不含桌面驱动。
 
 ```sh
-npm ci
-npm run build
-npm start -- --web
+docker run -d \
+  --name abridge \
+  --restart unless-stopped \
+  -p 8765:8765 \
+  -v abridge-data:/data \
+  ghcr.io/xerrors/abridge:0.4.9
 ```
 
-CLI 默认启动 Server，终端仅输出普通地址；`--web` 在本机浏览器打开带管理员 Token 的实例管理链接。首次生成的 Token 私有持久保存，也可用 `ABRIDGE_ADMIN_TOKEN` 覆盖。管理员通过面板或 API 创建用户、查看用户与设备统计；普通用户登录后维护自己的设备和 Agent 连接。浏览器自动保存独立的管理员会话，后续访问无需重新粘贴 Token。
+本机访问 [http://127.0.0.1:8765](http://127.0.0.1:8765)。数据和管理员凭据保存在 `abridge-data` 命名卷中，重建容器时复用该卷。
 
-默认监听 `127.0.0.1:8765`。状态目录、数据库、反向代理与无图形环境的配置见 [安装与维护](docs/deployment.md)。Server 使用 Node 内置 SQLite；最低支持版本中的 API 仍为实验状态，具体约束见 [架构](docs/architecture.md)。
+在服务器部署时，可将端口映射改为 `-p 11111:8765`，并增加 `-e ABRIDGE_PUBLIC_ORIGIN=https://bridge.example.com`，填入用户实际访问的协议、域名和必要端口，不带路径或结尾 `/`。该配置用于生成授权地址和校验浏览器来源；HTTPS 需另行配置反向代理，远程浏览器扩展连接需要 HTTPS/WSS。
+
+首次进入实例管理，先读取管理员 Token：
+
+```sh
+docker exec abridge node -e '
+const fs = require("node:fs");
+console.log(process.env.ABRIDGE_ADMIN_TOKEN || fs.readFileSync("/data/server.db.admin-token", "utf8").trim());
+'
+```
+
+将 Token 填入管理链接 `http://127.0.0.1:8765/#admin_token=<TOKEN>` 后打开；远程部署替换为实际访问地址。链接包含管理员凭据，请勿分享。管理员在「实例管理」中创建普通用户；用户登录后绑定设备、管理 Agent 连接。浏览器会保存独立的管理员会话。
+
+运行状态与资源占用：
+
+```sh
+docker logs --tail 30 abridge
+docker stats --no-stream abridge
+```
+
+镜像同时提供 `latest` 标签，部署建议固定版本。更新镜像时保留数据卷，详细步骤见 [Docker 部署](docs/deployment.md#docker-镜像)。
+
+### npx
+
+需要 Node.js 22.13.0+ 与 npm，无需 Docker。公共 npm 包尚未发布，目前直接使用 GitHub Release tarball：
+
+```sh
+npx --yes \
+  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.9/xerrors-abridge-0.4.9.tgz \
+  abridge --web
+```
+
+默认监听 `127.0.0.1:8765`；`--web` 在本机浏览器打开管理员链接。命令在前台运行，服务器长期运行可交给 systemd 等进程管理工具。数据默认保存在系统用户数据目录，不依赖 npx 缓存；可用 `--data-dir /absolute/path/to/data` 指定持久目录。
+
+状态目录、端口、管理员 API、HTTPS 反向代理和无图形环境配置见 [安装与维护](docs/deployment.md)。
 
 ## 安装客户端
 
 ### 浏览器扩展
 
-先执行 `npm run build`，在 `chrome://extensions` 开启开发者模式，加载输出的 `dist/browser/`。源目录中的 TypeScript 需要构建后使用。
+推荐从 [Chrome 应用商店安装 aBridge for Browser](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc)。安装扩展后仍需连接自己的 aBridge Server。
+
+如需从源码加载，先执行 `npm run build`，在 `chrome://extensions` 开启开发者模式，加载输出的 `dist/browser/`。源目录中的 TypeScript 需要构建后使用。
 
 点击扩展图标，在弹窗中填写 Server 地址和浏览器名称，点击“在浏览器授权”，在打开的页面登录并确认绑定。每个 Profile 中的扩展安装实例是独立设备；在管理台把它加入 Agent 连接并选择 `browser` 能力。
 
@@ -73,6 +114,16 @@ open "$HOME/Applications/aBridge.app"
 导航和动作返回下一步可使用的观察；短命令直接返回输出，长命令才需继续等待。接口时效、分页和失败语义见 [架构与执行契约](docs/architecture.md)。
 
 ## 开发
+
+从源码构建并启动 Server：
+
+```sh
+npm ci
+npm run build
+npm start -- --web
+```
+
+完整检查：
 
 ```sh
 npm run check
