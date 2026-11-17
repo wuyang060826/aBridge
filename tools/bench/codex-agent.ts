@@ -13,6 +13,7 @@ interface AgentTranscript {
   usage: AgentUsage | null;
   mcpCalls: number;
   toolViolations: string[];
+  diagnostics: string[];
   finalText: string;
   calls: { tool: string; arguments: unknown; status: string }[];
   error?: string;
@@ -31,7 +32,14 @@ function tokenCount(value: unknown): value is number {
 
 /** Parse CLI JSONL only; never executes commands or contacts a model. */
 export function parseCodexAgentLog(jsonl: string): AgentTranscript {
-  const result: AgentTranscript = { usage: null, mcpCalls: 0, toolViolations: [], finalText: "", calls: [] };
+  const result: AgentTranscript = {
+    usage: null,
+    mcpCalls: 0,
+    toolViolations: [],
+    diagnostics: [],
+    finalText: "",
+    calls: [],
+  };
   const calls = new Set<string>();
   const callIndexes = new Map<string, number>();
   const violations = new Set<string>();
@@ -87,6 +95,16 @@ export function parseCodexAgentLog(jsonl: string): AgentTranscript {
       result.finalText = item.text;
     }
     if (passiveItems.has(item.type)) continue;
+    // CLI diagnostics are not executable tool calls. Accept only the known message shape;
+    // extra fields (including any tool/function/command metadata) still fail closed below.
+    if (
+      item.type === "error" &&
+      typeof item.message === "string" &&
+      Object.keys(item).every((key) => ["id", "type", "message"].includes(key))
+    ) {
+      if (!result.diagnostics.includes(item.message)) result.diagnostics.push(item.message);
+      continue;
+    }
     // Fail closed for new item kinds: a future executable tool must be reviewed explicitly.
     const id = typeof item.id === "string" ? item.id : `line-${lineNumber}`;
     const functionName = record(item.function) ? item.function.name : undefined;
@@ -164,6 +182,8 @@ export async function runCodexAgent(options: {
     "features.shell_tool=false",
     "features.apps=false",
     "features.multi_agent=false",
+    "features.plugins=false",
+    "features.remote_plugin=false",
     'web_search="disabled"',
     "project_doc_max_bytes=0",
     "plugins={}",
@@ -191,6 +211,7 @@ export async function runCodexAgent(options: {
         usage: null,
         mcpCalls: 0,
         toolViolations: [],
+        diagnostics: [],
         finalText: "",
         calls: [],
         error: "Codex agent aborted before launch",
@@ -262,6 +283,7 @@ export async function runCodexAgent(options: {
     if (!secret) continue;
     parsed.finalText = parsed.finalText.replaceAll(secret, "[redacted]");
     if (parsed.error) parsed.error = parsed.error.replaceAll(secret, "[redacted]");
+    parsed.diagnostics = parsed.diagnostics.map((message) => message.replaceAll(secret, "[redacted]"));
   }
   parsed.finalText = parsed.finalText.replace(
     /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?[^\s)"']*/g,
