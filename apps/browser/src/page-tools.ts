@@ -228,13 +228,22 @@ export function prepareInput(this: HTMLElement | Document | Text, action?: strin
   if (action === "press" && !rootKey) element.focus({ preventScroll: true });
   return { x, y };
 }
-export function selectValues(this: HTMLSelectElement, values: string[]) {
-  if (!this.isConnected || this.matches(":disabled") || this.tagName !== "SELECT")
-    throw new Error("Select unavailable");
-  if (!this.multiple && values.length !== 1) throw new Error("Single select requires one value");
+/** Read-only validation is shared by preflight and the final page-local write. */
+export function validateSelect(this: Node, values: string[]): string | null {
+  if (this.nodeType !== 1 || (this as Element).tagName !== "SELECT")
+    return "select 只支持原生 SELECT；自定义下拉框请点击可见控件与选项";
+  const element = this as HTMLSelectElement;
+  if (!element.isConnected) return "下拉控件已离开页面，请重新观察";
+  if (element.matches(":disabled") || element.closest("[inert]")) return "下拉控件已禁用";
+  if (!element.multiple && values.length !== 1) return "单选控件必须提供一个选项值";
   for (const value of values)
-    if (![...this.options].some((option) => option.value === value && !option.matches(":disabled")))
-      throw new Error("Option unavailable");
+    if (![...element.options].some((option) => option.value === value && !option.matches(":disabled")))
+      return "选项不存在或已禁用，请重新观察并选择有效选项值";
+  return null;
+}
+export function selectValues(this: HTMLSelectElement, values: string[]) {
+  const refusal = validateSelect.call(this, values);
+  if (refusal) return refusal;
   for (const option of this.options) option.selected = values.includes(option.value);
   const win = this.ownerDocument.defaultView!;
   this.dispatchEvent(new win.Event("input", { bubbles: true }));

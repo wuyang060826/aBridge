@@ -12,6 +12,7 @@ import {
   pointerTargetDetails,
   scrollElement,
   validateInput,
+  validateSelect,
   prepareInput,
   prepareFill,
   selectValues,
@@ -1063,6 +1064,17 @@ export class BrowserBridge {
       const native = ["click", "fill", "hover", "press"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
       let preparedSideEffects = false;
+      if (action.type === "select") {
+        const validation = await this.tabs.command(session, "Runtime.callFunctionOn", {
+          objectId: object.objectId,
+          functionDeclaration: validateSelect.toString(),
+          arguments: [{ value: action.values }],
+          returnByValue: true,
+        });
+        if (validation.exceptionDetails) throw fail("invalid_action", "无法验证下拉控件，请重新观察");
+        if (typeof validation.result?.value === "string")
+          throw fail("invalid_action", validation.result.value);
+      }
       // A pure preflight can reject a readonly/wrong-kind target without losing the task.
       const validation = await this.tabs.command(session, "Runtime.callFunctionOn", {
         objectId: object.objectId,
@@ -1240,10 +1252,19 @@ export class BrowserBridge {
         } else {
           response = await this.tabs.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
-            functionDeclaration: selectValues.toString(),
+            functionDeclaration: `function(values){const validateSelect=${validateSelect.toString()};return (${selectValues.toString()}).call(this,values)}`,
             arguments: [{ value: action.values }],
             returnByValue: true,
           });
+        }
+        if (
+          action.type === "select" &&
+          !response.exceptionDetails &&
+          typeof response.result?.value === "string"
+        ) {
+          // The final shared validation rejected before mutation or events.
+          preparedSideEffects = false;
+          throw fail("invalid_action", response.result.value);
         }
         if (response.exceptionDetails)
           throw fail(

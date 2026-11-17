@@ -434,8 +434,101 @@ try {
     passed++;
     await env.call("session_close", { session_id: id });
   }
+  if (!baseline && !focusBaseline && !visualBaseline && !clippingBaseline) {
+    id = await session();
+    await env.runCode(
+      id,
+      `await page.evaluate(() => {
+      document.body.innerHTML = '<select id="native"><option value="a">Alpha</option><option value="b">Beta</option><option value="blocked" disabled>Blocked</option><optgroup disabled><option value="group">Group blocked</option></optgroup></select><select id="multiple" multiple><option value="a">Alpha</option><option value="b">Beta</option></select><select id="disabled" disabled><option value="a">Alpha</option></select><div inert><select id="inert"><option value="a">Alpha</option></select></div><div id="custom" role="combobox" tabindex="0" style="width:150px;height:30px">Custom picker</div><div style="position:relative;width:0;height:0;overflow:hidden"><select id="wrapped" style="position:absolute;left:-100%"><option value="a">Alpha</option><option value="b">Beta</option></select></div><button id="visible-choice">Visible choice</button><div id="modal" style="display:none;position:fixed;inset:0;background:white;z-index:100"></div>';
+      document.querySelector('#visible-choice').addEventListener('click', () => { document.querySelector('#wrapped').value = 'b'; });
+      window.selectEvents = [];
+      for (const type of ['input', 'change']) document.addEventListener(type, e => window.selectEvents.push(e.type));
+    });`,
+    );
+    const state = async () =>
+      (
+        await env.runCode(
+          id,
+          "return await page.evaluate(() => ({native:document.querySelector('#native').value,wrapped:document.querySelector('#wrapped').value,events:window.selectEvents.slice()}));",
+        )
+      ).value;
+    const unchanged = await state();
+    for (const [selector, values] of [
+      ["#custom", ["a"]],
+      ["#native", ["missing"]],
+      ["#native", ["blocked"]],
+      ["#native", ["group"]],
+      ["#native", ["a", "b"]],
+      ["#disabled", ["a"]],
+      ["#inert", ["a"]],
+      ["#wrapped", ["b"]],
+    ] as [string, string[]][]) {
+      await assert.rejects(
+        () =>
+          env.runCode(
+            id,
+            `await page.locator(${JSON.stringify(selector)}).select(${JSON.stringify(values)});`,
+          ),
+        /invalid_action/,
+      );
+      assert.deepEqual(await state(), unchanged, `Refusal changed state for ${selector}/${values}`);
+    }
+    await env.runCode(
+      id,
+      "await page.evaluate(() => document.querySelector('#modal').style.display='block');",
+    );
+    await assert.rejects(
+      () => env.runCode(id, "await page.locator('#native').select('b');"),
+      /invalid_action/,
+    );
+    assert.deepEqual(await state(), unchanged);
+    await env.runCode(
+      id,
+      "await page.evaluate(() => document.querySelector('#modal').style.display='none');await page.locator('#native').select('b');await page.locator('#multiple').select(['a','b']);await page.locator('#visible-choice').click();",
+    );
+    assert.deepEqual(await state(), {
+      native: "b",
+      wrapped: "b",
+      events: ["input", "change", "input", "change"],
+    });
+    const multiple = (
+      await env.runCode(
+        id,
+        "return await page.evaluate(() => Array.from(document.querySelector('#multiple').selectedOptions, o => o.value));",
+      )
+    ).value;
+    assert.deepEqual(multiple, ["a", "b"]);
+    await env.runCode(
+      id,
+      "await page.evaluate(() => { const select=document.querySelector('#native'); select.setAttribute('aria-label','Native select failure'); select.dispatchEvent=function(){ if(this.value!=='a')throw Error('Selection did not change'); throw 'dispatch failed after selection'; }; });",
+    );
+    const failureObservation = await observe(id, "Native select failure");
+    const failureSelect = failureObservation.elements.find((e) => e.name === "Native select failure");
+    assert.ok(failureSelect);
+    const failureArgs = {
+      session_id: id,
+      observation_id: failureObservation.observation_id,
+      action: { type: "select", element_ref: failureSelect.element_ref, values: ["a"] },
+      wait_after_ms: 0,
+    };
+    const uncertain = await callAct(failureArgs);
+    assert.equal(uncertain.status, "outcome_unknown");
+    const failureError = uncertain.error as {
+      cause?: { message?: string };
+      recovery?: { task_tab?: string };
+    };
+    assert.match(failureError.cause?.message || "", /dispatch failed after selection/);
+    assert.equal(failureError.recovery?.task_tab, "closed");
+    const repeated = await callAct(failureArgs);
+    assert.equal((repeated.error as { code: string }).code, "task_tab_missing");
+    console.log(
+      "PASS select known refusals recover; exceptions after mutation remain unknown without replay",
+    );
+    passed++;
+    await env.call("session_close", { session_id: id });
+  }
   console.log(
-    `${passed}/${baseline ? 3 : focusBaseline ? 4 : visualBaseline ? 6 : 8} real Chrome regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
+    `${passed}/${baseline ? 3 : focusBaseline ? 4 : visualBaseline ? 6 : clippingBaseline ? 8 : 9} real Chrome regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
   );
 } finally {
   await env.close();

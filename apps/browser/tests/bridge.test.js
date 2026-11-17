@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
-import { prepareInput, validateInput, scrollElement } from "../src/page-tools.ts";
+import {
+  prepareInput,
+  validateInput,
+  validateSelect,
+  selectValues,
+  scrollElement,
+} from "../src/page-tools.ts";
 function fixture() {
   const event = () => ({
     listeners: [],
@@ -2052,4 +2058,162 @@ test("observation exposes current readonly and input type metadata without expos
   const second = (await f.request("observe")).result;
   assert.equal(second.elements[0].read_only, false);
   assert.match(second.observation_id, /^obs_/);
+});
+
+test("select validation rejects wrong kinds and invalid options before mutation, with final revalidation", () => {
+  let events = 0;
+  const options = [
+    { value: "a", selected: true, matches: () => false },
+    { value: "b", selected: false, matches: () => false },
+    { value: "disabled", selected: false, matches: () => true },
+  ];
+  const select = {
+    nodeType: 1,
+    tagName: "SELECT",
+    isConnected: true,
+    multiple: false,
+    matches: () => false,
+    closest: () => null,
+    options,
+    ownerDocument: { defaultView: { Event: class {} } },
+    dispatchEvent() {
+      events++;
+    },
+    get selectedOptions() {
+      return options.filter((o) => o.selected);
+    },
+  };
+  assert.match(validateSelect.call({ nodeType: 1, tagName: "DIV" }, ["a"]), /原生 SELECT/);
+  for (const values of [["missing"], ["disabled"], [], ["a", "b"]]) {
+    assert.equal(typeof selectValues.call(select, values), "string");
+    assert.deepEqual(
+      options.map((o) => o.selected),
+      [true, false, false],
+    );
+    assert.equal(events, 0);
+  }
+  for (const changed of [{ isConnected: false }, { matches: () => true }, { closest: () => ({}) }])
+    assert.equal(typeof validateSelect.call({ ...select, ...changed }, ["b"]), "string");
+  assert.equal(validateSelect.call(select, ["b"]), null);
+  select.matches = () => true; // Became disabled after preflight.
+  assert.equal(typeof selectValues.call(select, ["b"]), "string");
+  assert.equal(events, 0);
+  select.matches = () => false;
+  assert.deepEqual(selectValues.call(select, ["b"]), ["b"]);
+  assert.equal(events, 2);
+  select.multiple = true;
+  assert.deepEqual(selectValues.call(select, ["a", "b"]), ["a", "b"]);
+});
+
+test("select final known refusal preserves the task and permits same-page recovery", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let refuse = true;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (
+      method === "Runtime.callFunctionOn" &&
+      params.functionDeclaration.includes("return (function selectValues")
+    )
+      return { result: { value: refuse ? "Option became disabled" : ["a"] } };
+    return send(target, method, params);
+  };
+  const invoke = (observation_id) =>
+    f.request("act", "s1", {
+      observation_id,
+      action: { type: "select", element_ref: "e1", values: ["a"] },
+      observe_after: false,
+    });
+  const refused = await invoke(opened.result.observation.observation_id);
+  assert.equal(refused.error.code, "invalid_action");
+  assert.equal(f.removed.length, 0);
+  assert.equal(f.calls.filter((c) => c[0].startsWith("Input.")).length, 0);
+  refuse = false;
+  const observation = (await f.request("observe")).result;
+  assert.equal((await invoke(observation.observation_id)).result.executed, true);
+  assert.equal(f.calls.filter((c) => c[0] === "create").length, 1);
+});
+
+test("serialized select write embeds its shared validator without extension-scope captures", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "select", element_ref: "e1", values: ["a"] },
+    observe_after: false,
+  });
+  const declaration = f.calls.find(
+    (c) =>
+      c[0] === "Runtime.callFunctionOn" &&
+      c[2].functionDeclaration.startsWith("function(values){const validateSelect="),
+  )[2].functionDeclaration;
+  const pageFunction = Function(`return (${declaration})`)();
+  assert.match(pageFunction.call({ nodeType: 1, tagName: "DIV" }, ["a"]), /原生 SELECT/);
+  let events = 0;
+  const option = { value: "a", selected: false, matches: () => false };
+  const select = {
+    nodeType: 1,
+    tagName: "SELECT",
+    isConnected: true,
+    matches: () => false,
+    closest: () => null,
+    options: [option],
+    multiple: false,
+    ownerDocument: { defaultView: { Event: class {} } },
+    dispatchEvent() {
+      events++;
+    },
+    get selectedOptions() {
+      return option.selected ? [option] : [];
+    },
+  };
+  assert.deepEqual(pageFunction.call(select, ["a"]), ["a"]);
+  assert.equal(events, 2);
+});
+
+test("select exception with a string result remains unknown after the write and never replays", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let writes = 0;
+  let selected = "a";
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (
+      method === "Runtime.callFunctionOn" &&
+      params.functionDeclaration.startsWith("function(values){const validateSelect=")
+    ) {
+      writes++;
+      selected = "b";
+      return {
+        result: { type: "string", value: "dispatch failed after selection" },
+        exceptionDetails: {
+          text: "Uncaught",
+          exception: { type: "string", value: "dispatch failed after selection" },
+        },
+      };
+    }
+    return send(target, method, params);
+  };
+  const request = {
+    id: "select-write-throws",
+    method: "act",
+    session_id: "s1",
+    params: {
+      observation_id: opened.result.observation.observation_id,
+      action: { type: "select", element_ref: "e1", values: ["b"] },
+      observe_after: false,
+    },
+  };
+  const failed = await f.bridge.dispatch(request);
+  assert.equal(selected, "b");
+  assert.equal(failed.status, "outcome_unknown");
+  assert.equal(failed.error.code, "outcome_unknown");
+  assert.equal(failed.error.cause.code, "action_failed");
+  assert.match(failed.error.cause.message, /dispatch failed after selection/);
+  assert.equal(failed.error.recovery.task_tab, "closed");
+  assert.deepEqual(f.removed, [2]);
+  assert.equal(f.bridge.sessionCount, 0);
+  assert.equal((await f.bridge.dispatch(request)).error.code, "duplicate_request");
+  assert.equal((await f.request("act", "s1", request.params)).error.code, "task_tab_missing");
+  assert.equal(writes, 1);
 });
