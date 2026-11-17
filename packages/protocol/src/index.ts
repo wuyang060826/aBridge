@@ -60,7 +60,7 @@ export const adminOverviewSchema = z.object({
 });
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export const PROTOCOL_VERSION = "abridge/1";
-export const OBSERVATION_SECONDS = 10;
+export const OBSERVATION_SECONDS = 60;
 export const DESKTOP_OBSERVATION_SECONDS = 120;
 export type DesktopFocusStatus = "confirmed" | "unconfirmed";
 export const COMPUTER_WINDOW_PID_REQUIRED =

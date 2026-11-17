@@ -7,7 +7,17 @@ import {
   type TaskTab,
   type CdpResults,
 } from "./task-tabs.js";
-import { prepareInput, prepareFill, selectValues, captureContent, checkCondition } from "./page-tools.js";
+import {
+  capturePointerTargets,
+  pointerTargetDetails,
+  scrollElement,
+  validateInput,
+  prepareInput,
+  prepareFill,
+  selectValues,
+  captureContent,
+  checkCondition,
+} from "./page-tools.js";
 // Browser execution is restricted to task-owned tabs; raw CDP stays internal.
 import {
   OBSERVATION_SECONDS,
@@ -29,12 +39,43 @@ import {
 } from "@abridge/protocol";
 import { z } from "zod";
 import { fail, errorDetails } from "./types.js";
+type PointerTarget = NonNullable<ReturnType<typeof pointerTargetDetails>>;
+function pointerTarget(value: unknown): PointerTarget | undefined {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("name" in value) ||
+    typeof value.name !== "string" ||
+    !("bounds" in value)
+  )
+    return;
+  if (!value.bounds || typeof value.bounds !== "object") return;
+  const bounds = value.bounds as Record<string, unknown>;
+  const { x, y, width, height } = bounds;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    ![x, y, width, height].every(Number.isFinite) ||
+    x < 0 ||
+    y < 0 ||
+    width < 2 ||
+    height < 2 ||
+    [x, y, width, height].some((n) => n > 1e6)
+  )
+    return;
+  return { name: value.name.slice(0, 240), bounds: { x, y, width, height } };
+}
 interface ElementResult {
+  bounds?: PointerTarget["bounds"];
   element_ref: string;
   role: string;
   name: string;
   description?: string;
   value?: string;
+  read_only?: boolean;
+  input_type?: string;
   url?: string;
   target?: string;
   url_truncated?: boolean;
@@ -472,7 +513,13 @@ export class BrowserBridge {
     const seenNodes = new Set<number>();
     let matches = 0,
       truncated = page.truncated === true || page.text.length > MAX_PAGE_SCAN;
-    for (const node of nodes) {
+    // Controls stay ahead of textual fallbacks, so long documents cannot hide real buttons.
+    // StaticText supplies targets for non-semantic, event-bound spans/divs; inline boxes are redundant.
+    const orderedNodes = [
+      ...nodes.filter((n) => String(n.role?.value).toLowerCase() !== "statictext"),
+      ...nodes.filter((n) => String(n.role?.value).toLowerCase() === "statictext"),
+    ];
+    for (const node of orderedNodes) {
       if (node.ignored || !node.backendDOMNodeId || seenNodes.has(node.backendDOMNodeId)) continue;
       const role = String(node.role?.value || "").toLowerCase();
       const properties = Object.fromEntries(
@@ -488,6 +535,7 @@ export class BrowserBridge {
               source.value?.value,
           ));
       if (
+        role !== "statictext" &&
         !INTERACTIVE_ROLES.has(role) &&
         properties.focusable !== true &&
         !properties.editable &&
@@ -524,6 +572,82 @@ export class BrowserBridge {
       }
       candidates.push({ item, backendNodeId: node.backendDOMNodeId });
     }
+    let visualIndex = candidates.findIndex((c) => c.item.role === "statictext");
+    if (visualIndex < 0) visualIndex = candidates.length;
+    const pointerGroup = `abridge-pointer-${referenceId("obs")}`;
+    // Keep real DOM handles throughout discovery: coordinate re-hit-testing could silently
+    // bind an old screenshot target to an unrelated replacement in a dynamic document.
+    try {
+      const discovery = await this.tabs.command(
+        session,
+        "Runtime.evaluate",
+        {
+          expression: `(${capturePointerTargets.toString()})()`,
+          returnByValue: false,
+          objectGroup: pointerGroup,
+        },
+        deadline,
+      );
+      if (discovery.exceptionDetails) truncated = true;
+      if (discovery.result?.objectId) {
+        const root = await this.tabs.command(
+          session,
+          "Runtime.getProperties",
+          { objectId: discovery.result.objectId, ownProperties: true },
+          deadline,
+        );
+        if (root.result?.find((p) => p.name === "truncated")?.value?.value === true) truncated = true;
+        const arrayId = root.result?.find((p) => p.name === "targets")?.value?.objectId;
+        if (arrayId) {
+          const array = await this.tabs.command(
+            session,
+            "Runtime.getProperties",
+            { objectId: arrayId, ownProperties: true },
+            deadline,
+          );
+          const elements = (array.result || []).filter((p) => /^\d+$/.test(p.name) && p.value?.objectId);
+          if (elements.length > 16) truncated = true;
+          for (const property of elements.slice(0, 16)) {
+            const objectId = property.value!.objectId!;
+            const details = await this.tabs.command(
+              session,
+              "Runtime.callFunctionOn",
+              { objectId, functionDeclaration: pointerTargetDetails.toString(), returnByValue: true },
+              deadline,
+            );
+            const target = pointerTarget(details.result?.value);
+            if (!target) continue;
+            if (terms.length && !terms.some((term) => target.name.toLowerCase().includes(term))) continue;
+            const { node } = await this.tabs.command(
+              session,
+              "DOM.describeNode",
+              { objectId, depth: 0 },
+              deadline,
+            );
+            if (!node?.backendNodeId || seenNodes.has(node.backendNodeId)) continue;
+            seenNodes.add(node.backendNodeId);
+            matches++;
+            candidates.splice(visualIndex++, 0, {
+              backendNodeId: node.backendNodeId,
+              item: { element_ref: "", role: "visualtarget", name: target.name, bounds: target.bounds },
+            });
+          }
+        }
+      }
+    } finally {
+      await this.tabs
+        .command(session, "Runtime.releaseObjectGroup", {
+          objectGroup: pointerGroup,
+        })
+        .catch(() => {});
+    }
+    if (candidates.length > MAX_ELEMENTS) {
+      candidates.length = MAX_ELEMENTS;
+      truncated = true;
+    }
+    candidates.forEach((candidate, i) => {
+      candidate.item.element_ref = `e${i + 1}`;
+    });
     const tab = await this.tabs.valid(session, deadline);
     const selectedText = excerpt(page.text.slice(0, MAX_PAGE_SCAN), terms);
     const result: Result & { elements: ElementResult[] } = {
@@ -564,7 +688,8 @@ export class BrowserBridge {
     for (let offset = 0; offset < selected.length; offset += LINK_CONCURRENCY) {
       await Promise.all(
         selected.slice(offset, offset + LINK_CONCURRENCY).map(async (candidate) => {
-          if (candidate.item.role !== "link") return;
+          if (!["link", "textbox", "searchbox", "combobox", "spinbutton"].includes(candidate.item.role))
+            return;
           const { node: domNode } = await this.tabs.command(
             session,
             "DOM.describeNode",
@@ -572,6 +697,12 @@ export class BrowserBridge {
             deadline,
           );
           const attributes = domNode?.attributes || [];
+          if (candidate.item.role !== "link") {
+            candidate.item.read_only = attributes.some((name, i) => i % 2 === 0 && name === "readonly");
+            const typeIndex = attributes.findIndex((name, i) => i % 2 === 0 && name === "type");
+            if (typeIndex >= 0) candidate.item.input_type = attributes[typeIndex + 1].slice(0, 240);
+            return;
+          }
           const targetIndex = attributes.findIndex((name, i) => i % 2 === 0 && name === "target");
           if (targetIndex >= 0) candidate.item.target = attributes[targetIndex + 1].slice(0, 200);
           const index = attributes.findIndex((name, i) => i % 2 === 0 && name === "href");
@@ -929,15 +1060,25 @@ export class BrowserBridge {
     try {
       if (session.revision !== target.revision) throw fail("stale_observation", "页面已导航");
       let response: CdpResults["Runtime.callFunctionOn"] = {};
-      const native = ["click", "fill", "hover", "press", "scroll"].includes(action.type!);
+      const native = ["click", "fill", "hover", "press"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
       let preparedSideEffects = false;
+      // A pure preflight can reject a readonly/wrong-kind target without losing the task.
+      const validation = await this.tabs.command(session, "Runtime.callFunctionOn", {
+        objectId: object.objectId,
+        functionDeclaration: validateInput.toString(),
+        arguments: [{ value: action.type }],
+        returnByValue: true,
+      });
+      if (validation.exceptionDetails) throw fail("invalid_action", "无法验证目标，请重新观察");
+      if (typeof validation.result?.value === "string") throw fail("invalid_action", validation.result.value);
       try {
         if (native) {
           preparedSideEffects = true;
           const prepared = await this.tabs.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
             functionDeclaration: prepareInput.toString(),
+            arguments: [{ value: action.type }],
             returnByValue: true,
           });
           if (prepared.exceptionDetails)
@@ -965,6 +1106,7 @@ export class BrowserBridge {
           const refreshed = await this.tabs.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
             functionDeclaration: prepareInput.toString(),
+            arguments: [{ value: action.type }],
             returnByValue: true,
           });
           point = refreshed.result?.value as { x: number; y: number } | undefined;
@@ -984,7 +1126,14 @@ export class BrowserBridge {
         await assertCurrentDocument();
         session.observation = null;
         preparedSideEffects = true;
-        if (action.type === "click" || action.type === "hover" || action.type === "scroll") {
+        if (action.type === "scroll") {
+          response = await this.tabs.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: scrollElement.toString(),
+            arguments: [{ value: action.delta_x || 0 }, { value: action.delta_y || 0 }],
+            returnByValue: true,
+          });
+        } else if (action.type === "click" || action.type === "hover") {
           await this.tabs.command(session, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
           await assertCurrentDocument();
           if (action.type === "click") {
@@ -1011,13 +1160,6 @@ export class BrowserBridge {
                 clickCount: 1,
               });
             }
-          } else if (action.type === "scroll") {
-            await this.tabs.command(session, "Input.dispatchMouseEvent", {
-              type: "mouseWheel",
-              ...point,
-              deltaX: action.delta_x || 0,
-              deltaY: action.delta_y || 0,
-            });
           }
         } else if (action.type === "press") {
           const key = action.key || "";
@@ -1117,7 +1259,15 @@ export class BrowserBridge {
         params,
         {
           executed: true,
-          route: native ? "cdp_input" : action.type === "select" ? "select_value" : "replace_value",
+          route:
+            action.type === "scroll"
+              ? "dom_scroll"
+              : native
+                ? "cdp_input"
+                : action.type === "select"
+                  ? "select_value"
+                  : "replace_value",
+          ...(action.type === "scroll" ? { scroll: response.result?.value } : {}),
         },
         true,
         performance.now() + this.tabs.navigationTimeout,
