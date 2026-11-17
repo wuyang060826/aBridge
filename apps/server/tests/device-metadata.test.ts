@@ -62,8 +62,9 @@ async function fixture(kind: DeviceKind = "computer") {
 for (const [kind, platform] of [
   ["computer", "win32"],
   ["browser", "Browser extension"],
+  ["browser", "chrome"],
 ] as const) {
-  test(`${kind} metadata survives disconnect and restart, and updates on reconnect`, async () => {
+  test(`${kind} ${platform} metadata survives disconnect and restart, and updates on reconnect`, async () => {
     const f = await fixture(kind);
     try {
       assert.deepEqual(deviceMetadataSchema.parse(f.view()), { platform: null, version: null });

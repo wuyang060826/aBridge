@@ -101,7 +101,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `device_get`、`devices_list` 一致的设备详情。渲染端可直接读取 `device.name`、`device.kind`（`computer` 或 `browser`）和 `device.platform`（客户端上报的平台字符串，如 `darwin`、`win32` 或 `Browser extension`），无需再次查询设备。
 
-设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展使用通用的 `Browser extension`，不代表探测到具体浏览器品牌或宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
+设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展优先读取浏览器声明的品牌列表，缺失时读取 User-Agent；Chrome 及声明为 Chrome 的衍生浏览器上报 `chrome`，无法确认的品牌使用 `Browser extension`，不推断宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
 
 有效能力取连接对该设备的策略、设备授权、会话请求、本机开关及实际就绪状态的交集。设备列举、执行和保留结果访问复用同一策略判定。每次执行重新核对所有者、密钥、撤销与过期状态、会话、能力和当前连接代次。收紧策略会终止不再满足要求的会话并请求取消在途操作；不会恢复本机暂停，也不能回滚已发生的副作用。桌面输入会话在同一设备上独占，浏览器任务分别持有自建标签页。
 

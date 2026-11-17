@@ -178,6 +178,7 @@ function harness(t, local = {}, session = {}, settings = {}) {
   const client = new BrowserDeviceClient({
     chrome,
     WebSocket: Socket,
+    navigator: settings.navigator ?? {},
     fetch: (...args) => environment.fetch(...args),
     crypto: environment.crypto,
     timers: settings.defaultTimers ? undefined : environment.timers,
@@ -252,6 +253,24 @@ test("default browser timers preserve their global receiver through connection, 
   await h.client.close();
   assert.equal(h.sockets[1].readyState, 3);
   assert.deepEqual([...calls].sort(), ["clearInterval", "clearTimeout", "setInterval", "setTimeout"]);
+});
+
+test("Chrome-compatible browser identity is reported on connection and worker restart", async (t) => {
+  const local = {
+    device: { server: "https://abridge.example", key: "key", device_id: "browser-device", paused: true },
+  };
+  const settings = { navigator: { userAgentData: { brands: [{ brand: "Google Chrome", version: "156" }] } } };
+  const h = harness(t, local, {}, settings);
+  await h.start();
+  await delay(10);
+  assert.equal(h.messages.find((m) => m.type === "hello").platform, "chrome");
+  assert.equal(local.device.key, "key");
+  assert.equal(local.device.paused, true);
+  await h.client.close();
+  const restored = harness(t, local, {}, settings);
+  await restored.start();
+  await delay(10);
+  assert.equal(restored.messages.find((m) => m.type === "hello").platform, "chrome");
 });
 
 test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
