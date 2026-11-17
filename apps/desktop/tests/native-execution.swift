@@ -66,6 +66,16 @@ func refusal(_ code: String, _ action: () async throws -> JSONObject) async thro
 func cancelled(_ action: () async throws -> JSONObject) async throws {
     do { _ = try await action(); fatalError("Expected cancellation") } catch is CancellationError {}
 }
+func fixturePID(_ path: String) async throws -> pid_t {
+    let deadline = monotonicSeconds() + 2
+    while monotonicSeconds() < deadline {
+        // Redirection creates the file before echo writes the PID.
+        if let text = try? String(contentsOfFile: path, encoding: .utf8),
+           let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 { return pid }
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    throw NSError(domain: "NativeExecutionFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Fixture did not publish a complete positive PID"])
+}
 func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string("click"), "x": .number(1), "y": .number(2)], follow: Bool = false, wait: Double? = nil) -> JSONObject {
     var result: JSONObject = ["observation_id": observation["observation_id"]!, "action": .object(action), "observe_after": .bool(follow)]
     if let wait { result["wait_after_ms"] = .number(wait) }; return result
@@ -243,8 +253,7 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
             let pidFile = directory + "/" + mode
             let cmd = "sleep 30 & echo $! > '" + pidFile + "'; " + (mode == "normal" ? "exit 0" : "wait")
             let pending = Task { try await executor.execute(id: mode, session: "shell", tool: "command_execute", arguments: ["command": .string(cmd), "timeout": .number(0.2)]) }
-            while !FileManager.default.fileExists(atPath: pidFile) { try await Task.sleep(nanoseconds: 1_000_000) }
-            let pid = pid_t(try String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
+            let pid = try await fixturePID(pidFile)
             if mode == "cancel" { pending.cancel(); try await cancelled { try await pending.value } }
             else { let result = try await pending.value; check(result.bool("timed_out") == (mode == "timeout"), "Timeout distinguished from ordinary completion") }
             var alive = true
