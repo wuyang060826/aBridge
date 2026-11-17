@@ -4,7 +4,7 @@
 
 **通过 MCP，让云端 Agent 使用用户授权的电脑和浏览器，复用本机应用、网站登录态与工作环境。**
 
-[快速开始](#快速开始) · [Yuxi 集成](#与-yuxi-一起使用) · [下载](https://github.com/xerrors/aBridge/releases) · [文档](#文档)
+[快速开始](#快速开始) · [Yuxi 集成](#与-yuxi-一起使用) · [下载](https://github.com/xerrors/aBridge/releases) · [Agent Benchmark](#agent-benchmark) · [文档](#文档)
 
 ## 解决什么问题
 
@@ -114,6 +114,35 @@ aBridge 可以与 [Yuxi](https://github.com/xerrors/Yuxi) 一起部署，复用 
 | **Yuxi 集成** | OIDC 单点登录      | 显式启用平台委托后，由平台签发短期委托令牌 |
 
 OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接作为 MCP 访问令牌。平台连接仍受用户设备授权、本机开关与系统权限限制。部署参数、回调地址及容器内认证请求配置见 [OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)。
+
+## Agent Benchmark
+
+<!-- benchmark:miniwob:start -->
+
+真实 **gpt-6.1-sol（medium）Agent** 通过 aBridge 完成公开 MiniWoB++ 任务：**5/12（41.7%）**。任务、种子和预算在跑分前冻结，无重试，全部结果保留。
+
+| 任务                     | 成功 / 次数 | Agent P50（秒） | 工具调用总数 | 已知输入 / 输出 tokens | 用量覆盖 |
+| ------------------------ | ----------- | --------------- | ------------ | ---------------------- | -------- |
+| `form-sequence-3`        | 2/2         | 58.6            | 6            | 259526 / 746           | 2/2      |
+| `email-inbox-forward-nl` | 0/2         | 68.6            | 11           | 388388 / 1312          | 2/2      |
+| `book-flight`            | 0/2         | 81.6            | 17           | 602729 / 1559          | 2/2      |
+| `navigate-tree`          | 0/2         | 58.8            | 8            | 321844 / 854           | 2/2      |
+| `click-menu-2`           | 2/2         | 67.5            | 8            | 343300 / 838           | 2/2      |
+| `multi-layouts`          | 1/2         | 95.2            | 20           | 721371 / 1814          | 2/2      |
+
+每例限 180 秒 / 40 次工具调用，并发 2；仅开放观察、读取、操作、等待，支持 DOM 与截图，不开放 JS 执行、源码直接读取或判分接口。P50 包含 CLI 启动和模型调用，已启动的失败也计时。表中 token 为已知样本合计（输入含缓存），超时未返回用量视为未知，不能按 0 计费；CLI 不提供实际美元账单。
+
+失败分类：task_tab_lost × 6；goal_not_finished × 1。用量覆盖 12/12；会话清理 12/12。
+
+环境：Apple M4 / darwin arm64 / Chrome/153.0.8010.12 / Node v22.23.5 / codex-cli 0.166.0；记录时间 2026-11-16T15:32:39.365Z。
+
+这是 **6 类任务、每类 2 个种子的小样本适配子集**，原始任务限时统一延长至 180 秒，不是官方榜单成绩，也不能单独证明 aBridge 优于其他工具或覆盖 macOS App。固定策略的 30/30 仅作为执行链冒烟历史数据，与 Agent 分数分开。[方法与限制](docs/benchmarks/miniwob.md) · [逐次实测数据](docs/benchmarks/miniwob-agent-results.json)。
+
+```sh
+npm run benchmark:miniwob
+```
+
+<!-- benchmark:miniwob:end -->
 
 ## 授权与安全边界
 

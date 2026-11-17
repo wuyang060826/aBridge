@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/Farama-Foundation/miniwob-plusplus",
+  "commit": "33c3b4ddef8c6eb67c57a29663d844b1eda7e614",
+  "files": {
+    "miniwob/html/miniwob/click-test.html": "daa326de996985f6dc7d0a9d4d071d69685e809f05576d328f0764f1c66a8aa4",
+    "miniwob/html/miniwob/enter-text.html": "cea0bd69c5070d069552879007c935fe6d715a05642127fa465b87f7e4bcaf05",
+    "miniwob/html/miniwob/read-table.html": "f6367d296342c7302f2fe303f0111b1b10104cea6a201f2fe545462f2ee4dd84",
+    "miniwob/html/core/core.js": "db8f489ab947a3194b99e718bce5e59ea9aaf0a3c35410d8c9c79e56e6123d14",
+    "miniwob/html/core/core.css": "795f8e686125b71e89a21ffe9e03406c6498f1e135175ba63321f3051a720042",
+    "miniwob/html/core/d3.v3.min.js": "8ca4da6691fb142cd76283014e887e7c3e61e3b63eff9ebb08eeb5c51d56aafb",
+    "miniwob/html/common/ui_utils.js": "65301ee11f483df7e9114f3fac2e2938e8b56933fecbed36bce310e2d8d90368"
+  }
+}

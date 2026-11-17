@@ -1,0 +1,26 @@
+{
+  "suiteVersion": "miniwob-agent-v1",
+  "tasks": [
+    "form-sequence-3",
+    "email-inbox-forward-nl",
+    "book-flight",
+    "navigate-tree",
+    "click-menu-2",
+    "multi-layouts"
+  ],
+  "seeds": [0, 1],
+  "requestedModel": "gpt-6.1-sol",
+  "reasoningEffort": "medium",
+  "episodeLimitMs": 180000,
+  "maxToolCalls": 40,
+  "concurrency": 2,
+  "allowedTools": ["browser_observe", "browser_read", "browser_act", "browser_wait"],
+  "officialEpisodeLimitsMs": {
+    "form-sequence-3": 10000,
+    "email-inbox-forward-nl": 30000,
+    "book-flight": 30000,
+    "navigate-tree": 10000,
+    "click-menu-2": 10000,
+    "multi-layouts": 20000
+  }
+}

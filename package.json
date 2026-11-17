@@ -14,7 +14,7 @@
     "test": "node --import tsx tools/test.ts",
     "package": "node --import tsx tools/package-release.ts",
     "package:check": "node --import tsx tools/check-package.ts",
-    "check": "npm run format:check && npm run architecture:check && npm run typecheck && npm test && npm run package && npm run package:check",
+    "check": "npm run format:check && npm run architecture:check && npm run typecheck && npm test && npm run package && npm run package:check && npm run benchmark:report:check",
     "start": "node dist/server/cli.js",
     "desktop:build": "node --import tsx tools/build-native.ts",
     "desktop:install": "node --import tsx tools/install-desktop.ts",
@@ -24,7 +24,11 @@
     "package:macos": "node --import tsx tools/package-macos.ts",
     "test:browser:live": "node --import tsx tools/browser-live.ts",
     "test:desktop:update:live": "node --import tsx tools/updater-live.ts",
-    "test:desktop:update:startup": "node --import tsx tools/updater-startup-live.ts"
+    "test:desktop:update:startup": "node --import tsx tools/updater-startup-live.ts",
+    "benchmark:miniwob": "npm run build && node --import tsx tools/bench/agent-run.ts",
+    "benchmark:report": "node --import tsx tools/bench-report.ts",
+    "benchmark:report:check": "node --import tsx tools/bench-report.ts --check",
+    "benchmark:smoke": "npm run build && node --import tsx tools/bench/run.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
