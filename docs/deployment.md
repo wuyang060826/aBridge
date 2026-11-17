@@ -123,6 +123,8 @@ node --import tsx tools/build-native.ts \
 
 菜单与设置提供暂停/恢复、停止、能力开关、重连、环境检查和日志。恢复只能由本机操作者执行；重连不解除暂停。环境检查只刷新 Node、驱动与权限状态，不自动下载依赖或重置授权。运行文件缺失时，退出 App 后从完整源码目录重新安装。
 
+设置的“系统权限”提供当前运行 App 的可拖拽图标，以及“在 Finder 中显示”入口。先打开对应系统权限设置，将图标拖入支持添加应用的权限列表，或使用列表的添加按钮选择同一个 App，再由用户开启权限；拖拽本身不等于授权。权限状态仍以系统检测为准。[Apple 辅助功能说明](https://support.apple.com/guide/mac-help/allow-accessibility-apps-to-access-your-mac-mh43185/mac) · [Apple 屏幕录制说明](https://support.apple.com/guide/mac-help/control-access-screen-system-audio-recording-mchld6aa7d23/mac)
+
 可使用已安装运行时的 CLI 读取状态，或从构建目录诊断：
 
 ```sh

@@ -17,6 +17,20 @@ private final class StatusTextField: NSTextField {
     }
 }
 
+private final class ApplicationDragIcon: NSImageView, NSDraggingSource {
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseDragged(with event: NSEvent) {
+        let item = NSDraggingItem(pasteboardWriter: Bundle.main.bundleURL as NSURL)
+        item.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .copy
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate {
     private var item: NSStatusItem!
@@ -210,8 +224,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let menu = NSMenu()
         menu.delegate = self
         menu.autoenablesItems = false
-        let title = menu.addItem(withTitle: "aBridge", action: nil, keyEquivalent: "")
-        title.isEnabled = false
         menuStatus = menu.addItem(withTitle: "尚未连接", action: nil, keyEquivalent: "")
         menuStatus.isEnabled = false
         menuActivity = menu.addItem(withTitle: "当前没有执行中的操作", action: nil, keyEquivalent: "")
@@ -483,6 +495,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         permissionButtons["screen"] = addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: access)
         addDivider(to: access)
         permissionButtons["input"] = addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: access)
+        addDivider(to: access)
+        let appIcon = ApplicationDragIcon(frame: .zero)
+        appIcon.image = NSWorkspace.shared.icon(forFile: Bundle.main.bundleURL.path)
+        appIcon.imageScaling = .scaleProportionallyUpOrDown
+        appIcon.toolTip = Bundle.main.bundleURL.path
+        appIcon.setAccessibilityLabel("aBridge 应用，可拖入系统设置的权限列表")
+        NSLayoutConstraint.activate([
+            appIcon.widthAnchor.constraint(equalToConstant: 32),
+            appIcon.heightAnchor.constraint(equalToConstant: 32),
+        ])
+        let dragInstructions = verticalStack(spacing: 2)
+        dragInstructions.addArrangedSubview(textLabel("拖入系统设置的权限列表"))
+        let permissionHint = textLabel("再开启对应权限")
+        permissionHint.font = .systemFont(ofSize: 11)
+        permissionHint.textColor = .secondaryLabelColor
+        dragInstructions.addArrangedSubview(permissionHint)
+        let revealApp = actionButton("在 Finder 中显示", action: #selector(revealApplication))
+        revealApp.setContentHuggingPriority(.required, for: .horizontal)
+        let dragRow = NSStackView(views: [appIcon, dragInstructions, NSView(), revealApp])
+        dragRow.spacing = 10
+        dragRow.alignment = .centerY
+        addFullWidth(dragRow, to: access)
 
         let updates = addSettingsGroup("软件更新", to: root)
         updateLabel.stringValue = "当前版本 \(appVersion)"
@@ -1002,6 +1036,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         guard !CGPreflightScreenCaptureAccess() else { return }
         CGRequestScreenCaptureAccess()
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+    }
+
+    @objc private func revealApplication() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
     @objc private func requestInput() {
