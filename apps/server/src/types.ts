@@ -1,4 +1,10 @@
-import type { BrowserError, SessionInfo, SessionErrorDetails, SessionState } from "@abridge/protocol";
+import type {
+  OperationError,
+  OperationState,
+  SessionInfo,
+  SessionErrorDetails,
+  SessionState,
+} from "@abridge/protocol";
 import type { Capability, DeviceKind, DeviceMetadata, ConnectionPolicy } from "@abridge/protocol";
 
 export type JsonObject = Record<string, unknown>;
@@ -20,7 +26,7 @@ export interface Device extends DeviceMetadata {
   last_seen: number | null;
   kind: DeviceKind;
 }
-export interface Grant {
+export interface AgentConnection {
   id: string;
   owner_id: string;
   name: string;
@@ -31,22 +37,20 @@ export interface Grant {
   created_at: number;
   last_used: number | null;
 }
-export type { SessionState } from "@abridge/protocol";
+export type { OperationState, SessionState } from "@abridge/protocol";
 export interface ControlSession {
   id: string;
-  grant_id: string;
+  agent_connection_id: string;
   device_id: string;
   capabilities: Capability[];
   lease_until: number;
   status: SessionState;
   created_at: number;
 }
-export type OperationState =
-  "accepted" | "dispatched" | "executed" | "failed" | "refused" | "outcome_unknown" | "cancelled";
 export interface Operation {
   id: string;
   owner_id: string;
-  grant_id: string;
+  agent_connection_id: string;
   device_id: string;
   session_id: string;
   tool: string;
@@ -61,7 +65,7 @@ export interface OperationResponse extends JsonObject {
   operation_id: string;
   status: OperationState | "cancel_requested";
   result?: unknown;
-  error?: BrowserError;
+  error?: OperationError;
   session?: SessionInfo;
   output?: { stdout: string; stderr: string };
 }
@@ -71,7 +75,7 @@ export interface DeviceTransport {
   send(frame: JsonObject): Promise<void>;
   close(code: number, reason: string): Promise<void>;
 }
-export interface AttachedDevice {
+export interface DeviceConnection {
   deviceId: string;
   epoch: number;
   credentialVersion: number;

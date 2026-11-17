@@ -16,7 +16,7 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
   try {
     const url = await server.start();
     const user = await server.store.createUser("wait-fixture", "wait-fixture-password");
-    const grant = server.store.createGrant(user.id, "Wait fixture", {
+    const agentConnection = server.store.createAgentConnection(user.id, "Wait fixture", {
       mode: "all",
       capabilities: ["screen", "input", "browser"],
       overrides: [],
@@ -26,7 +26,7 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
       const response = await fetch(url + "/mcp", {
         method: "POST",
         headers: {
-          authorization: "Bearer " + grant.key,
+          authorization: "Bearer " + agentConnection.key,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },

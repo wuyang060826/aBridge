@@ -46,7 +46,7 @@ test(
     const url = await server.start();
     const user = await server.store.createUser("wire-fixture", "wire-fixture-password");
     const { device, key } = server.store.createDevice(user.id, "Synthetic Chrome", ["browser"], "browser");
-    const { key: agentKey } = server.store.createGrant(
+    const { key: agentKey } = server.store.createAgentConnection(
       user.id,
       "wire-agent",
       { mode: "selected", devices: [{ device_id: device.id, capabilities: ["browser"] }] },
@@ -199,7 +199,7 @@ test(
       assert.ok(operationFrameSchema.safeParse(frame).success, JSON.stringify(frame));
       assert.equal(frame.protocol, PROTOCOL_VERSION);
       assert.equal(frame.device_id, device.id);
-      assert.ok(Number(frame.grant_version) > 0);
+      assert.ok(Number(frame.device_credential_version) > 0);
     }
     assert.equal(
       worker.incoming.filter(

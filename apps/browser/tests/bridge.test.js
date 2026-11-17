@@ -339,6 +339,9 @@ test("denied redirect removes the tab while navigation wait retains a recoverabl
 });
 test("stop concurrent with debugger attach leaves no usable session or late observation", async () => {
   const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  f.chrome.debugger.onDetach.emit({ tabId: 2 });
+  f.calls.length = 0;
   let release;
   f.chrome.debugger.attach = async () =>
     new Promise((resolve) => {
@@ -348,7 +351,6 @@ test("stop concurrent with debugger attach leaves no usable session or late obse
   f.chrome.debugger.detach = async () => {
     detached++;
   };
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
   const observing = f.request("observe");
   await new Promise((resolve) => setTimeout(resolve, 0));
   await f.bridge.stop();
@@ -573,7 +575,7 @@ test("parameter errors preserve observation and are rejected before opening or d
   const invalid = await f.request("open", "s1", { url: "https://example.com/", observe_after: "yes" });
   assert.equal(invalid.error.code, "invalid_params");
   assert.equal(f.tabs.size, 1);
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const obs = (await f.request("observe")).result;
   const invalidAct = await f.request("act", "s1", {
     observation_id: obs.observation_id,
@@ -594,7 +596,7 @@ test("parameter errors preserve observation and are rejected before opening or d
 
 test("bounded observations preserve late query matches without sending the full page", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
     if (method === "Accessibility.getFullAXTree")
@@ -630,7 +632,7 @@ test("bounded observations preserve late query matches without sending the full 
 
 test("link metadata collection uses bounded concurrency instead of serial round trips", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   let active = 0,
     peak = 0;
@@ -722,7 +724,7 @@ test("post-action navigation wait reports loading without losing or repeating th
 
 test("bounded default output preserves the first ten profile cards before unrelated footer content", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   const cards = Array.from(
     { length: 10 },
@@ -975,7 +977,7 @@ test("late attach cleanup never detaches a replacement session that owns the sam
 
 test("protected field values never affect query matches, truncation or returned metadata", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
     if (method === "Accessibility.getFullAXTree")
@@ -1242,12 +1244,13 @@ test("same-origin frames evaluate in their default context and unsupported frame
   unsupported = true;
   const before = f.calls.length;
   for (const method of ["read", "wait", "evaluate", "locate_act"]) {
-    const result = await f.request(method, "s1", {
-      ...args,
-      selector: "#name",
-      expression: "6*7",
-      action: { type: "fill", text: "wrong document" },
-    });
+    const params = {
+      read: { ...args, selector: "#name" },
+      wait: { ...args, selector: "#name" },
+      evaluate: { ...args, expression: "6*7" },
+      locate_act: { ...args, selector: "#name", action: { type: "fill", text: "wrong document" } },
+    };
+    const result = await f.request(method, "s1", params[method]);
     assert.equal(result.error.code, "unsupported_frame");
   }
   assert.equal(f.calls.slice(before).filter((call) => call[0].startsWith("Input.")).length, 0);
@@ -1612,4 +1615,25 @@ test("cancelled open during tab creation removes the late tab and does not navig
   assert.deepEqual(f.removed, [2]);
   assert.equal(f.bridge.sessions.size, 0);
   assert.equal(f.calls.filter((entry) => entry[0] === "Accessibility.getFullAXTree").length, 0);
+});
+
+test("shared action validation rejects malformed input before CDP preparation and keeps the observation", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = opened.result.observation;
+  const before = f.calls.length;
+  for (const action of [
+    { type: "press", element_ref: "e1", key: "k".repeat(33) },
+    { type: "select", element_ref: "e1", values: Array.from({ length: 101 }, () => "x") },
+  ]) {
+    const response = await f.request("act", "s1", {
+      observation_id: observation.observation_id,
+      action,
+      observe_after: false,
+    });
+    assert.equal(response.status, "refused");
+    assert.equal(response.error.code, "invalid_action");
+  }
+  assert.equal(f.calls.length, before, "Rejected input must not scroll, focus or dispatch native input");
+  assert.equal(f.bridge.sessions.get("s1").observation.id, observation.observation_id);
 });

@@ -17,7 +17,7 @@ import {
   nowSeconds,
   type User,
   type Device,
-  type Grant,
+  type AgentConnection,
   type ControlSession,
   type Operation,
   type OperationState,
@@ -33,14 +33,14 @@ export const digest = (value: string): string => createHash("sha256").update(val
 const SCHEMA = [
   "CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,salt TEXT,password_hash TEXT,created_at REAL NOT NULL);",
   "CREATE TABLE external_identities(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(issuer,subject));",
-  "CREATE TABLE platform_grants(issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,grant_id TEXT NOT NULL REFERENCES client_grants(id),PRIMARY KEY(issuer,subject,client_id),FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject));",
+  "CREATE TABLE platform_connections(issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),PRIMARY KEY(issuer,subject,client_id),FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject));",
   "CREATE TABLE logins(digest TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at REAL NOT NULL);",
   "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')),platform TEXT,version TEXT);",
-  "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
-  "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,key_hash TEXT UNIQUE,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
-  "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,grant_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=4;",
+  "CREATE TABLE agent_connections(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
+  "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
+  "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,key_hash TEXT UNIQUE,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
+  "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,agent_connection_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
+  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=5;",
 ].join("\n");
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -55,13 +55,13 @@ export class Store {
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
     if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 4) {
+    else if (version !== 5) {
       this.db.close();
       throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
     }
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS active_session_device ON control_sessions(device_id) WHERE status='active'; " +
-        "CREATE INDEX IF NOT EXISTS active_session_grant ON control_sessions(grant_id) WHERE status='active';",
+        "CREATE INDEX IF NOT EXISTS active_session_agent_connection ON control_sessions(agent_connection_id) WHERE status='active';",
     );
   }
   close(): void {
@@ -172,58 +172,67 @@ export class Store {
         this.run("INSERT INTO external_identities VALUES(?,?,?)", issuer, subject, user.id);
       }
       if (!clientId) return user;
-      const linked = this.one<{ grant_id: string }>(
-        "SELECT grant_id FROM platform_grants WHERE issuer=? AND subject=? AND client_id=?",
+      const linked = this.one<{ agent_connection_id: string }>(
+        "SELECT agent_connection_id FROM platform_connections WHERE issuer=? AND subject=? AND client_id=?",
         issuer,
         subject,
         clientId,
       );
       if (!linked) {
-        const grantId = identifier("agt");
+        const agentConnectionId = identifier("agt");
         this.run(
-          "INSERT INTO client_grants VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
-          grantId,
+          "INSERT INTO agent_connections VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
+          agentConnectionId,
           user.id,
           (clientName ?? clientId) + " 平台连接",
           JSON.stringify({ mode: "all", capabilities: [...CAPABILITIES], overrides: [] }),
           nowSeconds(),
         );
-        this.run("INSERT INTO platform_grants VALUES(?,?,?,?)", issuer, subject, clientId, grantId);
+        this.run(
+          "INSERT INTO platform_connections VALUES(?,?,?,?)",
+          issuer,
+          subject,
+          clientId,
+          agentConnectionId,
+        );
       }
       return user;
     });
   }
   /** 仅解析已登录建立且尚有效的外部平台授权。 */
-  delegatedGrant(issuer: string, subject: string, clientId: string): Grant | undefined {
-    const row = this.one<{ grant_id: string }>(
-      "SELECT grant_id FROM platform_grants WHERE issuer=? AND subject=? AND client_id=?",
+  delegatedAgentConnection(issuer: string, subject: string, clientId: string): AgentConnection | undefined {
+    const row = this.one<{ agent_connection_id: string }>(
+      "SELECT agent_connection_id FROM platform_connections WHERE issuer=? AND subject=? AND client_id=?",
       issuer,
       subject,
       clientId,
     );
-    const grant = row ? this.grant(row.grant_id) : undefined;
+    const agentConnection = row ? this.agentConnection(row.agent_connection_id) : undefined;
     if (
-      !grant ||
-      grant.revoked_at !== null ||
-      (grant.expires_at !== null && grant.expires_at <= nowSeconds())
+      !agentConnection ||
+      agentConnection.revoked_at !== null ||
+      (agentConnection.expires_at !== null && agentConnection.expires_at <= nowSeconds())
     )
       return undefined;
-    this.run("UPDATE client_grants SET last_used=? WHERE id=?", nowSeconds(), grant.id);
-    return grant;
+    this.run("UPDATE agent_connections SET last_used=? WHERE id=?", nowSeconds(), agentConnection.id);
+    return agentConnection;
   }
   /** 只有当前平台授权的撤销记录允许显式重新建立连接。 */
-  canReconnectPlatformGrant(grant: Grant): boolean {
+  canReconnectPlatformAgentConnection(agentConnection: AgentConnection): boolean {
     return (
-      grant.token_digest === null &&
-      grant.revoked_at !== null &&
-      !!this.one("SELECT grant_id FROM platform_grants WHERE grant_id=?", grant.id)
+      agentConnection.token_digest === null &&
+      agentConnection.revoked_at !== null &&
+      !!this.one(
+        "SELECT agent_connection_id FROM platform_connections WHERE agent_connection_id=?",
+        agentConnection.id,
+      )
     );
   }
   /** 保留旧授权墓碑及会话，显式重新授权的新连接默认访问全部设备。 */
-  reconnectPlatformGrant(grant: Grant): Grant {
+  reconnectPlatformAgentConnection(agentConnection: AgentConnection): AgentConnection {
     return this.transaction(() => {
-      const current = this.grant(grant.id);
-      if (!current || !this.canReconnectPlatformGrant(current))
+      const current = this.agentConnection(agentConnection.id);
+      if (!current || !this.canReconnectPlatformAgentConnection(current))
         throw new BridgeError(
           "invalid_reconnect",
           "Only the current revoked platform connection can be reauthorized",
@@ -231,16 +240,20 @@ export class Store {
         );
       const id = identifier("agt");
       this.run(
-        "INSERT INTO client_grants VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
+        "INSERT INTO agent_connections VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
         id,
         current.owner_id,
         current.name,
         JSON.stringify({ mode: "all", capabilities: [...CAPABILITIES], overrides: [] }),
         nowSeconds(),
       );
-      this.run("UPDATE platform_grants SET grant_id=? WHERE grant_id=?", id, current.id);
-      this.audit(current.owner_id, null, id, null, "platform_grant_reconnect", "changed");
-      return this.grant(id)!;
+      this.run(
+        "UPDATE platform_connections SET agent_connection_id=? WHERE agent_connection_id=?",
+        id,
+        current.id,
+      );
+      this.audit(current.owner_id, null, id, null, "platform_connection_reconnect", "changed");
+      return this.agentConnection(id)!;
     });
   }
   account(token: string): User | undefined {
@@ -331,24 +344,24 @@ export class Store {
   touchDevice(id: string): void {
     this.run("UPDATE devices SET last_seen=? WHERE id=?", nowSeconds(), id);
   }
-  grants(owner: string): Grant[] {
-    return this.all("SELECT * FROM client_grants WHERE owner_id=? ORDER BY created_at DESC", owner);
+  agentConnections(owner: string): AgentConnection[] {
+    return this.all("SELECT * FROM agent_connections WHERE owner_id=? ORDER BY created_at DESC", owner);
   }
-  grant(id: string): Grant | undefined {
-    return this.one("SELECT * FROM client_grants WHERE id=?", id);
+  agentConnection(id: string): AgentConnection | undefined {
+    return this.one("SELECT * FROM agent_connections WHERE id=?", id);
   }
-  createGrant(
+  createAgentConnection(
     owner: string,
     name: string,
     policy: ConnectionPolicy,
     expiresAt: number | null = null,
-  ): { grant: Grant; key: string } {
+  ): { agentConnection: AgentConnection; key: string } {
     const validated = validatePolicy(owner, policy, (id) => this.device(id));
     const id = identifier("agt"),
       key = secretKey("agent");
     this.transaction(() => {
       this.run(
-        "INSERT INTO client_grants VALUES(?,?,?,?,?,?,NULL,?,NULL)",
+        "INSERT INTO agent_connections VALUES(?,?,?,?,?,?,NULL,?,NULL)",
         id,
         owner,
         name,
@@ -357,53 +370,61 @@ export class Store {
         digest(key),
         nowSeconds(),
       );
-      this.audit(owner, null, id, null, "client_grant_create", "changed");
+      this.audit(owner, null, id, null, "agent_connection_create", "changed");
     });
-    return { grant: this.grant(id)!, key };
+    return { agentConnection: this.agentConnection(id)!, key };
   }
-  updateGrant(id: string, name: string, policy: ConnectionPolicy, expiresAt: number | null): Grant {
-    const grant = this.grant(id);
-    if (!grant || grant.revoked_at !== null) throw new BridgeError("not_found", "Connection not found", 404);
-    const validated = validatePolicy(grant.owner_id, policy, (deviceId) => this.device(deviceId));
+  updateAgentConnection(
+    id: string,
+    name: string,
+    policy: ConnectionPolicy,
+    expiresAt: number | null,
+  ): AgentConnection {
+    const agentConnection = this.agentConnection(id);
+    if (!agentConnection || agentConnection.revoked_at !== null)
+      throw new BridgeError("not_found", "Connection not found", 404);
+    const validated = validatePolicy(agentConnection.owner_id, policy, (deviceId) => this.device(deviceId));
     this.transaction(() => {
       this.run(
-        "UPDATE client_grants SET name=?,policy=?,expires_at=? WHERE id=?",
+        "UPDATE agent_connections SET name=?,policy=?,expires_at=? WHERE id=?",
         name,
         JSON.stringify(validated),
         expiresAt,
         id,
       );
-      this.audit(grant.owner_id, null, id, null, "client_grant_update", "changed");
+      this.audit(agentConnection.owner_id, null, id, null, "agent_connection_update", "changed");
     });
-    return this.grant(id)!;
+    return this.agentConnection(id)!;
   }
-  rotateGrant(id: string): { grant: Grant; key: string } {
-    const grant = this.grant(id);
-    if (!grant || grant.revoked_at !== null) throw new BridgeError("not_found", "Connection not found", 404);
-    if (grant.token_digest === null)
+  rotateAgentConnection(id: string): { agentConnection: AgentConnection; key: string } {
+    const agentConnection = this.agentConnection(id);
+    if (!agentConnection || agentConnection.revoked_at !== null)
+      throw new BridgeError("not_found", "Connection not found", 404);
+    if (agentConnection.token_digest === null)
       throw new BridgeError("external_connection", "External platform connections do not have keys", 409);
     const key = secretKey("agent");
     this.transaction(() => {
-      this.run("UPDATE client_grants SET token_digest=? WHERE id=?", digest(key), id);
-      this.audit(grant.owner_id, null, id, null, "client_grant_rotate", "changed");
+      this.run("UPDATE agent_connections SET token_digest=? WHERE id=?", digest(key), id);
+      this.audit(agentConnection.owner_id, null, id, null, "agent_connection_rotate", "changed");
     });
-    return { grant: this.grant(id)!, key };
+    return { agentConnection: this.agentConnection(id)!, key };
   }
-  grantSessions(id: string): ControlSession[] {
-    return this.all("SELECT * FROM control_sessions WHERE grant_id=? AND status='active'", id);
+  agentConnectionSessions(id: string): ControlSession[] {
+    return this.all("SELECT * FROM control_sessions WHERE agent_connection_id=? AND status='active'", id);
   }
-  revokeGrant(id: string): void {
-    this.run("UPDATE client_grants SET revoked_at=? WHERE id=?", nowSeconds(), id);
+  revokeAgentConnection(id: string): void {
+    this.run("UPDATE agent_connections SET revoked_at=? WHERE id=?", nowSeconds(), id);
   }
-  authenticateAgent(key: string): Grant | undefined {
+  authenticateAgent(key: string): AgentConnection | undefined {
     if (!key.startsWith("abr_agent_")) return undefined;
-    const grant = this.one<Grant>(
-      "SELECT * FROM client_grants WHERE token_digest=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)",
+    const agentConnection = this.one<AgentConnection>(
+      "SELECT * FROM agent_connections WHERE token_digest=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)",
       digest(key),
       nowSeconds(),
     );
-    if (grant) this.run("UPDATE client_grants SET last_used=? WHERE id=?", nowSeconds(), grant.id);
-    return grant;
+    if (agentConnection)
+      this.run("UPDATE agent_connections SET last_used=? WHERE id=?", nowSeconds(), agentConnection.id);
+    return agentConnection;
   }
   session(id: string): ControlSession | undefined {
     return this.one("SELECT * FROM control_sessions WHERE id=?", id);
@@ -412,7 +433,7 @@ export class Store {
     return this.all("SELECT * FROM control_sessions WHERE device_id=? AND status='active'", deviceId);
   }
   createSession(
-    grant: Grant,
+    agentConnection: AgentConnection,
     deviceId: string,
     capabilities: Capability[],
     leaseUntil: number,
@@ -424,13 +445,13 @@ export class Store {
       this.run(
         "INSERT INTO control_sessions VALUES(?,?,?,?,?,'active',?)",
         id,
-        grant.id,
+        agentConnection.id,
         deviceId,
         JSON.stringify(capabilities),
         leaseUntil,
         nowSeconds(),
       );
-      this.audit(grant.owner_id, deviceId, grant.id, null, "session_open", "active");
+      this.audit(agentConnection.owner_id, deviceId, agentConnection.id, null, "session_open", "active");
     });
     return this.session(id)!;
   }
@@ -439,8 +460,16 @@ export class Store {
     if (!session || session.status !== "active") return;
     this.transaction(() => {
       this.run("UPDATE control_sessions SET status=? WHERE id=?", status, id);
-      const grant = this.grant(session.grant_id);
-      if (grant) this.audit(grant.owner_id, session.device_id, grant.id, null, "session_close", status);
+      const agentConnection = this.agentConnection(session.agent_connection_id);
+      if (agentConnection)
+        this.audit(
+          agentConnection.owner_id,
+          session.device_id,
+          agentConnection.id,
+          null,
+          "session_close",
+          status,
+        );
     });
   }
   renewSession(id: string, leaseUntil: number): void {
@@ -454,7 +483,7 @@ export class Store {
   }
   operations(
     owner: string,
-    filters: { device_id?: string; grant_id?: string; tool?: string; offset?: number } = {},
+    filters: { device_id?: string; agent_connection_id?: string; tool?: string; offset?: number } = {},
   ): Operation[] {
     const { where, values } = this.operationFilters(owner, filters);
     return this.all(
@@ -463,7 +492,10 @@ export class Store {
       filters.offset ?? 0,
     );
   }
-  operationCount(owner: string, filters: { device_id?: string; grant_id?: string; tool?: string }): number {
+  operationCount(
+    owner: string,
+    filters: { device_id?: string; agent_connection_id?: string; tool?: string },
+  ): number {
     const { where, values } = this.operationFilters(owner, filters);
     return this.one<{ count: number }>(`SELECT count(*) AS count FROM operations WHERE ${where}`, ...values)!
       .count;
@@ -475,10 +507,13 @@ export class Store {
       ...values,
     ).map((row) => row.tool);
   }
-  private operationFilters(owner: string, filters: { device_id?: string; grant_id?: string; tool?: string }) {
+  private operationFilters(
+    owner: string,
+    filters: { device_id?: string; agent_connection_id?: string; tool?: string },
+  ) {
     const clauses = ["owner_id=?"];
     const values: SQLInputValue[] = [owner];
-    for (const column of ["device_id", "grant_id", "tool"] as const) {
+    for (const column of ["device_id", "agent_connection_id", "tool"] as const) {
       if (filters[column] !== undefined) {
         clauses.push(`${column}=?`);
         values.push(filters[column]!);
@@ -493,7 +528,7 @@ export class Store {
         "INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,'dispatched',?,?,NULL)",
         o.id,
         o.owner_id,
-        o.grant_id,
+        o.agent_connection_id,
         o.device_id,
         o.session_id,
         o.tool,
@@ -502,7 +537,7 @@ export class Store {
         o.epoch,
         nowSeconds(),
       );
-      this.audit(o.owner_id, o.device_id, o.grant_id, o.id, o.tool, "dispatched");
+      this.audit(o.owner_id, o.device_id, o.agent_connection_id, o.id, o.tool, "dispatched");
     });
   }
   finishOperation(id: string, status: OperationState): void {
@@ -510,13 +545,20 @@ export class Store {
     if (!operation) return;
     this.transaction(() => {
       this.run("UPDATE operations SET status=?,finished_at=? WHERE id=?", status, nowSeconds(), id);
-      this.audit(operation.owner_id, operation.device_id, operation.grant_id, id, operation.tool, status);
+      this.audit(
+        operation.owner_id,
+        operation.device_id,
+        operation.agent_connection_id,
+        id,
+        operation.tool,
+        status,
+      );
     });
   }
   audit(
     owner: string,
     device: string | null,
-    grant: string | null,
+    agentConnection: string | null,
     operation: string | null,
     action: string,
     outcome: string,
@@ -526,7 +568,7 @@ export class Store {
       identifier("evt"),
       owner,
       device,
-      grant,
+      agentConnection,
       operation,
       action,
       outcome,

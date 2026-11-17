@@ -1,12 +1,12 @@
 /// <reference types="chrome" />
 import { z } from "zod";
-import { deviceRenameSchema, type BrowserError, type BrowserStepFailure } from "@abridge/protocol";
+import { deviceRenameSchema, type OperationError, type BrowserStepFailure } from "@abridge/protocol";
 /** Values cross the extension's storage, UI message, and CDP boundaries. */
 export interface BridgeError extends Error {
   code?: string;
   status?: BrowserStepFailure["status"];
-  cleanup_error?: BrowserError["cleanup_error"];
-  recovery?: BrowserError["recovery"];
+  cleanup_error?: OperationError["cleanup_error"];
+  recovery?: OperationError["recovery"];
 }
 export function errorDetails(value: unknown): BridgeError {
   if (value instanceof Error) return value;

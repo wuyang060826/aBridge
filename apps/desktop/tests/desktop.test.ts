@@ -396,7 +396,7 @@ test("real WS client executes one effect, deduplicates and obeys local pause", a
       operation_id: "op_fixture",
       session_id: "sess_fixture",
       session_capabilities: ["files"],
-      grant_version: 1,
+      device_credential_version: 1,
       sequence: 1,
       expires_at: Date.now() / 1000 + 30,
       tool: "file_write",
@@ -600,7 +600,7 @@ test("dispatch rechecks its start deadline after asynchronous native diagnostics
       device_id: "fixture",
       connection_epoch: 1,
       sequence: 1,
-      grant_version: 1,
+      device_credential_version: 1,
       session_capabilities: ["files"],
       operation_id: "expired",
       session_id: "fixture",
@@ -613,6 +613,44 @@ test("dispatch rechecks its start deadline after asynchronous native diagnostics
     await assert.rejects(readFile(join(dir, "forbidden")), { code: "ENOENT" });
   } finally {
     journal.close();
+    await executor.shutdown();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("shared desktop contracts refuse malformed inputs before file or native effects", async () => {
+  const dir = await directory();
+  const native = new Native();
+  const executor = new LocalExecutor(native);
+  try {
+    const path = join(dir, "protected.txt");
+    await writeFile(path, "original");
+    for (const content of ["\ud800", "x".repeat(1048577)]) {
+      await assert.rejects(
+        executor.execute("invalid-write", "file_write", { path, content, overwrite: true }),
+        {
+          code: "invalid_arguments",
+          outcome: "refused",
+        },
+      );
+      assert.equal(await readFile(path, "utf8"), "original");
+    }
+    const observed = await executor.computer.observe("contract", { pid: 10, window_id: 20 });
+    await assert.rejects(
+      executor.execute(
+        "invalid-input",
+        "computer_act",
+        {
+          observation_id: observed.observation_id,
+          action: { type: "type", text: "before\0after" },
+          observe_after: false,
+        },
+        "contract",
+      ),
+      { code: "invalid_arguments", outcome: "refused" },
+    );
+    assert.equal(native.actions.length, 0);
+  } finally {
     await executor.shutdown();
     await rm(dir, { recursive: true, force: true });
   }

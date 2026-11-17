@@ -5,14 +5,19 @@ import {
   MAX_IMAGE_BYTES,
   OPERATION_JOURNAL_LIMIT,
   BROWSER_MAX_ELEMENTS,
-  BROWSER_MAX_TEXT,
-  actWaitAfterSchema,
-  browserQuerySchema,
-  browserErrorSchema,
+  browserActSchema,
+  browserObserveSchema,
+  browserReadSchema,
+  browserWaitSchema,
+  browserEvaluateSchema,
+  browserLocateActSchema,
+  browserOpenSchema,
+  operationErrorSchema,
   referenceId,
-  type BrowserError,
+  type OperationError,
   type BrowserStepFailure,
 } from "@abridge/protocol";
+import { z } from "zod";
 import { fail, errorDetails } from "./types.js";
 interface AXValue {
   sources?: { attribute?: string; superseded?: boolean; value?: { value?: unknown } }[];
@@ -105,7 +110,7 @@ interface Result {
   [key: string]: unknown;
   observation_id?: string;
   navigation_state?: string;
-  observation_error?: BrowserError;
+  observation_error?: OperationError;
   observation?: Result;
   elements?: ElementResult[];
 }
@@ -121,11 +126,10 @@ export interface DispatchResponse {
   id?: string;
   status: "executed" | BrowserStepFailure["status"];
   result?: Result;
-  error?: BrowserError;
+  error?: OperationError;
 }
 
 const MAX_ELEMENTS = BROWSER_MAX_ELEMENTS,
-  MAX_TEXT = BROWSER_MAX_TEXT,
   MAX_PAGE_SCAN = 120000,
   MAX_SCREENSHOT = MAX_IMAGE_BYTES;
 const OBSERVATION_BUDGET = 7000,
@@ -174,17 +178,16 @@ async function readBudget<T>(operation: () => Promise<T>, deadline?: number): Pr
     clearTimeout(timer);
   }
 }
-function options(params: BridgeParams, compound = false) {
-  if (!params || typeof params !== "object" || Array.isArray(params))
-    throw fail("invalid_params", "参数必须是对象");
-  if (params.screenshot !== undefined && typeof params.screenshot !== "boolean")
-    throw fail("invalid_params", "screenshot 必须是布尔值");
-  if (params.query !== undefined && !browserQuerySchema.safeParse(params.query).success)
-    throw fail("invalid_params", "query 需要非空文本（最多200字符）或1–20个文本项（共最多2000字符）");
-  if (compound && params.observe_after !== undefined && typeof params.observe_after !== "boolean")
-    throw fail("invalid_params", "observe_after 必须是布尔值");
-  if (compound && params.observe_after === false && params.screenshot === true)
-    throw fail("invalid_params", "screenshot 需要 observe_after=true");
+function parseArguments<S extends z.ZodType>(schema: S, value: unknown): z.output<S> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw fail(
+      issue?.path[0] === "action" ? "invalid_action" : "invalid_params",
+      issue?.message ?? "参数无效",
+    );
+  }
+  return parsed.data;
 }
 function excerpt(text: string, terms: string[]) {
   if (!terms.length)
@@ -566,8 +569,8 @@ export class BrowserBridge {
               : "failed"),
         error: {
           ...diagnostic(error),
-          ...(browserErrorSchema.shape.cause.safeParse(error.cause).success && error.cause
-            ? { cause: browserErrorSchema.shape.cause.parse(error.cause) }
+          ...(operationErrorSchema.shape.cause.safeParse(error.cause).success && error.cause
+            ? { cause: operationErrorSchema.shape.cause.parse(error.cause) }
             : {}),
           ...(error.cleanup_error ? { cleanup_error: error.cleanup_error } : {}),
           ...(error.recovery ? { recovery: error.recovery } : {}),
@@ -575,8 +578,8 @@ export class BrowserBridge {
       };
     }
   }
-  async open(id: string, params: BridgeParams, isCancelled: () => boolean = () => false): Promise<Result> {
-    options(params, true);
+  async open(id: string, input: BridgeParams, isCancelled: () => boolean = () => false): Promise<Result> {
+    const params = parseArguments(browserOpenSchema, input);
     const url = webURL(params.url),
       generation = this.generation;
     let session = this.sessions.get(id);
@@ -757,11 +760,11 @@ export class BrowserBridge {
   }
   async observe(
     session: Session,
-    params: BridgeParams,
+    input: BridgeParams,
     deadline = performance.now() + this.navigationTimeout,
   ): Promise<Result> {
-    options(params);
-    const query = params.query === undefined ? undefined : browserQuerySchema.parse(params.query);
+    const params = parseArguments(browserObserveSchema, input);
+    const query = params.query;
     const terms = [
       ...new Set(
         (query === undefined ? [] : typeof query === "string" ? [query] : query).map((term) =>
@@ -974,9 +977,8 @@ export class BrowserBridge {
     };
     return result;
   }
-  async locateAct(session: Session, params: BridgeParams): Promise<Result> {
-    if (typeof params.selector !== "string" || !params.selector || params.selector.length > 2000)
-      throw fail("invalid_params", "需要 CSS selector");
+  async locateAct(session: Session, input: BridgeParams): Promise<Result> {
+    const params = parseArguments(browserLocateActSchema, input);
     const tab = await this.valid(session);
     await this.attach(session);
     let backendNodeId: number | undefined;
@@ -1021,9 +1023,8 @@ export class BrowserBridge {
       url: tab.url!,
     };
     return this.act(session, {
-      ...params,
       observation_id: id,
-      action: { ...(params.action as Record<string, unknown>), element_ref: "target" },
+      action: { ...params.action, element_ref: "target" },
       observe_after: false,
       wait_after_ms: 0,
     });
@@ -1101,7 +1102,7 @@ export class BrowserBridge {
   }
   async uncertainFailure(session: Session, caught: unknown, definite = false) {
     const cause = diagnostic(errorDetails(caught));
-    let cleanupError: BrowserError["cleanup_error"];
+    let cleanupError: OperationError["cleanup_error"];
     try {
       await this.close(session.id, session);
     } catch (error) {
@@ -1117,12 +1118,9 @@ export class BrowserBridge {
       },
     });
   }
-  async evaluate(session: Session, params: BridgeParams): Promise<Result> {
-    if (typeof params.expression !== "string" || !params.expression || params.expression.length > 65536)
-      throw fail("invalid_params", "expression 过长或无效");
-    const timeout = typeof params.timeout_ms === "number" ? params.timeout_ms : 10000;
-    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 20000)
-      throw fail("invalid_params", "timeout_ms 无效");
+  async evaluate(session: Session, input: BridgeParams): Promise<Result> {
+    const params = parseArguments(browserEvaluateSchema, input);
+    const timeout = params.timeout_ms;
     session.observation = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let submitted = false,
@@ -1150,24 +1148,9 @@ export class BrowserBridge {
       clearTimeout(timer);
     }
   }
-  async read(session: Session, params: BridgeParams): Promise<Result> {
-    const mode = params.mode === undefined ? "text" : params.mode;
-    if (mode !== "text" && mode !== "tables") throw fail("invalid_params", "mode 必须为 text/tables");
-    const offset = params.offset === undefined ? 0 : params.offset;
-    const limit = params.limit === undefined ? (mode === "text" ? 12000 : 100) : params.limit;
-    if (
-      !Number.isInteger(offset) ||
-      (offset as number) < 0 ||
-      !Number.isInteger(limit) ||
-      (limit as number) < 1 ||
-      (limit as number) > 24000
-    )
-      throw fail("invalid_params", "分页参数无效");
-    if (
-      params.selector !== undefined &&
-      (typeof params.selector !== "string" || params.selector.length > 2000)
-    )
-      throw fail("invalid_params", "selector 无效");
+  async read(session: Session, input: BridgeParams): Promise<Result> {
+    const params = parseArguments(browserReadSchema, input);
+    const { mode, offset, limit } = params;
     const initial = await this.valid(session);
     if (params.snapshot_id !== undefined) {
       if (!session.snapshot || session.snapshot.id !== params.snapshot_id || session.snapshot.format !== mode)
@@ -1219,11 +1202,8 @@ export class BrowserBridge {
       };
     }
     const snapshot = session.snapshot!;
-    const start = offset as number;
-    let end = Math.min(
-      snapshot.value.length,
-      start + Math.min(limit as number, mode === "text" ? 24000 : 200),
-    );
+    const start = offset;
+    let end = Math.min(snapshot.value.length, start + Math.min(limit, mode === "text" ? 24000 : 200));
     let page = snapshot.value.slice(start, end);
     while (JSON.stringify(page).length > 24000 && end > start + 1) {
       end--;
@@ -1244,22 +1224,10 @@ export class BrowserBridge {
       cached: params.snapshot_id !== undefined,
     };
   }
-  async wait(session: Session, params: BridgeParams): Promise<Result> {
-    const state = typeof params.state === "string" ? params.state : "visible";
-    const timeout = typeof params.timeout_ms === "number" ? params.timeout_ms : 10000;
-    if (
-      !["visible", "hidden", "attached", "detached", "value"].includes(state) ||
-      !Number.isInteger(timeout) ||
-      timeout < 0 ||
-      timeout > 20000 ||
-      (params.selector === undefined && params.text === undefined)
-    )
-      throw fail("invalid_params", "等待条件无效");
-    if (
-      (params.selector !== undefined && typeof params.selector !== "string") ||
-      (params.text !== undefined && typeof params.text !== "string")
-    )
-      throw fail("invalid_params", "等待目标无效");
+  async wait(session: Session, input: BridgeParams): Promise<Result> {
+    const params = parseArguments(browserWaitSchema, input);
+    const state = params.state;
+    const timeout = params.timeout_ms;
     const deadline = performance.now() + timeout;
     const expression = `(${checkCondition.toString()})(${JSON.stringify(params.selector)},${JSON.stringify(params.text)},${JSON.stringify(state)},${JSON.stringify(params.value)})`;
     do {
@@ -1283,23 +1251,10 @@ export class BrowserBridge {
     } while (performance.now() < deadline);
     throw fail("wait_timeout", "等待条件未在期限内满足");
   }
-  async act(session: Session, params: BridgeParams): Promise<Result> {
-    options(params, true);
-    const parsedWait = actWaitAfterSchema.safeParse(params.wait_after_ms);
-    if (!parsedWait.success) throw fail("invalid_params", "wait_after_ms 必须是 0–10000 的整数毫秒");
+  async act(session: Session, input: BridgeParams): Promise<Result> {
+    const params = parseArguments(browserActSchema, input);
     const observation = session.observation;
-    const action = params.action as
-      | {
-          type?: string;
-          hold_ms?: number;
-          element_ref?: string;
-          text?: unknown;
-          key?: string;
-          values?: string[];
-          delta_x?: number;
-          delta_y?: number;
-        }
-      | undefined;
+    const action = params.action;
     if (
       !observation ||
       observation.id !== params.observation_id ||
@@ -1307,36 +1262,8 @@ export class BrowserBridge {
       observation.revision !== session.revision
     )
       throw fail("stale_observation", "观察已失效，请重新观察");
-    if (
-      !action ||
-      !["click", "fill", "press", "select", "scroll", "hover"].includes(action.type || "") ||
-      !observation.refs.has(action.element_ref || "")
-    )
+    if (!observation.refs.has(action.element_ref))
       throw fail("invalid_action", "需要当前观察中的精确元素和支持的动作");
-    if (
-      action.type === "click" &&
-      action.hold_ms !== undefined &&
-      (!Number.isInteger(action.hold_ms) || action.hold_ms < 0 || action.hold_ms > 10000)
-    )
-      throw fail("invalid_action", "hold_ms 必须是 0–10000 的整数毫秒");
-    if (action.type === "fill" && (typeof action.text !== "string" || action.text.length > MAX_TEXT))
-      throw fail("invalid_action", "填充文本无效或过长");
-    if (action.type === "press" && (typeof action.key !== "string" || !action.key || action.key.length > 32))
-      throw fail("invalid_action", "key 无效");
-    if (
-      action.type === "select" &&
-      (!Array.isArray(action.values) ||
-        !action.values.length ||
-        !action.values.every((value) => typeof value === "string"))
-    )
-      throw fail("invalid_action", "values 无效");
-    if (
-      action.type === "scroll" &&
-      ![action.delta_x ?? 0, action.delta_y ?? 0].every(
-        (value) => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 10000,
-      )
-    )
-      throw fail("invalid_action", "滚动距离无效");
     const tab = await this.valid(session);
     if (tab.url !== observation.url || tab.status === "loading" || tab.pendingUrl)
       throw fail("stale_observation", "页面已变化，请重新观察");
@@ -1540,7 +1467,7 @@ export class BrowserBridge {
         },
         true,
         performance.now() + this.navigationTimeout,
-        parsedWait.data,
+        params.wait_after_ms,
       );
     } finally {
       try {

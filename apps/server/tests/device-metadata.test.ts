@@ -21,7 +21,7 @@ async function fixture(kind: DeviceKind = "computer") {
   const owner = await store.createUser("metadata-fixture", "synthetic-metadata-password");
   const capabilities: Capability[] = kind === "browser" ? ["browser"] : ["shell"];
   const { device, key } = store.createDevice(owner.id, "Fixture", capabilities, kind);
-  const { grant } = store.createGrant(owner.id, "Fixture agent", {
+  const { agentConnection } = store.createAgentConnection(owner.id, "Fixture agent", {
     mode: "selected",
     devices: [{ device_id: device.id, capabilities }],
   });
@@ -35,11 +35,11 @@ async function fixture(kind: DeviceKind = "computer") {
     },
     device,
     key,
-    grant,
+    agentConnection,
     hello,
     kind,
     view() {
-      return control.deviceView(store.device(device.id)!, grant);
+      return control.deviceView(store.device(device.id)!, agentConnection);
     },
     attach(metadata: JsonObject, connection = transport) {
       return control.attachConnection(key, kind, { ...hello, ...metadata }, connection);

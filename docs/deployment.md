@@ -184,7 +184,7 @@ ABRIDGE_ALLOW_INSECURE_HTTP=true
 
 `public-origin` 会自动允许该地址的 Host 和同源请求，无需再对它重复设置 `allowed-hosts`。提供方须登记同一地址的 `/api/auth/oidc/callback`；提供方的浏览器登录入口也必须能被用户访问。HTTP 下 Cookie 不带 `Secure`，会话、凭据和业务数据未经传输加密；保持 `HttpOnly`、`SameSite` 及其他身份校验。此开关只能由部署管理员配置，登录页无法在启动校验之前切换它。
 
-首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，默认覆盖该账户的全部设备（含新设备）和设备支持的能力，仍与设备授权、本机开关及就绪状态取交集；用户可编辑连接缩小范围。可选 `ABRIDGE_OIDC_CLIENT_NAME` 设置平台显示名称，未配置时使用 client ID。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。当前已撤销的平台连接直接显示在 Agent 连接列表，用户可显式点击“重新授权”（`POST /api/client-grants/:id/reconnect`），确认允许访问全部设备（含新设备）后创建新的平台连接。已有连接的自定义策略不因升级或再次登录改变。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
+首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，默认覆盖该账户的全部设备（含新设备）和设备支持的能力，仍与设备授权、本机开关及就绪状态取交集；用户可编辑连接缩小范围。可选 `ABRIDGE_OIDC_CLIENT_NAME` 设置平台显示名称，未配置时使用 client ID。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。当前已撤销的平台连接直接显示在 Agent 连接列表，用户可显式点击“重新授权”（`POST /api/agent-connections/:id/reconnect`），确认允许访问全部设备（含新设备）后创建新的平台连接。已有连接的自定义策略不因升级或再次登录改变。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
 
 显式启用委托时，`POST /mcp` 接受同一 issuer 签发的 RS256 JWT：`sub` 为登录时的稳定主体、`aud` 精确为 `${ABRIDGE_PUBLIC_ORIGIN}/mcp`、`client_id` 为配置的 OIDC client ID、`purpose` 为 `abridge-delegation`，必须包含 `iat`、`exp`，最长 60 秒。公钥来自提供方 discovery 的 JWKS，浏览器 ID Token 不具备这些访问声明，不可用于 MCP。委托只解析已经登录建立的身份；不能通过 MCP 自动开户。个人设备列表通过 MCP `devices_list` 读取，无需为 HTTP 管理 API增加 Bearer 登录方式。
 

@@ -3,20 +3,18 @@ import { useState } from "preact/hooks";
 import {
   CAPABILITIES,
   connectionPolicySchema,
+  agentConnectionInputSchema,
+  type AgentConnectionInput,
   deviceCapabilities,
   type Capability,
   type ConnectionPolicy,
+  type AgentConnectionView,
 } from "@abridge/protocol";
-import type { Device, Grant } from "../../lib/api.js";
+import type { Device } from "../../lib/types.js";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
 import { Field, Form, Modal, Select } from "../../components/forms.js";
 
 type DeviceChoices = Record<string, Capability[]>;
-export interface ConnectionInput {
-  name: FormDataEntryValue | null;
-  policy: ConnectionPolicy;
-  expires_at: number | null;
-}
 function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -25,9 +23,10 @@ export function connectionExpiry(enabled: boolean, date: string, original?: numb
   if (original != null && date === localDate(new Date(original * 1000))) return original;
   return new Date(`${date}T23:59:59`).getTime() / 1000;
 }
-function initialChoices(grant?: Grant): DeviceChoices {
-  if (!grant) return {};
-  const entries = grant.policy.mode === "selected" ? grant.policy.devices : grant.policy.overrides;
+function initialChoices(connection?: AgentConnectionView): DeviceChoices {
+  if (!connection) return {};
+  const entries =
+    connection.policy.mode === "selected" ? connection.policy.devices : connection.policy.overrides;
   return Object.fromEntries(entries.map((entry) => [entry.device_id, [...entry.capabilities]]));
 }
 function CapabilityChecks({
@@ -67,33 +66,35 @@ function CapabilityChecks({
 }
 
 export function ConnectionEditor({
-  grant,
+  connection,
   devices,
   close,
   submit,
   inline = false,
 }: {
-  grant?: Grant;
+  connection?: AgentConnectionView;
   inline?: boolean;
   devices: Device[];
   close: () => void;
-  submit: (input: ConnectionInput) => Promise<void>;
+  submit: (input: AgentConnectionInput) => Promise<void>;
 }) {
-  const [mode, setMode] = useState<ConnectionPolicy["mode"]>(grant?.policy.mode ?? "selected");
+  const [mode, setMode] = useState<ConnectionPolicy["mode"]>(connection?.policy.mode ?? "selected");
   const [selectedChoices, setSelectedChoices] = useState<DeviceChoices>(() =>
-    grant?.policy.mode === "selected" ? initialChoices(grant) : {},
+    connection?.policy.mode === "selected" ? initialChoices(connection) : {},
   );
   const [overrides, setOverrides] = useState<DeviceChoices>(() =>
-    grant?.policy.mode === "all" ? initialChoices(grant) : {},
+    connection?.policy.mode === "all" ? initialChoices(connection) : {},
   );
   const choices = mode === "selected" ? selectedChoices : overrides;
   const setChoices = mode === "selected" ? setSelectedChoices : setOverrides;
   const [defaults, setDefaults] = useState<Capability[]>(() =>
-    grant?.policy.mode === "all" ? [...grant.policy.capabilities] : [...CAPABILITIES],
+    connection?.policy.mode === "all" ? [...connection.policy.capabilities] : [...CAPABILITIES],
   );
-  const [expires, setExpires] = useState(grant?.expires_at != null);
+  const [expires, setExpires] = useState(connection?.expires_at != null);
   const [expiry, setExpiry] = useState(() =>
-    localDate(new Date(grant?.expires_at != null ? grant.expires_at * 1000 : Date.now() + 30 * 86400000)),
+    localDate(
+      new Date(connection?.expires_at != null ? connection.expires_at * 1000 : Date.now() + 30 * 86400000),
+    ),
   );
   const available = devices.filter((device) => device.status !== "revoked");
   const updateChoice = (id: string, capabilities?: Capability[]) => {
@@ -110,13 +111,13 @@ export function ConnectionEditor({
   const form = (
     <Form
       cancel={close}
-      label={grant ? "保存连接" : "创建连接"}
+      label={connection ? "保存连接" : "创建连接"}
       onSubmit={async (form) => {
         const permitted = new Set(available.map((device) => device.id));
         const entries = Object.entries(choices)
           .filter(([deviceId]) => permitted.has(deviceId))
           .map(([device_id, capabilities]) => ({ device_id, capabilities }));
-        if (mode === "selected" && !entries.length && !grant)
+        if (mode === "selected" && !entries.length && !connection)
           throw new Error("请选择至少一台设备，或选择全部设备范围");
         if (mode === "selected" && entries.some((entry) => entry.capabilities.length === 0))
           throw new Error("请为所选设备选择至少一项能力");
@@ -126,14 +127,16 @@ export function ConnectionEditor({
             ? { mode, devices: entries }
             : { mode, capabilities: defaults, overrides: entries },
         );
-        const expiresAt = connectionExpiry(expires, expiry, grant?.expires_at);
+        const expiresAt = connectionExpiry(expires, expiry, connection?.expires_at);
         if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now() / 1000))
           throw new Error("请选择将来的到期日期");
-        await submit({ name: form.get("name"), policy, expires_at: expiresAt });
+        await submit(
+          agentConnectionInputSchema.parse({ name: form.get("name"), policy, expires_at: expiresAt }),
+        );
       }}
     >
       <section class="editor-section">
-        <Field name="name" label="连接名称" value={grant?.name} />
+        <Field name="name" label="连接名称" value={connection?.name} />
       </section>
       <section class="editor-section">
         <h2>设备权限</h2>
@@ -285,7 +288,7 @@ export function ConnectionEditor({
   return inline ? (
     <div class="connection-editor">{form}</div>
   ) : (
-    <Modal title={grant ? "编辑连接" : "创建连接"} close={close} className="connection-dialog">
+    <Modal title={connection ? "编辑连接" : "创建连接"} close={close} className="connection-dialog">
       {form}
     </Modal>
   );

@@ -9,7 +9,7 @@ import { ManagementModal, type ManagementDialog } from "./dialogs.js";
 import { ActivityPage } from "../features/activity/page.js";
 import { DevicePage } from "../features/devices/detail.js";
 import { DevicesPage } from "../features/devices/list.js";
-import { GrantsPage } from "../features/connections/list.js";
+import { ConnectionsPage } from "../features/connections/list.js";
 import { type Mutate, type RunAction } from "../lib/types.js";
 import { useUserSession } from "../features/auth/session.js";
 import { DeviceAuthorization } from "../features/devices/authorization.js";
@@ -24,14 +24,14 @@ import { ConnectionCreatePage, ConnectionPage } from "../features/connections/pa
 const tabs: readonly [Tab, string][] = [
   ["overview", "概览"],
   ["devices", "设备"],
-  ["grants", "Agent 连接"],
+  ["connections", "Agent 连接"],
   ["activity", "操作记录"],
 ];
 function NavIcon({ name }: { name: Tab }) {
   const icons = {
     overview: LayoutDashboard,
     devices: Monitor,
-    grants: Link2,
+    connections: Link2,
     activity: ListFilter,
     admin: ShieldCheck,
   };
@@ -104,8 +104,8 @@ function ManagementApp() {
   const run: RunAction = (action) => {
     void action().catch((error) => notify(error instanceof Error ? error.message : "操作失败"));
   };
-  const createGrant = () => {
-    location.hash = "grants/new";
+  const createConnection = () => {
+    location.hash = "connections/new";
   };
   if ((!userReady && !adminReady) || admin.phase === "loading")
     return (
@@ -205,7 +205,7 @@ function ManagementApp() {
                 mutate={mutate}
                 run={run}
               />
-            ) : visibleTab === "grants" && route.id === "new" ? (
+            ) : visibleTab === "connections" && route.id === "new" ? (
               <ConnectionCreatePage
                 key={identityRevision}
                 devices={data.devices}
@@ -213,37 +213,47 @@ function ManagementApp() {
                 run={run}
                 notify={notify}
               />
-            ) : visibleTab === "grants" && route.id ? (
+            ) : visibleTab === "connections" && route.id ? (
               <ConnectionPage
                 key={route.id}
-                grant={data.grants.find((grant) => grant.id === route.id)}
+                connection={data.connections.find((connection) => connection.id === route.id)}
                 section={route.section}
                 run={run}
                 activity={
-                  <ActivityPage key={route.id} data={data} grantId={route.id} refresh={refresh} run={run} />
+                  <ActivityPage
+                    key={route.id}
+                    data={data}
+                    agentConnectionId={route.id}
+                    refresh={refresh}
+                    run={run}
+                  />
                 }
-                edit={(grant) => setDialog({ kind: "edit-grant", grant })}
-                rotate={(grant) => setDialog({ kind: "rotate-grant", grant })}
-                reconnect={(grant) =>
+                edit={(connection) => setDialog({ kind: "edit-connection", connection })}
+                rotate={(connection) => setDialog({ kind: "rotate-connection", connection })}
+                reconnect={(connection) =>
                   setDialog({
                     kind: "confirm",
                     title: "重新授权",
-                    description: `允许「${grant.name}」访问全部设备，包括以后添加的设备。实际可用能力仍由客户端授权决定。`,
+                    description: `允许「${connection.name}」访问全部设备，包括以后添加的设备。实际可用能力仍由客户端授权决定。`,
                     tone: "primary",
-                    path: `/api/client-grants/${grant.id}/reconnect`,
+                    path: `/api/agent-connections/${connection.id}/reconnect`,
                   })
                 }
-                revoke={(grant) =>
+                revoke={(connection) =>
                   setDialog({
                     kind: "confirm",
                     title: "撤销连接",
-                    description: `撤销「${grant.name}」的访问权限，并停止其当前会话。${grant.authentication === "platform" ? "之后可重新授权。" : "此 Agent Key 将立即失效。"}`,
-                    path: `/api/client-grants/${grant.id}/revoke`,
+                    description: `撤销「${connection.name}」的访问权限，并停止其当前会话。${connection.authentication === "platform" ? "之后可重新授权。" : "此 Agent Key 将立即失效。"}`,
+                    path: `/api/agent-connections/${connection.id}/revoke`,
                   })
                 }
               />
-            ) : visibleTab === "grants" ? (
-              <GrantsPage grants={data.grants} devices={data.devices} create={createGrant} />
+            ) : visibleTab === "connections" ? (
+              <ConnectionsPage
+                connections={data.connections}
+                devices={data.devices}
+                create={createConnection}
+              />
             ) : (
               <ActivityPage data={data} refresh={refresh} run={run} />
             )}
@@ -268,12 +278,14 @@ function ManagementApp() {
       )}
       {dialog && userReady && visibleTab !== "admin" && (
         <ManagementModal
-          key={identityRevision + dialog.kind + ("grant" in dialog ? dialog.grant.id : "")}
+          key={identityRevision + dialog.kind + ("connection" in dialog ? dialog.connection.id : "")}
           dialog={
-            "grant" in dialog
+            "connection" in dialog
               ? {
                   ...dialog,
-                  grant: data.grants.find((grant) => grant.id === dialog.grant.id) ?? dialog.grant,
+                  connection:
+                    data.connections.find((connection) => connection.id === dialog.connection.id) ??
+                    dialog.connection,
                 }
               : dialog
           }

@@ -18,7 +18,7 @@
 
 **详细说明：**
 
-aBridge for Browser connects directly to an aBridge Server you configure. Add this browser device to an Agent grant in that Server, then let the Agent open task pages, inspect visible content, click controls and fill fields. Task pages use the current Profile's normal website sessions.
+aBridge for Browser connects directly to an aBridge Server you configure. Add this browser device to an Agent connection in that Server, then let the Agent open task pages, inspect visible content, click controls and fill fields. Task pages use the current Profile's normal website sessions.
 
 The toolbar popup shows connection status and provides Pause, Resume and Stop controls. Browser authorization persists across extension restarts; reconnecting does not undo a pause. Task tabs are separate from your existing personal tabs. The extension does not require the aBridge desktop App.
 

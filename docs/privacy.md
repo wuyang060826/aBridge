@@ -18,7 +18,7 @@ Chrome extension local storage holds the Server address, device name and identit
 
 Operation receipts help prevent an interrupted action from being repeated. Connection diagnostics record connection events and error codes. They are not a page-browsing history or an analytics feed. This version does not offer a timed automatic deletion policy for all receipt metadata.
 
-The supplied Server implementation keeps device, grant, session, operation and audit metadata in its database. Operation results may be cached temporarily in Server memory for retrieval; database records do not store screenshot or page bodies. A Server operator or Agent may separately retain information after receiving it.
+The supplied Server implementation keeps device, Agent connection, session, operation and audit metadata in its database. Operation results may be cached temporarily in Server memory for retrieval; database records do not store screenshot or page bodies. A Server operator or Agent may separately retain information after receiving it.
 
 ## Permissions
 

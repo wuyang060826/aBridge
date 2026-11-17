@@ -1,7 +1,12 @@
 import { ChevronDown, Plus, RefreshCw } from "lucide-preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { adminCreateUserSchema, adminOverviewSchema, type AdminOverview } from "@abridge/protocol";
-import { api, ApiError, userSchema } from "../../lib/api.js";
+import {
+  adminCreateUserSchema,
+  adminOverviewSchema,
+  type AdminOverview,
+  managementUserSchema,
+} from "@abridge/protocol";
+import { api, ApiError } from "../../lib/api.js";
 import { Field, Form, Modal } from "../../components/forms.js";
 
 function dateTime(value: number | null): string {
@@ -64,7 +69,7 @@ export function InstanceAdminPage({
     });
     if (!input.success) throw new Error("请填写用户名和至少12位的初始密码。");
     try {
-      const user = await api("/api/admin/users", userSchema, input.data);
+      const user = await api("/api/admin/users", managementUserSchema, input.data);
       if (!alive.current) return;
       setCreating(false);
       notify(`已创建用户 ${user.username}`);

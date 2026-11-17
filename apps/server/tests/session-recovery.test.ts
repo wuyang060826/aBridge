@@ -25,8 +25,12 @@ async function fixture() {
   const capabilities: Capability[] = ["screen", "input", "shell"];
   const { device, key } = store.createDevice(owner.id, "Fixture computer", capabilities);
   const policy = { mode: "selected" as const, devices: [{ device_id: device.id, capabilities }] };
-  const { grant } = store.createGrant(owner.id, "Fixture agent", policy);
-  const { grant: otherGrant } = store.createGrant(owner.id, "Another fixture agent", policy);
+  const { agentConnection } = store.createAgentConnection(owner.id, "Fixture agent", policy);
+  const { agentConnection: otherAgentConnection } = store.createAgentConnection(
+    owner.id,
+    "Another fixture agent",
+    policy,
+  );
   const frames: JsonObject[] = [];
   const transport: DeviceTransport = {
     async send(frame) {
@@ -50,8 +54,8 @@ async function fixture() {
       return ticket;
     },
     device,
-    grant,
-    otherGrant,
+    agentConnection,
+    otherAgentConnection,
     frames,
     advance(seconds: number) {
       now += seconds;
@@ -91,9 +95,16 @@ async function fixture() {
 test("activity returns fresh leases for dispatch, completion, status and duplicate requests", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     f.advance(100);
-    const accepted = await f.control.execute(f.grant, session.id, "computer_apps", {}, "apps", false);
+    const accepted = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "apps",
+      false,
+    );
     assert.equal(accepted.session?.lease_until, f.now + 300);
     f.advance(310);
     await f.control.tick();
@@ -106,16 +117,23 @@ test("activity returns fresh leases for dispatch, completion, status and duplica
       "Completion starts the idle interval",
     );
     f.advance(100);
-    const result = await f.control.waitOperation(f.grant, accepted.operation_id, 0);
+    const result = await f.control.waitOperation(f.agentConnection, accepted.operation_id, 0);
     assert.equal(result.session?.lease_until, f.now + 300);
     assert.equal(result.session?.server_time, f.now);
     f.advance(100);
-    const duplicate = await f.control.execute(f.grant, session.id, "computer_apps", {}, "apps", false);
+    const duplicate = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "apps",
+      false,
+    );
     assert.equal(duplicate.operation_id, accepted.operation_id);
     assert.equal(duplicate.session?.lease_until, f.now + 300);
     f.advance(10);
     const returnedId = await f.control.execute(
-      f.grant,
+      f.agentConnection,
       session.id,
       "computer_apps",
       {},
@@ -133,21 +151,21 @@ test("activity returns fresh leases for dispatch, completion, status and duplica
   }
 });
 
-test("discovery and input occupancy expose only this grant's sessions without renewing or taking over", async () => {
+test("discovery and input occupancy expose only this Agent connection's sessions without renewing or taking over", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen", "input"]);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
     assert.match(session.id, /^ses_[A-Za-z0-9_-]{8}$/);
     f.advance(60);
-    const own = f.control.devices(f.grant)[0];
+    const own = f.control.devices(f.agentConnection)[0];
     assert.deepEqual(
       (own.sessions as unknown[]).map((value) => sessionInfoSchema.parse(value).id),
       [session.id],
     );
-    assert.deepEqual(f.control.devices(f.otherGrant)[0].sessions, []);
+    assert.deepEqual(f.control.devices(f.otherAgentConnection)[0].sessions, []);
     assert.equal(f.store.session(session.id)?.lease_until, session.lease_until);
     assert.throws(
-      () => f.control.openSession(f.grant, f.device.id, ["input"]),
+      () => f.control.openSession(f.agentConnection, f.device.id, ["input"]),
       (error) => {
         assert.ok(error instanceof BridgeError);
         assert.equal(error.code, "desktop_busy");
@@ -156,7 +174,7 @@ test("discovery and input occupancy expose only this grant's sessions without re
       },
     );
     assert.throws(
-      () => f.control.openSession(f.otherGrant, f.device.id, ["input"]),
+      () => f.control.openSession(f.otherAgentConnection, f.device.id, ["input"]),
       (error) => {
         assert.ok(error instanceof BridgeError);
         assert.deepEqual(error.details.sessions, []);
@@ -164,8 +182,8 @@ test("discovery and input occupancy expose only this grant's sessions without re
       },
     );
     assert.equal(f.store.session(session.id)?.status, "active");
-    await f.control.closeSession(f.grant, session.id);
-    assert.equal(f.control.openSession(f.grant, f.device.id, ["input"]).status, "active");
+    await f.control.closeSession(f.agentConnection, session.id);
+    assert.equal(f.control.openSession(f.agentConnection, f.device.id, ["input"]).status, "active");
   } finally {
     await f.close();
   }
@@ -174,33 +192,47 @@ test("discovery and input occupancy expose only this grant's sessions without re
 test("unauthorized requests do not renew and retained results never revive stopped or expired sessions", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    const operation = await f.control.execute(f.grant, session.id, "computer_apps", {}, "apps", false);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const operation = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "apps",
+      false,
+    );
     await f.complete(operation.operation_id);
     const lease = f.store.session(session.id)!.lease_until;
     f.advance(50);
-    assert.throws(() => f.control.operationStatus(f.otherGrant, operation.operation_id), {
+    assert.throws(() => f.control.operationStatus(f.otherAgentConnection, operation.operation_id), {
       code: "not_found",
     });
     await assert.rejects(
-      f.control.execute(f.grant, session.id, "computer_apps", { query: "changed" }, "apps", false),
+      f.control.execute(f.agentConnection, session.id, "computer_apps", { query: "changed" }, "apps", false),
       { code: "operation_conflict" },
     );
     assert.equal(f.store.session(session.id)?.lease_until, lease);
-    await f.control.closeSession(f.grant, session.id);
+    await f.control.closeSession(f.agentConnection, session.id);
     f.advance(50);
-    const stopped = f.control.operationStatus(f.grant, operation.operation_id);
+    const stopped = f.control.operationStatus(f.agentConnection, operation.operation_id);
     assert.equal(stopped.status, "executed");
     assert.equal(stopped.session?.status, "stopped");
     assert.equal(stopped.session?.lease_until, lease);
-    const idle = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    const idleOperation = await f.control.execute(f.grant, idle.id, "computer_apps", {}, "idle", false);
+    const idle = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const idleOperation = await f.control.execute(
+      f.agentConnection,
+      idle.id,
+      "computer_apps",
+      {},
+      "idle",
+      false,
+    );
     await f.complete(idleOperation.operation_id);
     f.advance(301);
-    const expired = f.control.operationStatus(f.grant, idleOperation.operation_id);
+    const expired = f.control.operationStatus(f.agentConnection, idleOperation.operation_id);
     assert.equal(expired.session?.status, "expired");
     assert.equal(expired.session?.lease_until, idle.lease_until);
-    await assert.rejects(f.control.execute(f.grant, idle.id, "computer_apps", {}, "new", false), {
+    await assert.rejects(f.control.execute(f.agentConnection, idle.id, "computer_apps", {}, "new", false), {
       code: "session_expired",
     });
   } finally {
@@ -208,19 +240,36 @@ test("unauthorized requests do not renew and retained results never revive stopp
   }
 });
 
-test("renewal cannot exceed grant expiry, including a late completion", async () => {
+test("renewal cannot exceed Agent connection expiry, including a late completion", async () => {
   const f = await fixture();
   try {
     const expires = f.now + 100;
-    const grant = await f.control.updateGrant(f.grant, f.grant.name, f.grant.policy, expires);
-    const session = f.control.openSession(grant, f.device.id, ["screen"]);
-    const operation = await f.control.execute(grant, session.id, "computer_apps", {}, "apps", false);
+    const agentConnection = await f.control.updateAgentConnection(
+      f.agentConnection,
+      f.agentConnection.name,
+      f.agentConnection.policy,
+      expires,
+    );
+    const session = f.control.openSession(agentConnection, f.device.id, ["screen"]);
+    const operation = await f.control.execute(
+      agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "apps",
+      false,
+    );
     f.advance(60);
-    assert.equal(f.control.operationStatus(grant, operation.operation_id).session?.lease_until, expires);
+    assert.equal(
+      f.control.operationStatus(agentConnection, operation.operation_id).session?.lease_until,
+      expires,
+    );
     f.advance(41);
     await f.complete(operation.operation_id);
     assert.equal(f.store.session(session.id)?.lease_until, expires);
-    assert.throws(() => f.control.operationStatus(grant, operation.operation_id), { code: "unauthorized" });
+    assert.throws(() => f.control.operationStatus(agentConnection, operation.operation_id), {
+      code: "unauthorized",
+    });
   } finally {
     await f.close();
   }
@@ -229,34 +278,40 @@ test("renewal cannot exceed grant expiry, including a late completion", async ()
 test("request keys are session scoped while returned operation IDs survive restart without replay", async () => {
   const f = await fixture();
   try {
-    const first = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    const second = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    const other = f.control.openSession(f.otherGrant, f.device.id, ["screen"]);
-    const a = await f.control.execute(f.grant, first.id, "computer_apps", {}, "apps", false);
-    const b = await f.control.execute(f.grant, second.id, "computer_apps", {}, "apps", false);
-    const c = await f.control.execute(f.otherGrant, other.id, "computer_apps", {}, "apps", false);
+    const first = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const second = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const other = f.control.openSession(f.otherAgentConnection, f.device.id, ["screen"]);
+    const a = await f.control.execute(f.agentConnection, first.id, "computer_apps", {}, "apps", false);
+    const b = await f.control.execute(f.agentConnection, second.id, "computer_apps", {}, "apps", false);
+    const c = await f.control.execute(f.otherAgentConnection, other.id, "computer_apps", {}, "apps", false);
     assert.equal(new Set([a.operation_id, b.operation_id, c.operation_id]).size, 3);
     for (const result of [a, b, c]) assert.match(result.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
     assert.notEqual(a.operation_id, "apps");
-    await assert.rejects(f.control.execute(f.grant, second.id, "computer_apps", {}, a.operation_id, false), {
-      code: "operation_conflict",
-    });
     await assert.rejects(
-      f.control.execute(f.otherGrant, other.id, "computer_apps", {}, a.operation_id, false),
+      f.control.execute(f.agentConnection, second.id, "computer_apps", {}, a.operation_id, false),
+      {
+        code: "operation_conflict",
+      },
+    );
+    await assert.rejects(
+      f.control.execute(f.otherAgentConnection, other.id, "computer_apps", {}, a.operation_id, false),
       { code: "not_found" },
     );
     await f.complete(a.operation_id);
     await f.restart();
     const before = f.frames.filter((frame) => frame.type === "dispatch").length;
-    const retained = f.control.operationStatus(f.grant, a.operation_id);
+    const retained = f.control.operationStatus(f.agentConnection, a.operation_id);
     assert.equal(retained.status, "executed");
     assert.equal(retained.result_available, false);
     assert.equal(retained.session?.status, "server_restarted");
-    assert.equal(f.control.operationStatus(f.grant, b.operation_id).status, "outcome_unknown");
-    const fresh = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    await assert.rejects(f.control.execute(f.grant, fresh.id, "computer_apps", {}, a.operation_id, false), {
-      code: "operation_conflict",
-    });
+    assert.equal(f.control.operationStatus(f.agentConnection, b.operation_id).status, "outcome_unknown");
+    const fresh = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    await assert.rejects(
+      f.control.execute(f.agentConnection, fresh.id, "computer_apps", {}, a.operation_id, false),
+      {
+        code: "operation_conflict",
+      },
+    );
     assert.equal(f.frames.filter((frame) => frame.type === "dispatch").length, before);
   } finally {
     await f.close();
@@ -266,7 +321,7 @@ test("request keys are session scoped while returned operation IDs survive resta
 test("device receipts cannot supply server-owned disconnect diagnostics", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const error = {
       code: "outcome_unknown",
       message: "Not confirmed",
@@ -282,7 +337,14 @@ test("device receipts cannot supply server-owned disconnect diagnostics", async 
       },
       { reason: "invalid fabricated reason", private_detail: "must not escape" },
     ]) {
-      const operation = await f.control.execute(f.grant, session.id, "computer_apps", {}, undefined, false);
+      const operation = await f.control.execute(
+        f.agentConnection,
+        session.id,
+        "computer_apps",
+        {},
+        undefined,
+        false,
+      );
       await f.control.receive(f.ticket, {
         type: "result",
         connection_epoch: f.ticket.epoch,
@@ -290,8 +352,8 @@ test("device receipts cannot supply server-owned disconnect diagnostics", async 
         status: "outcome_unknown",
         error: { ...error, connection },
       });
-      assert.deepEqual(f.control.operationStatus(f.grant, operation.operation_id).error, error);
-      const device = f.control.devices(f.grant)[0];
+      assert.deepEqual(f.control.operationStatus(f.agentConnection, operation.operation_id).error, error);
+      const device = f.control.devices(f.agentConnection)[0];
       assert.equal(device.status, "online");
       assert.equal(device.last_disconnect, undefined);
     }
@@ -303,8 +365,15 @@ test("device receipts cannot supply server-owned disconnect diagnostics", async 
 test("diagnostics preserve desktop causes and heartbeat expiry; session metadata fits minimum output pages", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen", "shell"]);
-    const operation = await f.control.execute(f.grant, session.id, "computer_apps", {}, "apps", false);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "shell"]);
+    const operation = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "apps",
+      false,
+    );
     await f.control.receive(f.ticket, {
       type: "result",
       connection_epoch: f.ticket.epoch,
@@ -317,11 +386,11 @@ test("diagnostics preserve desktop causes and heartbeat expiry; session metadata
       },
     });
     assert.equal(
-      f.control.operationStatus(f.grant, operation.operation_id).error?.cause?.code,
+      f.control.operationStatus(f.agentConnection, operation.operation_id).error?.cause?.code,
       "execution_timeout",
     );
     const shell = await f.control.execute(
-      f.grant,
+      f.agentConnection,
       session.id,
       "command_execute",
       { command: "fixture-only" },
@@ -334,21 +403,28 @@ test("diagnostics preserve desktop causes and heartbeat expiry; session metadata
       exit_code: 0,
       truncated: false,
     });
-    const page = commandOutputPage(f.control.operationStatus(f.grant, shell.operation_id), 1024);
+    const page = commandOutputPage(f.control.operationStatus(f.agentConnection, shell.operation_id), 1024);
     assert.ok(characterLength(JSON.stringify(page)) <= 1024);
     assert.ok((page.result as { stdout: string }).stdout.length > 0);
     assert.equal(sessionInfoSchema.parse(page.session).id, session.id);
-    const pending = await f.control.execute(f.grant, session.id, "computer_apps", {}, "pending", false);
+    const pending = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "pending",
+      false,
+    );
     f.ageHeartbeat(31);
     await f.control.tick();
-    const lost = f.control.operationStatus(f.grant, pending.operation_id);
+    const lost = f.control.operationStatus(f.agentConnection, pending.operation_id);
     assert.equal(lost.status, "outcome_unknown");
     assert.equal(lost.error?.connection?.reason, "heartbeat_expired");
     assert.equal(lost.error?.connection?.close_code, 4408);
     assert.equal(lost.error?.connection?.heartbeat_age_seconds, 31);
     assert.equal(lost.session?.status, "connection_lost");
     assert.equal(
-      (f.control.devices(f.grant)[0].last_disconnect as { reason: string }).reason,
+      (f.control.devices(f.agentConnection)[0].last_disconnect as { reason: string }).reason,
       "heartbeat_expired",
     );
   } finally {
@@ -359,9 +435,9 @@ test("diagnostics preserve desktop causes and heartbeat expiry; session metadata
 test("short operation IDs preserve distinct keys through collisions and restart", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const keyHash = createHash("sha256")
-      .update(JSON.stringify([f.grant.id, session.id, "retry-key"]))
+      .update(JSON.stringify([f.agentConnection.id, session.id, "retry-key"]))
       .digest("base64url");
     const occupied = "op_" + keyHash.slice(0, 8);
     const requestHash = createHash("sha256")
@@ -371,8 +447,8 @@ test("short operation IDs preserve distinct keys through collisions and restart"
     // Payload checks alone must never mistake this collision for a retry.
     f.store.createOperation({
       id: occupied,
-      owner_id: f.grant.owner_id,
-      grant_id: f.grant.id,
+      owner_id: f.agentConnection.owner_id,
+      agent_connection_id: f.agentConnection.id,
       device_id: f.device.id,
       session_id: session.id,
       tool: "computer_apps",
@@ -380,7 +456,14 @@ test("short operation IDs preserve distinct keys through collisions and restart"
       key_hash: createHash("sha256").update("another-scoped-key").digest("base64url"),
       epoch: f.ticket.epoch,
     });
-    const result = await f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false);
+    const result = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      "retry-key",
+      false,
+    );
     assert.match(result.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
     assert.notEqual(result.operation_id, occupied);
     assert.equal(f.store.operationForKey(keyHash)?.id, result.operation_id);
@@ -388,25 +471,44 @@ test("short operation IDs preserve distinct keys through collisions and restart"
     const dispatches = () => f.frames.filter((frame) => frame.type === "dispatch").length;
     const before = dispatches();
     assert.equal(
-      (await f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false)).operation_id,
-      result.operation_id,
-    );
-    assert.equal(
-      (await f.control.execute(f.grant, session.id, "computer_apps", {}, result.operation_id, false))
+      (await f.control.execute(f.agentConnection, session.id, "computer_apps", {}, "retry-key", false))
         .operation_id,
       result.operation_id,
     );
+    assert.equal(
+      (
+        await f.control.execute(
+          f.agentConnection,
+          session.id,
+          "computer_apps",
+          {},
+          result.operation_id,
+          false,
+        )
+      ).operation_id,
+      result.operation_id,
+    );
     await assert.rejects(
-      f.control.execute(f.grant, session.id, "computer_apps", { query: "changed" }, "retry-key", false),
+      f.control.execute(
+        f.agentConnection,
+        session.id,
+        "computer_apps",
+        { query: "changed" },
+        "retry-key",
+        false,
+      ),
       { code: "operation_conflict" },
     );
     assert.equal(dispatches(), before);
     await f.restart();
     assert.equal(f.store.operationForKey(keyHash)?.id, result.operation_id);
-    assert.equal(f.control.operationStatus(f.grant, result.operation_id).status, "outcome_unknown");
-    await assert.rejects(f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false), {
-      code: "session_server_restarted",
-    });
+    assert.equal(f.control.operationStatus(f.agentConnection, result.operation_id).status, "outcome_unknown");
+    await assert.rejects(
+      f.control.execute(f.agentConnection, session.id, "computer_apps", {}, "retry-key", false),
+      {
+        code: "session_server_restarted",
+      },
+    );
     assert.equal(dispatches(), before, "restart never replays the unknown write");
   } finally {
     await f.close();
@@ -416,18 +518,36 @@ test("short operation IDs preserve distinct keys through collisions and restart"
 test("generated operation IDs stay short and unknown returned-ID syntax cannot start work", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
-    const generated = await f.control.execute(f.grant, session.id, "computer_apps", {}, undefined, false);
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const generated = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_apps",
+      {},
+      undefined,
+      false,
+    );
     assert.match(generated.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
     assert.equal(f.store.operation(generated.operation_id)?.key_hash, null);
     const before = f.frames.filter((frame) => frame.type === "dispatch").length;
-    await assert.rejects(f.control.execute(f.grant, session.id, "computer_apps", {}, "op_unknown_", false), {
-      code: "invalid_operation_id",
-    });
+    await assert.rejects(
+      f.control.execute(f.agentConnection, session.id, "computer_apps", {}, "op_unknown_", false),
+      {
+        code: "invalid_operation_id",
+      },
+    );
     assert.equal(f.frames.filter((frame) => frame.type === "dispatch").length, before);
     assert.equal(
-      (await f.control.execute(f.grant, session.id, "computer_apps", {}, generated.operation_id, false))
-        .operation_id,
+      (
+        await f.control.execute(
+          f.agentConnection,
+          session.id,
+          "computer_apps",
+          {},
+          generated.operation_id,
+          false,
+        )
+      ).operation_id,
       generated.operation_id,
     );
   } finally {

@@ -1,17 +1,22 @@
-import { CapabilityIcon } from "../../components/icons.js";
+import { CapabilityIcon, DeviceIcon } from "../../components/icons.js";
 import { useEffect, useState } from "preact/hooks";
+import { api } from "../../lib/api.js";
 import {
-  api,
   connectionPreviewSchema,
   type ConnectionPreview as Preview,
-  type Grant,
-} from "../../lib/api.js";
+  type AgentConnectionView,
+} from "@abridge/protocol";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
-import { DeviceIcon } from "../../components/icons.js";
 
-export function ConnectionPreview({ grant, edit }: { grant: Grant; edit: () => void }) {
+export function ConnectionPreview({
+  connection,
+  edit,
+}: {
+  connection: AgentConnectionView;
+  edit: () => void;
+}) {
   const [revision, setRevision] = useState(0);
-  const policyKey = JSON.stringify([grant.policy, grant.expires_at, grant.revoked_at]);
+  const policyKey = JSON.stringify([connection.policy, connection.expires_at, connection.revoked_at]);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -21,7 +26,7 @@ export function ConnectionPreview({ grant, edit }: { grant: Grant; edit: () => v
       if (busy) return;
       busy = true;
       try {
-        const result = await api(`/api/client-grants/${grant.id}/preview`, connectionPreviewSchema);
+        const result = await api(`/api/agent-connections/${connection.id}/preview`, connectionPreviewSchema);
         if (active) {
           setPreview(result);
           setError("");
@@ -43,21 +48,21 @@ export function ConnectionPreview({ grant, edit }: { grant: Grant; edit: () => v
       active = false;
       clearInterval(timer);
     };
-  }, [grant.id, policyKey, revision]);
+  }, [connection.id, policyKey, revision]);
   const allowed = preview?.devices.filter((device) => device.access === "allowed").length ?? 0;
   return (
     <section class="connection-preview" aria-label="设备访问权限">
       <div class="preview-heading">
         <div class="preview-scope">
-          <h2>{grant.policy.mode === "all" ? "全部设备" : "指定设备"}</h2>
-          {grant.policy.mode === "all" && <span class="small muted">含新设备</span>}
+          <h2>{connection.policy.mode === "all" ? "全部设备" : "指定设备"}</h2>
+          {connection.policy.mode === "all" && <span class="small muted">含新设备</span>}
           {preview && (
             <span class="count">
               {allowed} / {preview.devices.length}
             </span>
           )}
         </div>
-        {grant.revoked_at === null && <button onClick={edit}>编辑权限</button>}
+        {connection.revoked_at === null && <button onClick={edit}>编辑权限</button>}
       </div>
       {error ? (
         <div class="empty">

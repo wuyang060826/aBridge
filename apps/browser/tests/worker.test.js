@@ -162,7 +162,7 @@ function harness(local = {}, session = {}, settings = {}) {
     session_capabilities: ["browser"],
     expires_at: Date.now() / 1000 + 30,
     sequence,
-    grant_version: 1,
+    device_credential_version: 1,
     tool: "browser_open",
     arguments: { url: "https://example.com/" },
     ...extra,
@@ -1242,4 +1242,35 @@ test("manual binding during reconnect cleanup cannot create another old-Token co
   await delay(0);
   assert.equal(local.device.revoked, undefined);
   assert.equal((await h.popup({ type: "status" })).connected, true);
+});
+
+test("worker browser_open enforces the shared contract before task tab side effects", async () => {
+  const local = {
+    device: { server: "https://abridge.example", key: "key", device_id: "browser-device" },
+  };
+  const h = harness(local, {});
+  try {
+    await import("../src/worker.ts?open-argument-contract");
+    await delay(10);
+    let sequence = 0;
+    for (const args of [
+      { url: "https://example.com/", observe_after: false },
+      { url: "https://example.com/", observe_after: true },
+      { url: "https://example.com/" + "a".repeat(8192) },
+    ]) {
+      const id = `invalid-open-${++sequence}`;
+      const receipt = h.nextResult(id);
+      h.sockets[0].receive(h.dispatch(id, sequence, { arguments: args }));
+      const response = await receipt;
+      assert.equal(response.status, "refused");
+      assert.equal(response.error.code, "invalid_params");
+      assert.equal(h.tabs.size, 1, "Invalid open must not create a task tab");
+      assert.equal(h.tabs.get(1).url, "https://personal.example/");
+    }
+  } finally {
+    await h.popup({ type: "unbind" });
+    await delay(5);
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  }
 });

@@ -198,7 +198,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
   try {
     const user = await f.store.createUser("owner", "test-password-long"),
       device = f.store.createDevice(user.id, "Mac", ["shell", "files", "screen", "input"]);
-    const grant = f.store.createGrant(
+    const agentConnection = f.store.createAgentConnection(
       user.id,
       "agent",
       {
@@ -238,7 +238,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
     const list = await fetch(f.url + "/mcp", {
       method: "POST",
       headers: {
-        authorization: "Bearer " + grant.key,
+        authorization: "Bearer " + agentConnection.key,
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
       },
@@ -248,6 +248,12 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
       result: { tools: { name: string; inputSchema: unknown }[] };
     };
     assert.equal(listed.result.tools.length, 21);
+    const toolNames = listed.result.tools.map((tool) => tool.name);
+    assert.ok(toolNames.includes("operation_status"));
+    assert.ok(toolNames.includes("operation_cancel"));
+    assert.ok(!toolNames.includes("command_status"));
+    assert.ok(!toolNames.includes("command_cancel"));
+
     let patterns = 0;
     const checkPatterns = (value: unknown, location: string): void => {
       if (!value || typeof value !== "object") return;
@@ -267,7 +273,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
     };
     for (const tool of listed.result.tools) checkPatterns(tool.inputSchema, tool.name);
     assert.ok(patterns > 0, "The actual tools/list schemas must contain patterns to validate");
-    const opened = await rpc(f.url, grant.key, "session_open", {
+    const opened = await rpc(f.url, agentConnection.key, "session_open", {
         device_id: device.device.id,
         capabilities: ["shell", "files", "screen"],
       }),
@@ -276,7 +282,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
       const rejected = await fetch(f.url + "/mcp", {
         method: "POST",
         headers: {
-          authorization: "Bearer " + grant.key,
+          authorization: "Bearer " + agentConnection.key,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },
@@ -291,7 +297,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
       assert.equal(((await rejected.json()) as { result: { isError?: boolean } }).result.isError, true);
       assert.equal(dispatches, 0, "Invalid environment names/values must never reach the device");
     }
-    const command = await rpc(f.url, grant.key, "command_execute", {
+    const command = await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,
       command: "echo hello",
       env: { VALID_KEY: "valid value" },
@@ -300,20 +306,21 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
     assert.equal(command.value.status, "executed");
     assert.equal(command.value.result.stdout, "hello 😀\n");
     assert.equal(dispatches, 1);
-    await rpc(f.url, grant.key, "command_execute", {
+    await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,
       command: "echo hello",
       env: { VALID_KEY: "valid value" },
+      timeout: 30,
       operation_id: "op_test",
     });
     assert.equal(dispatches, 1);
-    const conflict = await rpc(f.url, grant.key, "command_execute", {
+    const conflict = await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,
       command: "echo different",
       operation_id: "op_test",
     });
     assert.equal(conflict.value.error.code, "operation_conflict");
-    const yielded = await rpc(f.url, grant.key, "command_execute", {
+    const yielded = await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,
       command: "delay",
       wait_seconds: 0,
@@ -330,21 +337,24 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
         result: { stdout: "later", stderr: "", exit_code: 0 },
       }),
     );
-    const status = await rpc(f.url, grant.key, "command_status", {
+    const status = await rpc(f.url, agentConnection.key, "operation_status", {
       operation_id: yielded.value.operation_id,
     });
     assert.equal(status.value.result.stdout, "later");
-    const file = await rpc(f.url, grant.key, "file_read", { session_id: session, path: "/tmp/test" });
+    const file = await rpc(f.url, agentConnection.key, "file_read", {
+      session_id: session,
+      path: "/tmp/test",
+    });
     assert.equal(file.value.result.content, "file content");
-    const observation = await rpc(f.url, grant.key, "computer_observe", { session_id: session });
+    const observation = await rpc(f.url, agentConnection.key, "computer_observe", { session_id: session });
     assert.equal(observation.content[1]!.type, "image");
     assert.equal(observation.value.result.image_base64, undefined);
-    const denied = await rpc(f.url, grant.key, "browser_open", {
+    const denied = await rpc(f.url, agentConnection.key, "browser_open", {
       session_id: session,
       url: "https://example.com",
     });
     assert.equal(denied.value.error.code, "forbidden");
-    await rpc(f.url, grant.key, "session_close", { session_id: session });
+    await rpc(f.url, agentConnection.key, "session_close", { session_id: session });
     socket.close();
   } finally {
     await f.dispose();
@@ -356,7 +366,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
   try {
     const user = await f.store.createUser("owner", "test-password-long"),
       device = f.store.createDevice(user.id, "Mac", ["files", "screen", "input"]),
-      grant = f.store.createGrant(user.id, "agent", {
+      agentConnection = f.store.createAgentConnection(user.id, "agent", {
         mode: "all",
         capabilities: ["files", "screen", "input"],
         overrides: [],
@@ -378,12 +388,12 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
         }),
       );
     });
-    const opened = await rpc(f.url, grant.key, "session_open", {
+    const opened = await rpc(f.url, agentConnection.key, "session_open", {
       device_id: device.device.id,
       capabilities: ["files", "screen", "input"],
     });
     for (const status of ["failed", "refused", "outcome_unknown", "cancelled"]) {
-      const receipt = await rpc(f.url, grant.key, "file_read", {
+      const receipt = await rpc(f.url, agentConnection.key, "file_read", {
         session_id: opened.value.id,
         operation_id: "op_error_" + status,
         path: status,
@@ -393,7 +403,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
       assert.equal(f.store.operation(receipt.value.operation_id)?.session_id, opened.value.id);
       assert.equal(receipt.isError, isError);
       if (isError) assert.equal(receipt.value.error.code, "fixture_" + status);
-      const retained = await rpc(f.url, grant.key, "command_status", {
+      const retained = await rpc(f.url, agentConnection.key, "operation_status", {
         operation_id: receipt.value.operation_id,
         wait_seconds: 0,
       });
@@ -402,7 +412,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
       assert.equal(retained.value.session.id, opened.value.id);
       assert.ok(retained.value.session.lease_until >= receipt.value.session.lease_until);
     }
-    const action = await rpc(f.url, grant.key, "computer_act", {
+    const action = await rpc(f.url, agentConnection.key, "computer_act", {
       session_id: opened.value.id,
       observation_id: "obs_Ab12_-xy",
       action: { type: "key", key: "Enter" },
@@ -427,13 +437,13 @@ test("session_open includes the same device details as device_get and devices_li
       { name: "Android 设备", kind: "computer", platform: "android", capability: "shell" },
     ] as const) {
       const { device, key } = f.store.createDevice(user.id, name, [capability], kind);
-      const grant = f.store.createGrant(user.id, "agent", {
+      const agentConnection = f.store.createAgentConnection(user.id, "agent", {
         mode: "selected",
         devices: [{ device_id: device.id, capabilities: [capability] }],
       });
       const { socket } = await connect(f, key, kind, undefined, platform);
       try {
-        const opened = await rpc(f.url, grant.key, "session_open", {
+        const opened = await rpc(f.url, agentConnection.key, "session_open", {
           device_id: device.id,
           capabilities: [capability],
         });
@@ -445,8 +455,8 @@ test("session_open includes the same device details as device_get and devices_li
         assert.equal(opened.value.device.name, name);
         assert.equal(opened.value.device.kind, kind);
         assert.equal(opened.value.device.platform, platform);
-        const detail = await rpc(f.url, grant.key, "device_get", { device_id: device.id });
-        const listed = await rpc(f.url, grant.key, "devices_list");
+        const detail = await rpc(f.url, agentConnection.key, "device_get", { device_id: device.id });
+        const listed = await rpc(f.url, agentConnection.key, "devices_list");
         const stableDevice = (value: JsonObject) => ({
           ...value,
           sessions: (value.sessions as JsonObject[]).map(({ server_time, ...session }) => {
@@ -457,11 +467,11 @@ test("session_open includes the same device details as device_get and devices_li
         });
         assert.deepEqual(stableDevice(opened.value.device), stableDevice(detail.value));
         assert.deepEqual(listed.value.devices.map(stableDevice), [stableDevice(opened.value.device)]);
-        await rpc(f.url, grant.key, "session_close", { session_id: opened.value.id });
+        await rpc(f.url, agentConnection.key, "session_close", { session_id: opened.value.id });
         const closed = once(socket, "close");
         socket.close();
         await closed;
-        const offline = await rpc(f.url, grant.key, "device_get", { device_id: device.id });
+        const offline = await rpc(f.url, agentConnection.key, "device_get", { device_id: device.id });
         assert.equal(offline.value.status, "offline");
         assert.equal(offline.value.platform, platform);
         assert.equal(offline.value.version, opened.value.device.version);
@@ -484,8 +494,8 @@ test("MCP input occupancy exposes only this connection's recoverable sessions", 
       capabilities: ["input" as const, "screen" as const],
       overrides: [],
     };
-    const own = f.store.createGrant(user.id, "First", policy);
-    const other = f.store.createGrant(user.id, "Second", policy);
+    const own = f.store.createAgentConnection(user.id, "First", policy);
+    const other = f.store.createAgentConnection(user.id, "Second", policy);
     await f.control.attachConnection(
       device.key,
       "computer",
@@ -518,7 +528,7 @@ test("browser is an independent device; revocation during wait blocks result acc
   try {
     const user = await f.store.createUser("owner", "test-password-long"),
       device = f.store.createDevice(user.id, "Chrome", ["browser"], "browser"),
-      g = f.store.createGrant(
+      g = f.store.createAgentConnection(
         user.id,
         "agent",
         { mode: "selected", devices: [{ device_id: device.device.id, capabilities: ["browser"] }] },
@@ -528,13 +538,12 @@ test("browser is an independent device; revocation during wait blocks result acc
     const { socket } = await connect(f, device.key, "browser", (frame) => {
       dispatch = frame;
     });
-    const session = f.control.openSession(g.grant, device.device.id, ["browser"]);
-    const pending = f.control.execute(g.grant, session.id, "browser_open", {
+    const session = f.control.openSession(g.agentConnection, device.device.id, ["browser"]);
+    const pending = f.control.execute(g.agentConnection, session.id, "browser_open", {
       url: "https://example.com",
-      observe_after: true,
     });
     while (!dispatch) await new Promise((resolve) => setTimeout(resolve, 1));
-    f.store.revokeGrant(g.grant.id);
+    f.store.revokeAgentConnection(g.agentConnection.id);
     socket.send(
       JSON.stringify({
         type: "result",
@@ -545,7 +554,7 @@ test("browser is an independent device; revocation during wait blocks result acc
       }),
     );
     await assert.rejects(pending, (error) => error instanceof BridgeError && error.code === "unauthorized");
-    assert.throws(() => f.control.openSession(g.grant, device.device.id, ["shell"]), BridgeError);
+    assert.throws(() => f.control.openSession(g.agentConnection, device.device.id, ["shell"]), BridgeError);
     socket.close();
   } finally {
     await f.dispose();
@@ -654,7 +663,7 @@ test("computer_observe accepts pid alone and rejects invalid window targets befo
   try {
     const owner = await f.store.createUser("window-owner", "fixture-password-123");
     const device = f.store.createDevice(owner.id, "Fixture Mac", ["screen"], "computer");
-    const grant = f.store.createGrant(owner.id, "Window fixture", {
+    const agentConnection = f.store.createAgentConnection(owner.id, "Window fixture", {
       mode: "all",
       capabilities: ["screen"],
       overrides: [],
@@ -671,22 +680,25 @@ test("computer_observe accepts pid alone and rejects invalid window targets befo
         }),
       );
     }));
-    const opened = await rpc(f.url, grant.key, "session_open", {
+    const opened = await rpc(f.url, agentConnection.key, "session_open", {
       device_id: device.device.id,
       capabilities: ["screen"],
     });
     const session = opened.value.id as string;
-    const pidOnly = await rpc(f.url, grant.key, "computer_observe", { session_id: session, pid: 10 });
+    const pidOnly = await rpc(f.url, agentConnection.key, "computer_observe", {
+      session_id: session,
+      pid: 10,
+    });
     assert.equal(pidOnly.value.status, "executed");
     assert.equal(pidOnly.value.result.received.pid, 10);
     assert.equal(pidOnly.value.result.received.window_id, undefined);
-    const selected = await rpc(f.url, grant.key, "computer_observe", {
+    const selected = await rpc(f.url, agentConnection.key, "computer_observe", {
       session_id: session,
       pid: 10,
       window_id: 20,
     });
     assert.equal(selected.value.result.received.window_id, 20);
-    const missingPid = await rpc(f.url, grant.key, "computer_observe", {
+    const missingPid = await rpc(f.url, agentConnection.key, "computer_observe", {
       session_id: session,
       window_id: 20,
     });
@@ -697,7 +709,7 @@ test("computer_observe accepts pid alone and rejects invalid window targets befo
       const response = await fetch(f.url + "/mcp", {
         method: "POST",
         headers: {
-          authorization: "Bearer " + grant.key,
+          authorization: "Bearer " + agentConnection.key,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },
@@ -717,6 +729,84 @@ test("computer_observe accepts pid alone and rejects invalid window targets befo
       assert.match(JSON.stringify(rejected.result.content), /Provide a valid window_id/);
     }
     assert.equal(dispatches.length, 2, "Invalid targets must not reach the device");
+  } finally {
+    socket?.terminate();
+    await f.dispose();
+  }
+});
+
+test("public browser action contract rejects overlong keys before dispatch and normalizes defaults for retries", async () => {
+  const f = await fixture();
+  let socket: WebSocket | undefined;
+  try {
+    const owner = await f.store.createUser("browser-contract", "synthetic-fixture-password");
+    const device = f.store.createDevice(owner.id, "Fixture browser", ["browser"], "browser");
+    const agent = f.store.createAgentConnection(owner.id, "Contract fixture", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    const dispatches: JsonObject[] = [];
+    ({ socket } = await connect(f, device.key, "browser", (frame, ws) => {
+      dispatches.push(frame);
+      ws.send(
+        JSON.stringify({
+          type: "result",
+          connection_epoch: frame.connection_epoch,
+          operation_id: frame.operation_id,
+          status: "executed",
+          result: { received: frame.arguments },
+        }),
+      );
+    }));
+    const opened = await rpc(f.url, agent.key, "session_open", {
+      device_id: device.device.id,
+      capabilities: ["browser"],
+    });
+    const args = {
+      session_id: opened.value.id,
+      operation_id: "browser-key-boundary",
+      observation_id: "obs_12345678",
+      action: { type: "press", element_ref: "e1", key: "x".repeat(32) },
+    };
+    const response = await fetch(f.url + "/mcp", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer " + agent.key,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "browser_act",
+          arguments: { ...args, action: { ...args.action, key: "x".repeat(33) } },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const rejected = (await response.json()) as { result: { isError?: boolean } };
+    assert.equal(rejected.result.isError, true);
+    assert.equal(dispatches.length, 0, "Rejected arguments never reach the device or create an operation");
+    const accepted = await rpc(f.url, agent.key, "browser_act", args);
+    assert.equal(accepted.value.status, "executed");
+    assert.deepEqual(accepted.value.result.received, {
+      observation_id: args.observation_id,
+      action: args.action,
+      observe_after: true,
+      screenshot: false,
+      wait_after_ms: 2000,
+    });
+    const repeated = await rpc(f.url, agent.key, "browser_act", {
+      ...args,
+      observe_after: true,
+      screenshot: false,
+      wait_after_ms: 2000,
+    });
+    assert.equal(repeated.value.operation_id, accepted.value.operation_id);
+    assert.equal(dispatches.length, 1, "Omitted and explicit defaults identify the same operation");
   } finally {
     socket?.terminate();
     await f.dispose();

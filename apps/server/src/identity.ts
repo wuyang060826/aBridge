@@ -1,7 +1,7 @@
 import * as oidc from "openid-client";
 import { createRemoteJWKSet, jwtVerify, customFetch as jwksFetch, errors as joseErrors } from "jose";
 import { digest, Store } from "./store.js";
-import { BridgeError, type Grant } from "./types.js";
+import { BridgeError, type AgentConnection } from "./types.js";
 
 export interface IdentityConfig {
   issuer?: string;
@@ -214,7 +214,7 @@ export class Identity {
     return { token: this.store.createLogin(user.id), returnTo: pending.returnTo };
   }
   /** 委托只接受特定受众、用途和客户端的短期签名令牌。 */
-  async authenticate(token: string): Promise<Grant | undefined> {
+  async authenticate(token: string): Promise<AgentConnection | undefined> {
     if (!this.config.delegationEnabled || !token || token.length > 16384) return undefined;
     const config = await this.getConfiguration();
     if (!this.keys)
@@ -255,7 +255,7 @@ export class Identity {
       !payload.sub
     )
       return undefined;
-    return this.store.delegatedGrant(this.config.issuer!, payload.sub, this.config.clientId!);
+    return this.store.delegatedAgentConnection(this.config.issuer!, payload.sub, this.config.clientId!);
   }
   private getConfiguration(): Promise<oidc.Configuration> {
     if (!this.enabled) throw new BridgeError("oidc_disabled", "External login is not configured", 404);

@@ -1,37 +1,43 @@
 import { RefreshCw } from "lucide-preact";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { activitySchema, api, type Operation } from "../../lib/api.js";
-import type { ManagementData } from "../../lib/types.js";
-import type { RunAction } from "../../lib/types.js";
+import { api } from "../../lib/api.js";
+import { activitySchema, type OperationSummary } from "@abridge/protocol";
+import type { ManagementData, RunAction } from "../../lib/types.js";
 import { ActionButton } from "../../components/actions.js";
 import { Select } from "../../components/forms.js";
 import { stateLabels } from "../../lib/labels.js";
 
-type Filters = { device_id: string; grant_id: string; tool: string; offset: number };
+type Filters = { device_id: string; agent_connection_id: string; tool: string; offset: number };
 export function ActivityPage({
   data,
   deviceId,
-  grantId,
+  agentConnectionId,
   refresh,
   run,
 }: {
   data: ManagementData;
   deviceId?: string;
-  grantId?: string;
+  agentConnectionId?: string;
   refresh: () => Promise<void>;
   run: RunAction;
 }) {
-  const [filters, setFilters] = useState<Filters>({ device_id: "", grant_id: "", tool: "", offset: 0 });
+  const [filters, setFilters] = useState<Filters>({
+    device_id: "",
+    agent_connection_id: "",
+    tool: "",
+    offset: 0,
+  });
   const [result, setResult] = useState<{
     key: string;
-    operations: Operation[];
+    operations: OperationSummary[];
     total: number;
     tools: string[];
   }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
   const params = new URLSearchParams({ offset: String(filters.offset) });
   if (deviceId || filters.device_id) params.set("device_id", deviceId || filters.device_id);
-  if (grantId || filters.grant_id) params.set("grant_id", grantId || filters.grant_id);
+  if (agentConnectionId || filters.agent_connection_id)
+    params.set("agent_connection_id", agentConnectionId || filters.agent_connection_id);
   if (filters.tool) params.set("tool", filters.tool);
   const key = params.toString();
   const alive = useRef(true);
@@ -113,7 +119,7 @@ export function ActivityPage({
       if (alive.current) setRefreshing(false);
     }
   };
-  const update = (field: "device_id" | "grant_id" | "tool", value: string) => {
+  const update = (field: "device_id" | "agent_connection_id" | "tool", value: string) => {
     setFailure(undefined);
     setFilters((current) => ({ ...current, [field]: value, offset: 0 }));
   };
@@ -125,12 +131,12 @@ export function ActivityPage({
   const nextDisabled =
     paginationDisabled || Boolean(current && filters.offset + current.operations.length >= current.total);
   const filtered = Boolean(
-    (!deviceId && filters.device_id) || (!grantId && filters.grant_id) || filters.tool,
+    (!deviceId && filters.device_id) || (!agentConnectionId && filters.agent_connection_id) || filters.tool,
   );
   return (
     <>
       <div class="page-title">
-        {deviceId || grantId ? <h2>操作记录</h2> : <h1>操作记录</h1>}
+        {deviceId || agentConnectionId ? <h2>操作记录</h2> : <h1>操作记录</h1>}
         <ActionButton
           icon={<RefreshCw aria-hidden="true" />}
           action={reload}
@@ -161,19 +167,19 @@ export function ActivityPage({
             </label>
           </div>
         )}
-        {!grantId && (
+        {!agentConnectionId && (
           <div class="field">
             <label>
               Agent
               <Select
-                value={filters.grant_id}
-                onChange={(event) => update("grant_id", event.currentTarget.value)}
+                value={filters.agent_connection_id}
+                onChange={(event) => update("agent_connection_id", event.currentTarget.value)}
               >
                 <option value="">全部 Agent</option>
-                {data.grants.map((grant) => (
-                  <option key={grant.id} value={grant.id}>
-                    {grant.name}
-                    {grant.revoked_at !== null ? "（已撤销）" : ""}
+                {data.connections.map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.name}
+                    {connection.revoked_at !== null ? "（已撤销）" : ""}
                   </option>
                 ))}
               </Select>
@@ -200,7 +206,7 @@ export function ActivityPage({
             class="text-button"
             onClick={() => {
               setFailure(undefined);
-              setFilters({ device_id: "", grant_id: "", tool: "", offset: 0 });
+              setFilters({ device_id: "", agent_connection_id: "", tool: "", offset: 0 });
             }}
           >
             清除筛选
@@ -230,7 +236,7 @@ export function ActivityPage({
                 <tr>
                   <th>操作</th>
                   {!deviceId && <th>设备</th>}
-                  {!grantId && <th>Agent</th>}
+                  {!agentConnectionId && <th>Agent</th>}
                   <th>结果</th>
                   <th>时间</th>
                 </tr>
@@ -252,11 +258,12 @@ export function ActivityPage({
                           )}
                         </td>
                       )}
-                      {!grantId && (
+                      {!agentConnectionId && (
                         <td>
-                          <a href={`#grants/${encodeURIComponent(operation.grant_id)}`}>
-                            {data.grants.find((grant) => grant.id === operation.grant_id)?.name ??
-                              "已撤销连接"}
+                          <a href={`#connections/${encodeURIComponent(operation.agent_connection_id)}`}>
+                            {data.connections.find(
+                              (connection) => connection.id === operation.agent_connection_id,
+                            )?.name ?? "已撤销连接"}
                           </a>
                         </td>
                       )}

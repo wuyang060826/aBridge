@@ -22,7 +22,7 @@ import {
   MAX_DEVICE_OPERATIONS,
   DEVICE_LEASE_SECONDS,
   type OperationFrame,
-  type BrowserError,
+  type OperationError,
 } from "@abridge/protocol";
 import { LocalExecutor } from "./executor.js";
 import { DesktopError, record } from "./errors.js";
@@ -64,7 +64,7 @@ function canonical(value: unknown): string {
       .join(",")}}`;
   return JSON.stringify(value);
 }
-function executionCause(cause: unknown, cancelled: boolean): NonNullable<BrowserError["cause"]> {
+function executionCause(cause: unknown, cancelled: boolean): NonNullable<OperationError["cause"]> {
   if (cancelled || (cause instanceof DesktopError && cause.code === "operation_cancelled"))
     return { code: "operation_cancelled", message: "Execution was interrupted by cancellation" };
   if (
@@ -557,7 +557,7 @@ export class DeviceClient {
   private async execute(frame: OperationFrame, operation: Running): Promise<void> {
     let status = "executed",
       result: Record<string, unknown> = {},
-      error: BrowserError | undefined;
+      error: OperationError | undefined;
     try {
       operation.controller.signal.throwIfAborted();
       result = await this.executor.execute(

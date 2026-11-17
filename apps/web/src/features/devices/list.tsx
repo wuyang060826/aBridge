@@ -3,8 +3,7 @@ import { ActionButton } from "../../components/actions.js";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
 import { Select } from "../../components/forms.js";
 import { useState } from "preact/hooks";
-import type { Device } from "../../lib/api.js";
-import type { Mutate, RunAction } from "../../lib/types.js";
+import type { Device, Mutate, RunAction } from "../../lib/types.js";
 import { ChevronRight, Plus, Search, Square } from "lucide-preact";
 function DeviceStatus({ device }: { device: Device }) {
   return (

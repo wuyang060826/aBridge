@@ -192,16 +192,16 @@ test("OIDC login isolates stable identities, persists mapping and defaults platf
     assert.equal(f.server.store.users().length, 3);
     assert.equal(await f.server.store.verifyUser(userA.username, "fixture-password-123"), undefined);
     assert.equal((await f.server.store.login(local.username, "fixture-password-123"))?.user.id, local.id);
-    const grant = await f.identity.authenticate(await f.token());
-    assert.ok(grant);
-    assert.equal(grant.token_digest, null);
-    assert.equal(grant.name, "Yuxi 平台连接");
-    assert.deepEqual(grant.policy, {
+    const agentConnection = await f.identity.authenticate(await f.token());
+    assert.ok(agentConnection);
+    assert.equal(agentConnection.token_digest, null);
+    assert.equal(agentConnection.name, "Yuxi 平台连接");
+    assert.deepEqual(agentConnection.policy, {
       mode: "all",
       capabilities: ["screen", "input", "shell", "files", "browser"],
       overrides: [],
     });
-    assert.deepEqual(f.server.control.devices(grant), []);
+    assert.deepEqual(f.server.control.devices(agentConnection), []);
     const replay = await f.server.app.inject({
       url: a.callback.pathname + a.callback.search,
       headers: { cookie: a.binding },
@@ -209,7 +209,7 @@ test("OIDC login isolates stable identities, persists mapping and defaults platf
     assert.equal(replay.statusCode, 400);
     const rotate = await f.server.app.inject({
       method: "POST",
-      url: "/api/client-grants/" + grant.id + "/rotate",
+      url: "/api/agent-connections/" + agentConnection.id + "/rotate",
       headers: { cookie },
       payload: {},
     });
@@ -254,7 +254,7 @@ test("OIDC rejects browser mismatch, nonce mismatch and external return paths", 
   }
 });
 
-test("delegation enforces claims and current persisted grant policy, revocation survives login", async () => {
+test("delegation enforces claims and current persisted Agent connection policy, revocation survives login", async () => {
   const f = await fixture();
   try {
     assert.equal(
@@ -263,8 +263,8 @@ test("delegation enforces claims and current persisted grant policy, revocation 
       "login required before delegation",
     );
     await f.login();
-    const grant = await f.identity.authenticate(await f.token());
-    assert.ok(grant);
+    const agentConnection = await f.identity.authenticate(await f.token());
+    assert.ok(agentConnection);
     for (const extra of [
       { purpose: "id_token" },
       { client_id: "other" },
@@ -275,28 +275,30 @@ test("delegation enforces claims and current persisted grant policy, revocation 
       { exp: 1 },
     ])
       assert.equal(await f.identity.authenticate(await f.token("user-a", extra)), undefined);
-    const { device, key: deviceKey } = f.server.store.createDevice(grant.owner_id, "Mine", ["files"]);
+    const { device, key: deviceKey } = f.server.store.createDevice(agentConnection.owner_id, "Mine", [
+      "files",
+    ]);
     const b = await f.login("user-b");
     assert.equal(b.result.statusCode, 302);
     const other = await f.identity.authenticate(await f.token("user-b"));
     assert.ok(other);
     const foreign = f.server.store.createDevice(other.owner_id, "Other", ["files"]).device;
     assert.throws(() =>
-      f.server.store.updateGrant(
-        grant.id,
-        grant.name,
+      f.server.store.updateAgentConnection(
+        agentConnection.id,
+        agentConnection.name,
         { mode: "selected", devices: [{ device_id: foreign.id, capabilities: ["files"] }] },
         null,
       ),
     );
-    f.server.store.updateGrant(
-      grant.id,
-      grant.name,
+    f.server.store.updateAgentConnection(
+      agentConnection.id,
+      agentConnection.name,
       { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
       null,
     );
     assert.deepEqual(
-      f.server.control.devices(grant).map((d) => d.id),
+      f.server.control.devices(agentConnection).map((d) => d.id),
       [device.id],
     );
     assert.deepEqual(
@@ -309,11 +311,18 @@ test("delegation enforces claims and current persisted grant policy, revocation 
       { capabilities: { files: true } },
       { async send() {}, async close() {} },
     );
-    const session = f.server.control.openSession(grant, device.id, ["files"]);
-    await f.server.control.updateGrant(grant, grant.name, { mode: "selected", devices: [] }, null);
+    const session = f.server.control.openSession(agentConnection, device.id, ["files"]);
+    await f.server.control.updateAgentConnection(
+      agentConnection,
+      agentConnection.name,
+      { mode: "selected", devices: [] },
+      null,
+    );
     assert.notEqual(f.server.store.session(session.id)?.status, "active");
-    await assert.rejects(f.server.control.execute(grant, session.id, "file_read", { path: "/fixture" }));
-    assert.deepEqual(f.server.control.devices(grant), []);
+    await assert.rejects(
+      f.server.control.execute(agentConnection, session.id, "file_read", { path: "/fixture" }),
+    );
+    assert.deepEqual(f.server.control.devices(agentConnection), []);
     await f.login();
     assert.deepEqual(
       (await f.identity.authenticate(await f.token()))?.policy,
@@ -337,9 +346,9 @@ test("delegation enforces claims and current persisted grant policy, revocation 
     assert.equal(response.status, 200);
     const body = (await response.json()) as { result: { content: { text: string }[] } };
     assert.deepEqual(JSON.parse(body.result.content[0]!.text).devices, []);
-    f.server.store.revokeGrant(grant.id);
+    f.server.store.revokeAgentConnection(agentConnection.id);
     assert.equal(await f.identity.authenticate(await f.token()), undefined);
-    assert.throws(() => f.server.control.devices(grant));
+    assert.throws(() => f.server.control.devices(agentConnection));
     await f.login();
     assert.equal(await f.identity.authenticate(await f.token()), undefined);
     const admin = await f.server.app.inject({
@@ -402,8 +411,8 @@ test("private backchannel preserves canonical issuer for login and delegated JWK
   const f = await fixture({ backchannel: true });
   try {
     assert.equal((await f.login()).result.statusCode, 302);
-    const grant = await f.identity.authenticate(await f.token());
-    assert.ok(grant);
+    const agentConnection = await f.identity.authenticate(await f.token());
+    assert.ok(agentConnection);
     assert.equal(
       await f.identity.authenticate(await f.token("user-a", { iss: "http://api:5050" })),
       undefined,
@@ -494,16 +503,16 @@ test("real device authorization survives OIDC login and redeems under the mapped
   }
 });
 
-test("explicit platform reauthorization creates all-device grant without reviving old sessions", async () => {
+test("explicit platform reauthorization creates all-device Agent connection without reviving old sessions", async () => {
   const f = await fixture();
   try {
     const login = await f.login();
     const cookie = String(login.result.headers["set-cookie"]).split(";")[0]!;
-    const grant = (await f.identity.authenticate(await f.token()))!;
-    const { device, key } = f.server.store.createDevice(grant.owner_id, "Device", ["files"]);
-    const updated = f.server.store.updateGrant(
-      grant.id,
-      grant.name,
+    const agentConnection = (await f.identity.authenticate(await f.token()))!;
+    const { device, key } = f.server.store.createDevice(agentConnection.owner_id, "Device", ["files"]);
+    const updated = f.server.store.updateAgentConnection(
+      agentConnection.id,
+      agentConnection.name,
       { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
       null,
     );
@@ -514,13 +523,13 @@ test("explicit platform reauthorization creates all-device grant without revivin
       { async send() {}, async close() {} },
     );
     const session = f.server.control.openSession(updated, device.id, ["files"]);
-    const route = "/api/client-grants/" + grant.id + "/reconnect";
+    const route = "/api/agent-connections/" + agentConnection.id + "/reconnect";
     assert.equal(
       (await f.server.app.inject({ method: "POST", url: route, headers: { cookie }, payload: {} }))
         .statusCode,
       409,
     );
-    await f.server.control.revokeGrant(updated);
+    await f.server.control.revokeAgentConnection(updated);
     const another = await f.login("user-b");
     const foreignCookie = String(another.result.headers["set-cookie"]).split(";")[0]!;
     assert.equal(
@@ -551,13 +560,13 @@ test("explicit platform reauthorization creates all-device grant without revivin
     assert.equal(
       await f.identity.authenticate(await f.token()),
       undefined,
-      "login does not recreate a revoked platform grant",
+      "login does not recreate a revoked platform connection",
     );
-    const listing = await f.server.app.inject({ url: "/api/client-grants", headers: { cookie } });
+    const listing = await f.server.app.inject({ url: "/api/agent-connections", headers: { cookie } });
     assert.equal(
       listing
-        .json<{ grants: { id: string; can_reconnect: boolean }[] }>()
-        .grants.find((g) => g.id === grant.id)?.can_reconnect,
+        .json<{ connections: { id: string; can_reconnect: boolean }[] }>()
+        .connections.find((g) => g.id === agentConnection.id)?.can_reconnect,
       true,
     );
     const response = await f.server.app.inject({
@@ -568,7 +577,7 @@ test("explicit platform reauthorization creates all-device grant without revivin
     });
     assert.equal(response.statusCode, 200);
     const replacement = response.json<{ id: string; policy: unknown }>();
-    assert.notEqual(replacement.id, grant.id);
+    assert.notEqual(replacement.id, agentConnection.id);
     assert.deepEqual(replacement.policy, {
       mode: "all",
       capabilities: ["screen", "input", "shell", "files", "browser"],
@@ -591,21 +600,27 @@ test("explicit platform reauthorization creates all-device grant without revivin
     );
     assert.equal((await f.identity.authenticate(await f.token()))?.id, replacement.id);
     assert.notEqual(f.server.store.session(session.id)?.status, "active");
-    assert.ok(f.server.store.grant(grant.id)?.revoked_at);
-    assert.equal(f.server.store.canReconnectPlatformGrant(f.server.store.grant(grant.id)!), false);
+    assert.ok(f.server.store.agentConnection(agentConnection.id)?.revoked_at);
+    assert.equal(
+      f.server.store.canReconnectPlatformAgentConnection(f.server.store.agentConnection(agentConnection.id)!),
+      false,
+    );
     assert.throws(() => f.server.control.devices(updated));
     assert.equal(
       (await f.server.app.inject({ method: "POST", url: route, headers: { cookie }, payload: {} }))
         .statusCode,
       409,
     );
-    const manual = f.server.store.createGrant(grant.owner_id, "Manual", { mode: "selected", devices: [] });
-    f.server.store.revokeGrant(manual.grant.id);
+    const manual = f.server.store.createAgentConnection(agentConnection.owner_id, "Manual", {
+      mode: "selected",
+      devices: [],
+    });
+    f.server.store.revokeAgentConnection(manual.agentConnection.id);
     assert.equal(
       (
         await f.server.app.inject({
           method: "POST",
-          url: "/api/client-grants/" + manual.grant.id + "/reconnect",
+          url: "/api/agent-connections/" + manual.agentConnection.id + "/reconnect",
           headers: { cookie },
           payload: {},
         })
@@ -630,14 +645,17 @@ test("OIDC public callback origin rejects plaintext remote and non-origin URLs",
     assert.doesNotThrow(() => validateIdentityConfig(config, origin));
 });
 
-test("ordinary OIDC creates an account without platform grants", async () => {
+test("ordinary OIDC creates an account without platform connections", async () => {
   const f = await fixture({ delegationEnabled: false });
   try {
     const login = await f.login();
     assert.equal(login.result.statusCode, 302);
     const cookie = String(login.result.headers["set-cookie"]).split(";")[0]!;
-    const grants = await f.server.app.inject({ url: "/api/client-grants", headers: { cookie } });
-    assert.deepEqual(grants.json().grants, []);
+    const agentConnections = await f.server.app.inject({
+      url: "/api/agent-connections",
+      headers: { cookie },
+    });
+    assert.deepEqual(agentConnections.json().connections, []);
     assert.equal(f.server.store.users().length, 1);
   } finally {
     await f.close();
@@ -649,7 +667,7 @@ test("identity outages remain unavailable and local persistence failures are not
   try {
     await f.login();
     const token = await f.token();
-    const method = mock.method(f.server.store, "delegatedGrant", () => {
+    const method = mock.method(f.server.store, "delegatedAgentConnection", () => {
       throw new Error("fixture database failure");
     });
     await assert.rejects(f.identity.authenticate(token), /fixture database failure/);

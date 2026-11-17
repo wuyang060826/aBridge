@@ -15,7 +15,7 @@ for (const change of ["revoke", "pause", "disable"] as const)
     try {
       const user = await store.createUser("fixture", "fixture-password-123");
       const { device, key } = store.createDevice(user.id, "fixture", ["files"]);
-      const { grant } = store.createGrant(
+      const { agentConnection } = store.createAgentConnection(
         user.id,
         "fixture",
         { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
@@ -28,9 +28,9 @@ for (const change of ["revoke", "pause", "disable"] as const)
         { capabilities: { files: true } },
         transport,
       );
-      const session = control.openSession(grant, device.id, ["files"]);
+      const session = control.openSession(agentConnection, device.id, ["files"]);
       const started = await control.execute(
-        grant,
+        agentConnection,
         session.id,
         "file_read",
         { path: "/synthetic" },
@@ -45,7 +45,8 @@ for (const change of ["revoke", "pause", "disable"] as const)
         result: { content: "sensitive-fixture" },
       });
       assert.equal(
-        (control.operationStatus(grant, started.operation_id).result as { content: string }).content,
+        (control.operationStatus(agentConnection, started.operation_id).result as { content: string })
+          .content,
         "sensitive-fixture",
       );
       if (change === "revoke") {
@@ -67,7 +68,7 @@ for (const change of ["revoke", "pause", "disable"] as const)
           capabilities: { files: false },
         });
       await assert.rejects(
-        control.waitOperation(grant, started.operation_id, 0),
+        control.waitOperation(agentConnection, started.operation_id, 0),
         "sensitive content must not remain readable",
       );
     } finally {
@@ -138,7 +139,7 @@ test("sensitive result that finishes after a local pause cannot escape an existi
   try {
     const user = await store.createUser("fixture", "fixture-password-123");
     const { device, key } = store.createDevice(user.id, "fixture", ["files"]);
-    const { grant } = store.createGrant(
+    const { agentConnection } = store.createAgentConnection(
       user.id,
       "fixture",
       { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
@@ -150,16 +151,16 @@ test("sensitive result that finishes after a local pause cannot escape an existi
       { capabilities: { files: true } },
       { async send() {}, async close() {} },
     );
-    const session = control.openSession(grant, device.id, ["files"]);
+    const session = control.openSession(agentConnection, device.id, ["files"]);
     const started = await control.execute(
-      grant,
+      agentConnection,
       session.id,
       "file_read",
       { path: "/synthetic" },
       undefined,
       false,
     );
-    const denied = assert.rejects(control.waitOperation(grant, started.operation_id, 1));
+    const denied = assert.rejects(control.waitOperation(agentConnection, started.operation_id, 1));
     await control.receive(ticket, {
       type: "capabilities",
       connection_epoch: ticket.epoch,
@@ -189,7 +190,7 @@ test("terminal results survive a normal disconnect but retain the last local pau
   try {
     const user = await store.createUser("fixture", "fixture-password-123");
     const { device, key } = store.createDevice(user.id, "fixture", ["files"]);
-    const { grant } = store.createGrant(
+    const { agentConnection } = store.createAgentConnection(
       user.id,
       "fixture",
       { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
@@ -201,9 +202,9 @@ test("terminal results survive a normal disconnect but retain the last local pau
       { capabilities: { files: true } },
       transport,
     );
-    const session = control.openSession(grant, device.id, ["files"]);
+    const session = control.openSession(agentConnection, device.id, ["files"]);
     const started = await control.execute(
-      grant,
+      agentConnection,
       session.id,
       "file_read",
       { path: "/synthetic" },
@@ -218,7 +219,7 @@ test("terminal results survive a normal disconnect but retain the last local pau
       result: { content: "retained-fixture" },
     });
     control.dropConnection(ticket);
-    assert.equal((await control.waitOperation(grant, started.operation_id, 0)).status, "executed");
+    assert.equal((await control.waitOperation(agentConnection, started.operation_id, 0)).status, "executed");
     const paused = await control.attachConnection(
       key,
       "computer",
@@ -226,7 +227,9 @@ test("terminal results survive a normal disconnect but retain the last local pau
       transport,
     );
     control.dropConnection(paused);
-    await assert.rejects(control.waitOperation(grant, started.operation_id, 0), { code: "device_paused" });
+    await assert.rejects(control.waitOperation(agentConnection, started.operation_id, 0), {
+      code: "device_paused",
+    });
     await control.attachConnection(
       key,
       "computer",
@@ -234,7 +237,8 @@ test("terminal results survive a normal disconnect but retain the last local pau
       transport,
     );
     assert.equal(
-      ((await control.waitOperation(grant, started.operation_id, 0)).result as { content: string }).content,
+      ((await control.waitOperation(agentConnection, started.operation_id, 0)).result as { content: string })
+        .content,
       "retained-fixture",
     );
   } finally {

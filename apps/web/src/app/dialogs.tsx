@@ -2,16 +2,16 @@ import { useCredentialGuard } from "../lib/credential-guard.js";
 import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { z } from "zod";
 import { api } from "../lib/api.js";
-import type { Device, Grant } from "../lib/api.js";
+import { type AgentConnectionView } from "@abridge/protocol";
+import type { Device, Mutate, RunAction } from "../lib/types.js";
 import { CopyButton } from "../components/actions.js";
 import { Form, Modal } from "../components/forms.js";
-import type { Mutate, RunAction } from "../lib/types.js";
 import { ConnectionEditor } from "../features/connections/editor.js";
 
 export type ManagementDialog =
   | { kind: "rotate-device"; device: Device }
-  | { kind: "edit-grant"; grant: Grant }
-  | { kind: "rotate-grant"; grant: Grant }
+  | { kind: "edit-connection"; connection: AgentConnectionView }
+  | { kind: "rotate-connection"; connection: AgentConnectionView }
   | { kind: "secret"; title: string; value: string }
   | { kind: "confirm"; title: string; description: string; path: string; tone?: "primary" | "danger" };
 function CredentialDialog({
@@ -100,29 +100,31 @@ export function ManagementModal({
           </Form>
         </Modal>
       );
-    case "edit-grant":
+    case "edit-connection":
       return (
         <ConnectionEditor
-          grant={dialog.grant}
+          connection={dialog.connection}
           devices={devices}
           close={close}
           submit={async (input) => {
-            await mutate(`/api/client-grants/${dialog.grant.id}`, input, "PATCH");
+            await mutate(`/api/agent-connections/${dialog.connection.id}`, input, "PATCH");
             if (!alive.current) return;
             notify("连接已保存");
             close();
           }}
         />
       );
-    case "rotate-grant":
+    case "rotate-connection":
       return (
         <Modal title="重新生成 Agent Key" close={close} dismissible={!rotating}>
           <Form
             cancel={close}
             label="重新生成 Key"
-            onSubmit={() => secret(`/api/client-grants/${dialog.grant.id}/rotate`, {}, "新 Agent Key")}
+            onSubmit={() =>
+              secret(`/api/agent-connections/${dialog.connection.id}/rotate`, {}, "新 Agent Key")
+            }
           >
-            <p class="small muted">{dialog.grant.name} · 旧 Key 将立即失效</p>
+            <p class="small muted">{dialog.connection.name} · 旧 Key 将立即失效</p>
           </Form>
         </Modal>
       );

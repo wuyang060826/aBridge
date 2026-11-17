@@ -91,18 +91,18 @@
   flex: 1;
   min-width: 0;
 }
-.overview-grant + .overview-grant {
+.overview-connection + .overview-connection {
   border-top: 1px solid var(--line);
 }
 .overview-device .name,
-.overview-grant .name {
+.overview-connection .name {
   font-size: 14px;
   font-weight: 500;
 }
 .overview-device p {
   margin-top: 4px;
 }
-.overview-grant {
+.overview-connection {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto 8px;
   align-items: center;

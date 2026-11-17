@@ -24,8 +24,8 @@ test("foreign connection management and known-device probes reveal no foreign or
     const visible = server.store.createDevice(owner.id, "Visible synthetic device", ["files"]);
     const hidden = server.store.createDevice(owner.id, "Hidden synthetic device", ["files"]);
     const otherDevice = server.store.createDevice(foreign.id, "Foreign synthetic device", ["files"]);
-    const connection = server.store.createGrant(owner.id, "Owner agent", files(visible.device.id));
-    const otherConnection = server.store.createGrant(
+    const connection = server.store.createAgentConnection(owner.id, "Owner agent", files(visible.device.id));
+    const otherConnection = server.store.createAgentConnection(
       foreign.id,
       "Foreign agent",
       files(otherDevice.device.id),
@@ -42,11 +42,14 @@ test("foreign connection management and known-device probes reveal no foreign or
       ["/revoke", "POST", {}],
       ["", "PATCH", { name: "stolen", policy: files(visible.device.id), expires_at: null }],
     ] as const) {
-      const response = await fetch(`${url}/api/client-grants/${otherConnection.grant.id}${suffix}`, {
-        method,
-        headers: { cookie, "content-type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      const response = await fetch(
+        `${url}/api/agent-connections/${otherConnection.agentConnection.id}${suffix}`,
+        {
+          method,
+          headers: { cookie, "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        },
+      );
       assert.equal(response.status, 404);
       const payload = await response.text();
       assert.ok(!payload.includes("Foreign"));
@@ -87,8 +90,8 @@ test("rotating one connection preserves another connection's session, operation 
   try {
     const owner = await store.createUser("owner", "synthetic-owner-password");
     const device = store.createDevice(owner.id, "Synthetic device", ["files"]);
-    const first = store.createGrant(owner.id, "First", files(device.device.id));
-    const second = store.createGrant(owner.id, "Second", files(device.device.id));
+    const first = store.createAgentConnection(owner.id, "First", files(device.device.id));
+    const second = store.createAgentConnection(owner.id, "Second", files(device.device.id));
     const frames: JsonObject[] = [];
     const ticket = await control.attachConnection(
       device.key,
@@ -101,10 +104,10 @@ test("rotating one connection preserves another connection's session, operation 
         async close() {},
       },
     );
-    const firstSession = control.openSession(first.grant, device.device.id, ["files"]);
-    const secondSession = control.openSession(second.grant, device.device.id, ["files"]);
+    const firstSession = control.openSession(first.agentConnection, device.device.id, ["files"]);
+    const secondSession = control.openSession(second.agentConnection, device.device.id, ["files"]);
     const firstOperation = await control.execute(
-      first.grant,
+      first.agentConnection,
       firstSession.id,
       "file_read",
       { path: "/first" },
@@ -112,14 +115,14 @@ test("rotating one connection preserves another connection's session, operation 
       false,
     );
     const secondOperation = await control.execute(
-      second.grant,
+      second.agentConnection,
       secondSession.id,
       "file_read",
       { path: "/second" },
       undefined,
       false,
     );
-    const rotated = await control.rotateGrant(first.grant);
+    const rotated = await control.rotateAgentConnection(first.agentConnection);
     assert.equal(store.authenticateAgent(first.key), undefined);
     assert.ok(store.authenticateAgent(rotated.key));
     assert.ok(store.authenticateAgent(second.key));
@@ -137,13 +140,16 @@ test("rotating one connection preserves another connection's session, operation 
       status: "executed",
       result: { content: "second connection private fixture" },
     });
-    assert.deepEqual((await control.waitOperation(second.grant, secondOperation.operation_id, 0)).result, {
-      content: "second connection private fixture",
-    });
-    assert.throws(() => control.operationStatus(rotated.grant, secondOperation.operation_id), {
+    assert.deepEqual(
+      (await control.waitOperation(second.agentConnection, secondOperation.operation_id, 0)).result,
+      {
+        content: "second connection private fixture",
+      },
+    );
+    assert.throws(() => control.operationStatus(rotated.agentConnection, secondOperation.operation_id), {
       code: "not_found",
     });
-    assert.throws(() => control.operationStatus(second.grant, firstOperation.operation_id), {
+    assert.throws(() => control.operationStatus(second.agentConnection, firstOperation.operation_id), {
       code: "not_found",
     });
   } finally {
@@ -162,16 +168,21 @@ for (const reason of ["expiry", "revocation"] as const) {
     try {
       const owner = await store.createUser("owner", "synthetic-owner-password");
       const device = store.createDevice(owner.id, "Synthetic device", ["files"]);
-      const { grant } = store.createGrant(owner.id, "Agent", files(device.device.id), now + 10);
+      const { agentConnection } = store.createAgentConnection(
+        owner.id,
+        "Agent",
+        files(device.device.id),
+        now + 10,
+      );
       const ticket = await control.attachConnection(
         device.key,
         "computer",
         { capabilities: { files: true } },
         { async send() {}, async close() {} },
       );
-      const session = control.openSession(grant, device.device.id, ["files"]);
+      const session = control.openSession(agentConnection, device.device.id, ["files"]);
       const cached = await control.execute(
-        grant,
+        agentConnection,
         session.id,
         "file_read",
         { path: "/cached" },
@@ -186,18 +197,18 @@ for (const reason of ["expiry", "revocation"] as const) {
         result: { content: "cached fixture" },
       });
       const pending = await control.execute(
-        grant,
+        agentConnection,
         session.id,
         "file_read",
         { path: "/pending" },
         undefined,
         false,
       );
-      const denied = assert.rejects(control.waitOperation(grant, pending.operation_id, 1), {
+      const denied = assert.rejects(control.waitOperation(agentConnection, pending.operation_id, 1), {
         code: "unauthorized",
       });
       if (reason === "expiry") now += 11;
-      else await control.revokeGrant(grant);
+      else await control.revokeAgentConnection(agentConnection);
       await control.receive(ticket, {
         type: "result",
         connection_epoch: ticket.epoch,
@@ -206,8 +217,10 @@ for (const reason of ["expiry", "revocation"] as const) {
         result: { content: "late fixture" },
       });
       await denied;
-      assert.throws(() => control.operationStatus(grant, cached.operation_id), { code: "unauthorized" });
-      assert.throws(() => control.devices(grant), { code: "unauthorized" });
+      assert.throws(() => control.operationStatus(agentConnection, cached.operation_id), {
+        code: "unauthorized",
+      });
+      assert.throws(() => control.devices(agentConnection), { code: "unauthorized" });
     } finally {
       await control.shutdown();
       store.close();

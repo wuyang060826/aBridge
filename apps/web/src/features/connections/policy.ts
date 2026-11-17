@@ -1,8 +1,8 @@
-import type { Capability } from "@abridge/protocol";
-import type { Device, Grant } from "../../lib/api.js";
+import type { Capability, AgentConnectionView } from "@abridge/protocol";
+import type { Device } from "../../lib/types.js";
 
-export function connectionCapabilities(grant: Grant, device: Device): Capability[] {
-  const policy = grant.policy;
+export function connectionCapabilities(connection: AgentConnectionView, device: Device): Capability[] {
+  const policy = connection.policy;
   const configured =
     policy.mode === "selected"
       ? (policy.devices.find((entry) => entry.device_id === device.id)?.capabilities ?? [])

@@ -39,6 +39,10 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 | `packages/protocol/`                | 共享 schema、能力与协议常量           |
 | `packages/shared/`                  | Node 数据目录约定                     |
 
+源码中的领域名统一为 `AgentConnection`（Agent 的持久授权连接）、`DeviceConnection`（设备当前传输连接）、`ControlSession`（控制会话）和 `Operation`（一次操作）。管理接口使用 `/api/agent-connections`，列表字段为 `connections`，操作及会话通过 `agent_connection_id` 引用授权连接；设备派发中的 `device_credential_version` 表示 Device Key 版本，不表示 Agent 连接策略版本。`operation_status` 与 `operation_cancel` 面向所有操作，包括 Shell 和浏览器代码。
+
+工具参数由协议包的 `toolArgumentSchemas` 定义，`DeviceToolRequest` 关联工具名与参数类型。MCP 使用同一字段定义，Server 和执行端在各自输入边界解析；默认值、范围及跨字段约束保持单源。执行时仍独立核对授权、取消、连接代次、观察引用和当前目标。管理 API 的公共视图及输入契约位于 `packages/protocol/src/management.ts`，Server 构造与 Web 解析共用类型；数据库实体及本地界面状态不是公共视图。
+
 共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，包内使用 strict TypeScript 和未使用声明检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。
 
 Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状态按请求隔离，设备操作会话由 `ControlService` 管理，二者不是同一个生命周期。管理台是预构建 Preact 11 静态产物，正常运行不启动前端开发服务器。
@@ -47,7 +51,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
-持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前设备元信息与操作去重键映射使用开发数据库 schema 4；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 5，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
 
 ## 身份与授权
 
@@ -115,11 +119,11 @@ Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 �
 
 浏览器观察文本 JSON 总预算约 7000 字符，不含独立图片；正文优先且上限 4000 字符，再分配交互元素和链接。`query` 接受非空字符串或1–20个非空字符串：单串按整段不区分大小写做子串匹配，数组任一项匹配即可，正文和控件使用同一规则；每项最多200字符、数组总长最多2000字符。匹配结果去重并保持原观察预算。零结果只表示本次扫描的已加载正文与控件未匹配，截断不表示内容不存在，未显示字段也不能用于推断站点全部能力。链接附带声明的 `target` 属性，它不证明已经打开新标签。
 
-浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。所有工具及代码中的 `page` 固定指向当前任务页；点击成功不表示导航成功，新标签不会自动接管。访问已观察链接可把其 URL 交给 `browser_open` 或 `page.goto`。点击、键盘、悬停与滚动自动滚动并检查目标，在元素准备后通过 CDP Input 执行；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。脚本失败保留 `steps_completed` 和有界的 `failed_step`（步骤操作 ID、方法、状态及原始错误）；首次执行前的明确拒绝为 `refused`，已有步骤完成后的明确失败为 `failed`，在途超时、断连或无确认回执保持 `outcome_unknown`。纯脚本错误为 `failed`，明确取消与结果未知分别报告，不能用步骤数为零推断没有副作用；输入准备的滚动和 focus 也会触发页面事件。动作成功后观察失败仍为 `executed` 并附 `observation_error`。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `command_status` 查询或 `command_cancel` 取消。同一任务页的重复清理等待同一次清理结果，新任务页不能越过清理；清理失败保留原始原因、`cleanup_error` 与必要的恢复信息，无客户端确认时不宣称任务页已清理。控制会话仍有效而任务页缺失返回 `task_tab_missing`，用 `browser_open` 创建任务页；真实停止或过期仍需新建控制会话。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
+浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。所有工具及代码中的 `page` 固定指向当前任务页；点击成功不表示导航成功，新标签不会自动接管。访问已观察链接可把其 URL 交给 `browser_open` 或 `page.goto`。点击、键盘、悬停与滚动自动滚动并检查目标，在元素准备后通过 CDP Input 执行；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。脚本失败保留 `steps_completed` 和有界的 `failed_step`（步骤操作 ID、方法、状态及原始错误）；首次执行前的明确拒绝为 `refused`，已有步骤完成后的明确失败为 `failed`，在途超时、断连或无确认回执保持 `outcome_unknown`。纯脚本错误为 `failed`，明确取消与结果未知分别报告，不能用步骤数为零推断没有副作用；输入准备的滚动和 focus 也会触发页面事件。动作成功后观察失败仍为 `executed` 并附 `observation_error`。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `operation_status` 查询或 `operation_cancel` 取消。同一任务页的重复清理等待同一次清理结果，新任务页不能越过清理；清理失败保留原始原因、`cleanup_error` 与必要的恢复信息，无客户端确认时不宣称任务页已清理。控制会话仍有效而任务页缺失返回 `task_tab_missing`，用 `browser_open` 创建任务页；真实停止或过期仍需新建控制会话。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
 
 ## Shell、文件与结果
 
-`command_execute` 默认等待最多 15 秒，提前完成立即返回输出和退出码；等满则返回同一 `operation_id` 的当前状态，命令继续运行。`timeout` 独立限制实际执行时间，范围为 1–120 秒。`command_status` 默认也最多等 15 秒，显式 `wait_seconds=0` 立即读取。等待结束或 HTTP 调用方断开不会取消或重新派发命令。取消等待确认，尚未确认时返回 `cancel_requested`。
+`command_execute` 默认等待最多 15 秒，提前完成立即返回输出和退出码；等满则返回同一 `operation_id` 的当前状态，命令继续运行。`timeout` 独立限制实际执行时间，范围为 1–120 秒。`operation_status` 默认也最多等 15 秒，显式 `wait_seconds=0` 立即读取。等待结束或 HTTP 调用方断开不会取消或重新派发命令。取消等待确认，尚未确认时返回 `cancel_requested`。
 
 Shell 完整 JSON 默认返回预算 `output_limit_chars=6000`，可设为 1024–12000。`output_truncated` 表示还有保留文本，使用原操作 ID 与 `next_output_offsets` 继续读取；偏移按解码字符计算。`capture_truncated` 表示执行捕获时已丢失内容，分页无法恢复。运行中的滚动窗口可报告 `output_unavailable_before`，最终结果可能仍保留相应前缀。分页只读缓存。
 
