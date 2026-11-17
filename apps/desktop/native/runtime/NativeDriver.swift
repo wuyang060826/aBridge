@@ -69,6 +69,24 @@ private let nativeDriverCompletion: CuaDriverCompletionV1 = { context, status, r
     operation.finish(status: status, result: consumeDriverBuffer(&result), error: consumeDriverBuffer(&error))
 }
 
+// Keep borrowed C pointers in one synchronous, nonisolated scope. The nested
+// buffer closures capture no actor state and keep their bytes alive through entry.
+private func startDriverOperation(_ driver: OpaquePointer?, nameBytes: [UInt8], arguments: Data, operation: DriverOperation) {
+    let context = Unmanaged.passRetained(operation).toOpaque()
+    var token: OpaquePointer?, error = CuaDriverBuffer()
+    let status = nameBytes.withUnsafeBufferPointer { nameBuffer in
+        arguments.withUnsafeBytes { argBuffer in
+            cua_driver_invoke_v1(driver, nameBuffer.baseAddress, nameBuffer.count, argBuffer.bindMemory(to: UInt8.self).baseAddress, argBuffer.count, nativeDriverCompletion, context, &token, &error)
+        }
+    }
+    let errorData = consumeDriverBuffer(&error)
+    operation.install(token)
+    if status != 0 {
+        Unmanaged<DriverOperation>.fromOpaque(context).release()
+        operation.finish(status: status, result: Data(), error: errorData)
+    }
+}
+
 actor NativeDriver: DesktopNativeDriver {
     private var driver: OpaquePointer?
     private var closed = false
@@ -128,19 +146,7 @@ actor NativeDriver: DesktopNativeDriver {
         let data = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard operation.begin(continuation) else { return }
-                let context = Unmanaged.passRetained(operation).toOpaque()
-                var token: OpaquePointer?, error = CuaDriverBuffer()
-                let status = nameBytes.withUnsafeBufferPointer { nameBuffer in
-                    args.withUnsafeBytes { argBuffer in
-                        cua_driver_invoke_v1(driver, nameBuffer.baseAddress, nameBuffer.count, argBuffer.bindMemory(to: UInt8.self).baseAddress, argBuffer.count, nativeDriverCompletion, context, &token, &error)
-                    }
-                }
-                let errorData = consumeDriverBuffer(&error)
-                operation.install(token)
-                if status != 0 {
-                    Unmanaged<DriverOperation>.fromOpaque(context).release()
-                    operation.finish(status: status, result: Data(), error: errorData)
-                }
+                startDriverOperation(driver, nameBytes: nameBytes, arguments: args, operation: operation)
             }
         } onCancel: { operation.cancel() }
         try Task.checkCancellation()
