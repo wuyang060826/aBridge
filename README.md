@@ -40,7 +40,7 @@ docker run -d --name abridge --restart unless-stopped \
   -p 127.0.0.1:8765:8765 \
   -v abridge-data:/data \
   -e ABRIDGE_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
-  ghcr.io/xerrors/abridge:0.4.12
+  ghcr.io/xerrors/abridge:0.4.13
 ```
 
 打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。镜像支持 Linux amd64 / arm64，仅包含 Server 和管理台，无需在服务器安装桌面驱动或浏览器。
@@ -54,7 +54,7 @@ docker run -d --name abridge --restart unless-stopped \
 
 ```sh
 npx --yes \
-  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.12/xerrors-abridge-0.4.12.tgz \
+  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.13/xerrors-abridge-0.4.13.tgz \
   abridge --web
 ```
 

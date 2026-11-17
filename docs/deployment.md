@@ -204,14 +204,14 @@ Bundle ID、安装路径和用户状态保持稳定，更新器不重置系统�
 
 ## Docker 镜像
 
-正式 Server 镜像为 `ghcr.io/xerrors/abridge`，提供 `linux/amd64` 和 `linux/arm64`。固定版本标签如 `0.4.12`；`latest` 指向最近由镜像工作流发布的正式版本。仅包含 Server 和管理台，不包含桌面 SDK。
+正式 Server 镜像为 `ghcr.io/xerrors/abridge`，提供 `linux/amd64` 和 `linux/arm64`。固定版本标签如 `0.4.13`；`latest` 指向最近由镜像工作流发布的正式版本。仅包含 Server 和管理台，不包含桌面 SDK。
 
 ```sh
 docker run -d --name abridge --restart unless-stopped \
   -p 11111:8765 \
   -v abridge-data:/data \
   -e ABRIDGE_PUBLIC_ORIGIN=http://121.41.110.195:11111 \
-  ghcr.io/xerrors/abridge:0.4.12
+  ghcr.io/xerrors/abridge:0.4.13
 ```
 
 将 `ABRIDGE_PUBLIC_ORIGIN` 换成实际访问地址；使用 HTTPS 反向代理时填外部 HTTPS Origin。远程连接推荐 HTTPS/WSS；公网 HTTP 需要客户端明确确认。命名卷保存数据库和管理员凭据，更新镜像时复用同一数据卷；不要同时启动两个容器使用同一个卷。
