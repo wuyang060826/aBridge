@@ -1,0 +1,32 @@
+[
+  {
+    "group": "baseline",
+    "casesReviewed": 12,
+    "changes": [],
+    "parserSha256": "6a4f5628c958146523238270c679e03a7a2079e0b38afee473aa6bb22db6fff5",
+    "originalReportCanonicalSha256": "fd8df951ce6f76c70c7535a5c7d7b82dcce31871b801e1791db9c78df3c9faa2"
+  },
+  {
+    "group": "candidate",
+    "casesReviewed": 12,
+    "changes": [
+      {
+        "task": "multi-layouts",
+        "seed": 1,
+        "before": {
+          "success": false,
+          "toolViolations": 1,
+          "failure": "tool_violation"
+        },
+        "after": {
+          "success": true,
+          "toolViolations": 0,
+          "failure": null
+        },
+        "diagnosticCount": 1
+      }
+    ],
+    "parserSha256": "6a4f5628c958146523238270c679e03a7a2079e0b38afee473aa6bb22db6fff5",
+    "originalReportCanonicalSha256": "fcef14500600acc286cd287da64032fad224c8d720752723e2338c8163823cf2"
+  }
+]

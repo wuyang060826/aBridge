@@ -63,3 +63,5 @@
 `fixtures/` 保存可复用的受控验收源码，不是中间过程产物。临时编译文件使用临时目录，验收后清理；需要保留的日志、截图和验收结果放入已忽略的 `.local/`，不混入 `tools/`。
 
 `test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。
+
+`npm run test:browser:reliability:live` 使用独立真实 Chrome 和自有页面验证通用输入与恢复。`benchmark:miniwob -- --model-catalog /absolute/path/to/models.json` 固定实际模型元数据并记录其摘要，`--holdout` 单独运行额外 seed=2（非盲测）。[对照方法与边界](../docs/benchmarks/browser-reliability-v2.md)。

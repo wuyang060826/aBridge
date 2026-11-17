@@ -1,0 +1,34 @@
+{
+  "main": {
+    "cases": 12,
+    "strictSuccess": 11,
+    "toolCalls": 63,
+    "toolErrors": {
+      "invalid_action": 2,
+      "outcome_unknown": 1,
+      "task_tab_missing": 1
+    },
+    "toolViolations": 0,
+    "knownUsageCases": 12,
+    "cleanup": 12,
+    "terminalErrorEvents": 0,
+    "diagnosticItems": 0,
+    "modelCatalogRefreshErrors": 0
+  },
+  "extra": {
+    "cases": 6,
+    "strictSuccess": 6,
+    "toolCalls": 37,
+    "toolErrors": {
+      "invalid_action": 2
+    },
+    "toolViolations": 0,
+    "knownUsageCases": 6,
+    "cleanup": 6,
+    "terminalErrorEvents": 0,
+    "diagnosticItems": 0,
+    "modelCatalogRefreshErrors": 0
+  },
+  "exclusions": [],
+  "method": "All completed MCP tool events audited; recoverable tool errors remain distinct from forbidden tools. No case excluded."
+}
