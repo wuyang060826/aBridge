@@ -151,7 +151,7 @@ actor DeviceClient {
     private func send(_ value: JSONObject) async throws {
         guard let ws = socket else { throw DesktopError(code: "device_offline", message: "Device is offline") }
         let timer = Task { try await sleepMilliseconds(5000); ws.cancel(with: .goingAway, reason: nil) }; defer { timer.cancel() }
-        try await ws.send(.data(try value.encoded()))
+        try await ws.send(.string(String(decoding: try value.encoded(), as: UTF8.self)))
     }
     private func output(_ id: String, _ stream: String, _ data: String) async {
         guard operations[id] != nil else { return }
