@@ -180,7 +180,7 @@ function harness(t, local = {}, session = {}, settings = {}) {
     WebSocket: Socket,
     fetch: (...args) => environment.fetch(...args),
     crypto: environment.crypto,
-    timers: environment.timers,
+    timers: settings.defaultTimers ? undefined : environment.timers,
     now: () => environment.now(),
   });
   t.after(() => client.close());
@@ -226,6 +226,34 @@ function harness(t, local = {}, session = {}, settings = {}) {
     nextResult,
   };
 }
+test("default browser timers preserve their global receiver through connection, retry and shutdown", async (t) => {
+  const calls = new Set();
+  for (const method of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
+    const original = globalThis[method];
+    t.mock.method(globalThis, method, function (...args) {
+      assert.equal(this, globalThis, `${method} requires the browser global receiver`);
+      calls.add(method);
+      return original(...args);
+    });
+  }
+  const h = harness(
+    t,
+    { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
+    {},
+    { defaultTimers: true },
+  );
+  await h.start();
+  await delay(10);
+  assert.equal((await h.popup({ type: "status" })).connected, true);
+  h.sockets[0].close();
+  await delay(2100);
+  assert.equal(h.sockets.length, 2);
+  assert.equal((await h.popup({ type: "status" })).connected, true);
+  await h.client.close();
+  assert.equal(h.sockets[1].readyState, 3);
+  assert.deepEqual([...calls].sort(), ["clearInterval", "clearTimeout", "setInterval", "setTimeout"]);
+});
+
 test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
   let authorizationRequest;
   const local = {},
