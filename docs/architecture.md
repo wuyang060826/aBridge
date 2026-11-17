@@ -18,26 +18,34 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 
 可运行产品位于 `apps/`；`packages/` 只包含共享代码。各应用拥有自己的依赖声明、源码与测试，根目录的 npm scripts 协调构建。跨应用共享代码通过 workspace 的具名 exports 引用，生产构建将内部包内联，分发不要求消费者执行 TypeScript 或安装 workspace。
 
-| 模块                                | 职责                                  |
-| ----------------------------------- | ------------------------------------- |
-| `apps/server/src/cli.ts`            | Server 唯一命令入口                   |
-| `apps/server/src/server.ts`         | HTTP、管理认证、MCP 与 WebSocket 组合 |
-| `apps/server/src/control.ts`        | 连接、会话和操作状态的唯一所有者      |
-| `apps/server/src/store.ts`          | SQLite schema、事务与操作元信息       |
-| `apps/server/src/mcp.ts`            | 工具与原生内容编码                    |
-| `apps/server/src/transport.ts`      | 有界 WebSocket 发送与关闭             |
-| `apps/desktop/src/cli.ts`           | Desktop 唯一命令入口                  |
-| `apps/desktop/src/runtime.ts`       | 配置绑定、离线状态与进程生命周期      |
-| `apps/desktop/src/local-control.ts` | 本机 Socket、JSON framing 与资源清理  |
-| `apps/desktop/src/client.ts`        | 设备连接、执行调度与授权状态          |
-| `apps/desktop/src/computer.ts`      | 观察引用及桌面动作契约                |
-| `apps/desktop/src/native.ts`        | 官方 SDK 按需同进程适配               |
-| `apps/desktop/src/executor.ts`      | 桌面、Shell 和文件执行                |
-| `apps/desktop/native/`              | Swift 壳、权限 UI 与原生资源          |
-| `apps/browser/`                     | 浏览器设备连接、任务页与 DOM 操作     |
-| `apps/web/`                         | Preact 管理台                         |
-| `packages/protocol/`                | 共享 schema、能力与协议常量           |
-| `packages/shared/`                  | Node 数据目录约定                     |
+| 模块                                   | 职责                                  |
+| -------------------------------------- | ------------------------------------- |
+| `apps/server/src/cli.ts`               | Server 唯一命令入口                   |
+| `apps/server/src/server.ts`            | HTTP、管理认证、MCP 与 WebSocket 组合 |
+| `apps/server/src/control.ts`           | 连接、会话和操作状态的唯一所有者      |
+| `apps/server/src/store.ts`             | SQLite schema、事务与操作元信息       |
+| `apps/server/src/browser-execution.ts` | 浏览器脚本独占、步骤进度与取消协调    |
+| `apps/server/src/mcp.ts`               | 工具与原生内容编码                    |
+| `apps/server/src/transport.ts`         | 有界 WebSocket 发送与关闭             |
+| `apps/desktop/src/cli.ts`              | Desktop 唯一命令入口                  |
+| `apps/desktop/src/runtime.ts`          | 配置绑定、离线状态与进程生命周期      |
+| `apps/desktop/src/local-control.ts`    | 本机 Socket、JSON framing 与资源清理  |
+| `apps/desktop/src/client.ts`           | 设备连接、执行调度与授权状态          |
+| `apps/desktop/src/computer.ts`         | 观察引用及桌面动作契约                |
+| `apps/desktop/src/native.ts`           | 官方 SDK 按需同进程适配               |
+| `apps/desktop/src/executor.ts`         | 桌面、Shell 和文件执行                |
+| `apps/desktop/native/`                 | Swift 壳、权限 UI 与原生资源          |
+| `apps/browser/src/worker.ts`           | 扩展入口，创建并启动设备客户端        |
+| `apps/browser/src/client.ts`           | 设备绑定、连接、操作日志与本机控制    |
+| `apps/browser/src/task-tabs.ts`        | 自有任务标签、调试器与资源清理        |
+| `apps/browser/src/bridge.ts`           | 浏览器工具编排、观察、读取与输入      |
+| `apps/web/`                            | Preact 管理台                         |
+| `packages/protocol/`                   | 共享 schema、能力与协议常量           |
+| `packages/shared/`                     | Node 数据目录约定                     |
+
+源码中的领域名统一为 `AgentConnection`（Agent 的持久授权连接）、`DeviceConnection`（设备当前传输连接）、`ControlSession`（控制会话）和 `Operation`（一次操作）。管理接口使用 `/api/agent-connections`，列表字段为 `connections`，操作及会话通过 `agent_connection_id` 引用授权连接；设备派发中的 `device_credential_version` 表示 Device Key 版本，不表示 Agent 连接策略版本。`operation_status` 与 `operation_cancel` 面向所有操作，包括 Shell 和浏览器代码。
+
+工具参数由协议包的 `toolArgumentSchemas` 定义，`DeviceToolRequest` 关联工具名与参数类型。MCP 使用同一字段定义，Server 和执行端在各自输入边界解析；默认值、范围及跨字段约束保持单源。执行时仍独立核对授权、取消、连接代次、观察引用和当前目标。管理 API 的公共视图及输入契约位于 `packages/protocol/src/management.ts`，Server 构造与 Web 解析共用类型；数据库实体及本地界面状态不是公共视图。
 
 共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，包内使用 strict TypeScript 和未使用声明检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。
 
@@ -47,7 +55,28 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
-持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 5，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+
+## 执行链与状态归属
+
+普通工具经过 `mcp.ts → ControlService.execute → 设备 WebSocket → 客户端 dispatch → 执行器`，设备回执由 `ControlService.receive` 校验归属，再由 `finish` 发布终态。SQLite 保存操作元信息和去重身份，返回内容留在有界内存缓存中。
+
+`browser_exec` 的外层操作由 Server 执行。`BrowserExecutions` 调用 QuickJS，每个页面步骤回到 `ControlService.execute`，重新经过授权、去重及设备派发。协调模块拥有脚本的步骤编号、在途步骤、进度和取消控制器；`ControlService` 仍是操作终态、结果缓存和持久化的唯一所有者。父操作结束时先取得包含已确认步骤回执的进度，再停止脚本和请求取消在途子操作；脚本结束前保留会话独占，迟到结果不能再次发布终态。
+
+| 状态                              | 所有者                                          | 失效与清理                                              |
+| --------------------------------- | ----------------------------------------------- | ------------------------------------------------------- |
+| 设备绑定与持久暂停                | 设备客户端及本机存储                            | 重新连接不会解除暂停；换绑须先退役旧连接                |
+| 设备当前连接                      | Server `ControlService`、设备客户端各自维护本端 | 连接代次变化后，旧回调不能覆盖新状态                    |
+| 控制会话与操作终态                | Server `ControlService`                         | 断连、撤销、过期和停止终止相应会话；未知操作不重放      |
+| 浏览器脚本及 JSON state           | Server `BrowserExecutions` / `BrowserRuntime`   | 会话结束清除；每步仍受当前授权约束                      |
+| 任务标签、debugger、frame context | 扩展 `TaskTabs`                                 | 创建、attach 与关闭均核对资源归属；重复关闭等待同次清理 |
+| 观察引用与读取快照                | `BrowserBridge` 的任务状态                      | 观察随导航或动作失效；快照仅供读取，不授予输入权限      |
+
+`BrowserDeviceClient.start()` 启动实例，`close()` 结束实例生命周期并释放监听器、定时器和任务资源；本机“停止任务”只清理任务，不关闭设备连接或撤销绑定。worker 入口只负责装配，测试直接创建独立客户端实例。
+
+停止和暂停先使任务资源失效，再等待清理与状态保存；存储失败不能跳过清理，恢复暂停须保存成功后才生效。启动遗留标签由 `TaskTabs` 使用同一清理规则处理，无法确认标签已删除时保留所有权并阻止连接。操作执行结果与日志持久化分开处理：终态保存失败附带诊断，但不把已确认执行改成拒绝；重启后未保存终态的操作仍按结果未知处理，不重放。
+
+引用动作先验证观察引用，locator 动作先解析唯一 DOM 目标；二者共享输入执行函数，均核对任务页、文档版本和目标可用性。locator 不创建临时观察，也不通过替换观察状态来获得输入权限。输入准备可能滚动或聚焦，因此准备开始后的失败仍需按未知副作用处理。
 
 ## 身份与授权
 
@@ -72,11 +101,15 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `device_get`、`devices_list` 一致的设备详情。渲染端可直接读取 `device.name`、`device.kind`（`computer` 或 `browser`）和 `device.platform`（客户端上报的平台字符串，如 `darwin`、`win32` 或 `Browser extension`），无需再次查询设备。
 
+设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展使用通用的 `Browser extension`，不代表探测到具体浏览器品牌或宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
+
 有效能力取连接对该设备的策略、设备授权、会话请求、本机开关及实际就绪状态的交集。设备列举、执行和保留结果访问复用同一策略判定。每次执行重新核对所有者、密钥、撤销与过期状态、会话、能力和当前连接代次。收紧策略会终止不再满足要求的会话并请求取消在途操作；不会恢复本机暂停，也不能回滚已发生的副作用。桌面输入会话在同一设备上独占，浏览器任务分别持有自建标签页。
 
 连接默认持续有效，直到撤销，亦可设置到期时间。控制会话的闲置租约为 300 秒，新操作、操作完成、获准的结果查询及同请求去重返回续租，在途操作由定时维护续租；设置连接到期时间时，租约不越过该时间。操作响应中的 `session` 在返回时生成，包含当前状态、`lease_until` 和 `server_time`，不使用缓存结果中的旧期限。读取已结束会话的保留结果不续活会话。设备发现和监控不续租。设备连接心跳期限为 30 秒，操作开始期限也是独立的 30 秒。
 
 新会话 ID 使用 `ses_` 加 8 位随机 Base64URL 字符，提供 48 位随机量，生成时检查重复并在碰撞时重抽；调用方应原样保存，不手工拼写。设备详情的 `sessions` 仅列当前 Agent 连接自己的有效会话；`desktop_busy` 错误也只附自己的占用会话。调用方可复用正确会话，或显式关闭后新建；不能自动抢占其他任务。只有读文件或运行命令时无需申请 `input`。
+
+Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 位 Base64URL，`snapshot_id` 为 `snap_` 加 8 位 Base64URL，规范 `operation_id` 为 `op_` 加 8 位 Base64URL；不要将 UUID 或完整哈希直接暴露为这些 ID。观察与快照由客户端运行时共享的随机起点 48 位递增序列生成，不按会话重置、不回绕；同一运行时内新旧观察、快照及不同会话不会复用引用，无需保存历史 ID 集合。运行时重启后使用新随机起点，原控制会话遵循断连失效契约。引用不是凭据，动作仍校验当前会话、观察期限与目标。
 
 | 错误                          | 含义与恢复                       |
 | ----------------------------- | -------------------------------- |
@@ -111,17 +144,17 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 浏览器观察文本 JSON 总预算约 7000 字符，不含独立图片；正文优先且上限 4000 字符，再分配交互元素和链接。`query` 接受非空字符串或1–20个非空字符串：单串按整段不区分大小写做子串匹配，数组任一项匹配即可，正文和控件使用同一规则；每项最多200字符、数组总长最多2000字符。匹配结果去重并保持原观察预算。零结果只表示本次扫描的已加载正文与控件未匹配，截断不表示内容不存在，未显示字段也不能用于推断站点全部能力。链接附带声明的 `target` 属性，它不证明已经打开新标签。
 
-浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。所有工具及代码中的 `page` 固定指向当前任务页；点击成功不表示导航成功，新标签不会自动接管。访问已观察链接可把其 URL 交给 `browser_open` 或 `page.goto`。点击、键盘、悬停与滚动自动滚动并检查目标，在元素准备后通过 CDP Input 执行；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。脚本失败保留 `steps_completed` 和有界的 `failed_step`（步骤操作 ID、方法、状态及原始错误）；首次执行前的明确拒绝为 `refused`，已有步骤完成后的明确失败为 `failed`，在途超时、断连或无确认回执保持 `outcome_unknown`。纯脚本错误为 `failed`，明确取消与结果未知分别报告，不能用步骤数为零推断没有副作用；输入准备的滚动和 focus 也会触发页面事件。动作成功后观察失败仍为 `executed` 并附 `observation_error`。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `command_status` 查询或 `command_cancel` 取消。同一任务页的重复清理等待同一次清理结果，新任务页不能越过清理；清理失败保留原始原因、`cleanup_error` 与必要的恢复信息，无客户端确认时不宣称任务页已清理。控制会话仍有效而任务页缺失返回 `task_tab_missing`，用 `browser_open` 创建任务页；真实停止或过期仍需新建控制会话。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
+浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。所有工具及代码中的 `page` 固定指向当前任务页；点击成功不表示导航成功，新标签不会自动接管。访问已观察链接可把其 URL 交给 `browser_open` 或 `page.goto`。点击、键盘、悬停与滚动自动滚动并检查目标，在元素准备后通过 CDP Input 执行；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。脚本失败保留 `steps_completed` 和有界的 `failed_step`（步骤操作 ID、方法、状态及原始错误）；首次执行前的明确拒绝为 `refused`，已有步骤完成后的明确失败为 `failed`，在途超时、断连或无确认回执保持 `outcome_unknown`。纯脚本错误为 `failed`，明确取消与结果未知分别报告，不能用步骤数为零推断没有副作用；输入准备的滚动和 focus 也会触发页面事件。动作成功后观察失败仍为 `executed` 并附 `observation_error`。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `operation_status` 查询或 `operation_cancel` 取消。同一任务页的重复清理等待同一次清理结果，新任务页不能越过清理；清理失败保留原始原因、`cleanup_error` 与必要的恢复信息，无客户端确认时不宣称任务页已清理。控制会话仍有效而任务页缺失返回 `task_tab_missing`，用 `browser_open` 创建任务页；真实停止或过期仍需新建控制会话。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
 
 ## Shell、文件与结果
 
-`command_execute` 默认等待最多 15 秒，提前完成立即返回输出和退出码；等满则返回同一 `operation_id` 的当前状态，命令继续运行。`timeout` 独立限制实际执行时间，范围为 1–120 秒。`command_status` 默认也最多等 15 秒，显式 `wait_seconds=0` 立即读取。等待结束或 HTTP 调用方断开不会取消或重新派发命令。取消等待确认，尚未确认时返回 `cancel_requested`。
+`command_execute` 默认等待最多 15 秒，提前完成立即返回输出和退出码；等满则返回同一 `operation_id` 的当前状态，命令继续运行。`timeout` 独立限制实际执行时间，范围为 1–120 秒。`operation_status` 默认也最多等 15 秒，显式 `wait_seconds=0` 立即读取。等待结束或 HTTP 调用方断开不会取消或重新派发命令。取消等待确认，尚未确认时返回 `cancel_requested`。
 
 Shell 完整 JSON 默认返回预算 `output_limit_chars=6000`，可设为 1024–12000。`output_truncated` 表示还有保留文本，使用原操作 ID 与 `next_output_offsets` 继续读取；偏移按解码字符计算。`capture_truncated` 表示执行捕获时已丢失内容，分页无法恢复。运行中的滚动窗口可报告 `output_unavailable_before`，最终结果可能仍保留相应前缀。分页只读缓存。
 
 文件工具仅处理 UTF-8 文本与目录列表，遵循当前用户的系统文件权限。读写正文上限为 1 MiB；写入已存在文件需要显式 `overwrite=true`。Shell 与文件能力不提供隔离沙箱。
 
-新操作通常省略 `operation_id`。显式提供时，它是当前 Agent 连接与会话内的请求去重键；Server 将其映射为规范执行 ID，数据库、设备日志和响应使用该 ID。重试同一会话中的同一请求可复用原键或返回 ID，同 ID 改参数会被拒绝；不同会话可独立使用同一原键，已返回的执行 ID 不能用于另一会话。查询和取消只使用响应的 `operation_id`。设备保存执行意图和终态，恢复后不自动重放。Server 仅短期缓存返回内容；SQLite 不保存命令、输入、文件正文或截图。服务重启后未完成操作标为结果未知。
+新操作通常省略 `operation_id`。显式提供时，它是当前 Agent 连接与会话内的请求去重键；Server 将其映射为短规范执行 ID，数据库、设备日志和响应使用该 ID。完整作用域键的 SHA-256 仅保存在数据库内部 `key_hash`，先按完整键查找已有操作；短 ID 碰撞时另选候选，不把不同请求键合并为一次操作。自动分配的短 ID 同样检查数据库重复。`op_` 加恰好 8 位 Base64URL 是 Server 返回 ID 的保留格式，调用方不要用它自建请求键；未知的该格式 ID 会被拒绝。重试同一会话中的同一请求可复用原键或返回 ID，同 ID 改参数会被拒绝；不同会话可独立使用同一原键，已返回的执行 ID 不能用于另一会话。查询和取消只使用响应的 `operation_id`。设备保存执行意图和终态，恢复后不自动重放。Server 仅短期缓存返回内容；SQLite 不保存命令、输入、文件正文或截图。服务重启后未完成操作标为结果未知。
 
 图片通过原生 MCP `ImageContent` 返回，不在 JSON 中重复嵌入 base64。原始图片上限为 4 MiB，设备 WebSocket 消息上限为 8 MiB。`executed` 仅表示执行回执，业务结果还需检查退出码、文件内容或后续观察。取消和关闭不能回滚已发生的副作用。
 

@@ -93,7 +93,7 @@ export async function createBenchmarkEnvironment(options: {
     ensureActive();
     const user = await server.store.createUser("benchmark-owner", randomUUID());
     const device = server.store.createDevice(user.id, "Isolated benchmark browser", ["browser"], "browser");
-    const { key } = server.store.createGrant(user.id, "Benchmark MCP", {
+    const { key } = server.store.createAgentConnection(user.id, "Benchmark MCP", {
       mode: "selected",
       devices: [{ device_id: device.device.id, capabilities: ["browser"] }],
     });
@@ -234,7 +234,7 @@ export async function createBenchmarkEnvironment(options: {
           performance.now() > deadline
         )
           throw Error(`Browser operation ended: ${JSON.stringify(response)}`);
-        response = await call("command_status", { operation_id: response.operation_id, wait_seconds: 1 });
+        response = await call("operation_status", { operation_id: response.operation_id, wait_seconds: 1 });
       }
       if (!record(response.result)) throw Error("Browser execution returned no result");
       return response.result;

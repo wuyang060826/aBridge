@@ -3,8 +3,7 @@ import { ActionButton } from "../../components/actions.js";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
 import { Select } from "../../components/forms.js";
 import { useState } from "preact/hooks";
-import type { Device } from "../../lib/api.js";
-import type { Mutate, RunAction } from "../../lib/types.js";
+import type { Device, Mutate, RunAction } from "../../lib/types.js";
 import { ChevronRight, Plus, Search, Square } from "lucide-preact";
 function DeviceStatus({ device }: { device: Device }) {
   return (
@@ -114,13 +113,7 @@ export function DevicesPage({
                 <a class="device-card-link" href={`#devices/${encodeURIComponent(device.id)}`}>
                   {device.name}
                 </a>
-                <span class="small muted">
-                  {device.platform
-                    ? platformName(device.platform)
-                    : device.kind === "browser"
-                      ? "浏览器"
-                      : "电脑"}
-                </span>
+                <span class="small muted">{platformName(device.platform)}</span>
               </div>
               <div class="device-card-footer">
                 <DeviceCapabilities device={device} />

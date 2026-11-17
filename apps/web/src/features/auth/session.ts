@@ -1,21 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { api, objectResultSchema, ApiError, loadData, userSchema, type User } from "../../lib/api.js";
+import { api, objectResultSchema, ApiError, loadData } from "../../lib/api.js";
+import { managementUserSchema, type UserView } from "@abridge/protocol";
 
 import type { ManagementData } from "../../lib/types.js";
-export const emptyData: ManagementData = { devices: [], grants: [] };
+export const emptyData: ManagementData = { devices: [], connections: [] };
 export type AuthPhase = "loading" | "login" | "ready";
 export function useUserSession(notify: (message: string) => void, management = true) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<UserView | null>(null);
   const [phase, setPhase] = useState<AuthPhase>("loading");
   const [data, setData] = useState<ManagementData>(emptyData);
   const [identityRevision, setIdentityRevision] = useState(0);
   const [reloadRevision, setReloadRevision] = useState(0);
-  const identity = useRef<User | null>(null);
+  const identity = useRef<UserView | null>(null);
   const revision = useRef(0);
   const alive = useRef(false);
   const changingCookie = useRef(0);
   const cookieRequests = useRef<Promise<unknown>>(Promise.resolve());
-  const updateIdentity = useCallback((me: User | null) => {
+  const updateIdentity = useCallback((me: UserView | null) => {
     if (identity.current?.id !== me?.id) {
       setData(emptyData);
       setIdentityRevision((value) => value + 1);
@@ -43,11 +44,11 @@ export function useUserSession(notify: (message: string) => void, management = t
     try {
       // A cookie can change in another tab. Never publish data under an older displayed identity.
       for (let attempt = 0; attempt < 2; attempt++) {
-        const me = await api("/api/me", userSchema);
+        const me = await api("/api/me", managementUserSchema);
         if (!valid()) return;
         updateIdentity(me);
         const loaded = management ? await loadData() : emptyData;
-        const confirmed = management ? await api("/api/me", userSchema) : me;
+        const confirmed = management ? await api("/api/me", managementUserSchema) : me;
         if (!valid()) return;
         if (confirmed.id !== me.id) {
           updateIdentity(confirmed);
@@ -103,7 +104,7 @@ export function useUserSession(notify: (message: string) => void, management = t
     changingCookie.current++;
     // Serialize Set-Cookie responses, so an earlier login cannot undo a later logout.
     const pending = cookieRequests.current.then(() =>
-      api("/api/login", userSchema, {
+      api("/api/login", managementUserSchema, {
         username: form.get("username"),
         password: form.get("password"),
       }),

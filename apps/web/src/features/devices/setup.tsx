@@ -2,11 +2,11 @@ import { ArrowLeft, ArrowUpRight, Check, ChevronDown, RefreshCw } from "lucide-p
 import { useCredentialGuard } from "../../lib/credential-guard.js";
 import { useRef, useState } from "preact/hooks";
 import { z } from "zod";
-import { api, type Device } from "../../lib/api.js";
+import { api } from "../../lib/api.js";
+import type { Device, RunAction } from "../../lib/types.js";
 import { ActionButton, CopyButton } from "../../components/actions.js";
 import { DeviceIcon } from "../../components/icons.js";
 import { Field, Form } from "../../components/forms.js";
-import type { RunAction } from "../../lib/types.js";
 
 export function DeviceSetupPage({
   devices,
@@ -77,7 +77,7 @@ export function DeviceSetupPage({
                 <a class="button" href={`#devices/${encodeURIComponent(connected.id)}`}>
                   查看设备
                 </a>
-                <a class="button primary" href="#grants/new">
+                <a class="button primary" href="#connections/new">
                   连接 Agent
                 </a>
               </div>

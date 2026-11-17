@@ -12,7 +12,7 @@ import {
   browserLocateActSchema,
 } from "@abridge/protocol";
 import { createServer } from "../src/server.js";
-import type { AttachedDevice, JsonObject, OperationResponse } from "../src/types.js";
+import type { DeviceConnection, JsonObject, OperationResponse } from "../src/types.js";
 import { Store } from "../src/store.js";
 import { ControlService } from "../src/control.js";
 
@@ -23,7 +23,7 @@ test("browser code shares session state, forwards steps, deduplicates and yields
   try {
     const url = await server.start();
     const user = await server.store.createUser("code-fixture", "code-fixture-password");
-    const grant = server.store.createGrant(user.id, "Code fixture", {
+    const agentConnection = server.store.createAgentConnection(user.id, "Code fixture", {
       mode: "all",
       capabilities: ["browser"],
       overrides: [],
@@ -74,17 +74,19 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       }),
     );
     await welcome;
-    const session = server.control.openSession(grant.grant, device.device.id, ["browser"]);
+    const session = server.control.openSession(agentConnection.agentConnection, device.device.id, [
+      "browser",
+    ]);
     async function run(code: string, id: string, timeout = 20000): Promise<OperationResponse> {
       const started = await server.control.execute(
-        grant.grant,
+        agentConnection.agentConnection,
         session.id,
         "browser_exec",
         { code, timeout_ms: timeout },
         id,
         false,
       );
-      return server.control.waitOperation(grant.grant, started.operation_id, 5);
+      return server.control.waitOperation(agentConnection.agentConnection, started.operation_id, 5);
     }
     const first = await run("state.count = 2; return state.count;", "code-first");
     assert.equal(first.status, "executed", JSON.stringify(first));
@@ -130,7 +132,7 @@ test("browser code shares session state, forwards steps, deduplicates and yields
     }
     const nextStep = once(socket, "message");
     const waiting = await server.control.execute(
-      grant.grant,
+      agentConnection.agentConnection,
       session.id,
       "browser_exec",
       {
@@ -145,8 +147,12 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       (message) => message.type === "dispatch" && (message.arguments as JsonObject).selector === "#hold",
     )!;
     assert.ok(heldDispatch);
-    await server.control.cancelOperation(grant.grant, waiting.operation_id);
-    await server.control.waitOperation(grant.grant, heldDispatch.operation_id as string, 1);
+    await server.control.cancelOperation(agentConnection.agentConnection, waiting.operation_id);
+    await server.control.waitOperation(
+      agentConnection.agentConnection,
+      heldDispatch.operation_id as string,
+      1,
+    );
     assert.ok(
       messages.some(
         (message) =>
@@ -160,8 +166,32 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       ),
       false,
     );
+    const timedOut = await run(
+      "await page.locator('#hold').click(); await page.locator('#after-timeout').click();",
+      "code-timeout",
+      100,
+    );
+    assert.equal(timedOut.status, "outcome_unknown", JSON.stringify(timedOut));
+    const timedOutStep = (timedOut.result as JsonObject).failed_step as JsonObject;
+    assert.equal(timedOutStep.method, "locate_act");
+    assert.equal(timedOutStep.status, "outcome_unknown");
+    await server.control.waitOperation(agentConnection.agentConnection, String(timedOutStep.operation_id), 1);
+    assert.ok(
+      messages.some(
+        (message) =>
+          message.type === "cancel" &&
+          (message.operation_ids as string[]).includes(String(timedOutStep.operation_id)),
+      ),
+    );
+    assert.equal(
+      messages.some(
+        (message) =>
+          message.type === "dispatch" && (message.arguments as JsonObject).selector === "#after-timeout",
+      ),
+      false,
+    );
     const held = await server.control.execute(
-      grant.grant,
+      agentConnection.agentConnection,
       session.id,
       "browser_exec",
       { code: "await new Promise(() => {});", timeout_ms: 20000 },
@@ -178,11 +208,15 @@ test("browser code shares session state, forwards steps, deduplicates and yields
         result: { value: "forged" },
       }),
     );
-    const stillRunning = await server.control.waitOperation(grant.grant, held.operation_id, 0.03);
+    const stillRunning = await server.control.waitOperation(
+      agentConnection.agentConnection,
+      held.operation_id,
+      0.03,
+    );
     assert.notEqual(stillRunning.status, "executed", "Device receipts cannot finish a server-owned runtime");
-    await server.control.cancelOperation(grant.grant, held.operation_id);
+    await server.control.cancelOperation(agentConnection.agentConnection, held.operation_id);
     const cancelled = await server.control.execute(
-      grant.grant,
+      agentConnection.agentConnection,
       session.id,
       "browser_exec",
       { code: "await page.sleep(10000);", timeout_ms: 20000 },
@@ -190,22 +224,31 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       false,
     );
     await assert.rejects(
-      server.control.execute(grant.grant, session.id, "browser_observe", {}, "code-external"),
+      server.control.execute(
+        agentConnection.agentConnection,
+        session.id,
+        "browser_observe",
+        {},
+        "code-external",
+      ),
       /owns this session/,
     );
-    const stopped = await server.control.cancelOperation(grant.grant, cancelled.operation_id);
+    const stopped = await server.control.cancelOperation(
+      agentConnection.agentConnection,
+      cancelled.operation_id,
+    );
     assert.ok(["outcome_unknown", "cancelled"].includes(stopped.status), JSON.stringify(stopped));
-    await server.control.closeSession(grant.grant, session.id);
-    const next = server.control.openSession(grant.grant, device.device.id, ["browser"]);
+    await server.control.closeSession(agentConnection.agentConnection, session.id);
+    const next = server.control.openSession(agentConnection.agentConnection, device.device.id, ["browser"]);
     const clean = await server.control.execute(
-      grant.grant,
+      agentConnection.agentConnection,
       next.id,
       "browser_exec",
       { code: "return state.count === undefined;", timeout_ms: 20000 },
       "code-clean",
       false,
     );
-    const result = await server.control.waitOperation(grant.grant, clean.operation_id, 5);
+    const result = await server.control.waitOperation(agentConnection.agentConnection, clean.operation_id, 5);
     assert.equal(result.status, "executed", JSON.stringify(result));
     assert.equal((result.result as JsonObject).value, true);
   } finally {
@@ -220,7 +263,7 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
     const directory = await mkdtemp(join(tmpdir(), "abridge-browser-progress-"));
     const store = new Store(join(directory, "server.db"));
     const control = new ControlService(store);
-    let ticket: AttachedDevice | undefined;
+    let ticket: DeviceConnection | undefined;
     let reached!: () => void;
     const dispatched = new Promise<void>((resolve) => {
       reached = resolve;
@@ -229,7 +272,7 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
     try {
       const user = await store.createUser("progress-fixture", "progress-fixture-password");
       const device = store.createDevice(user.id, "Progress browser", ["browser"], "browser");
-      let { grant } = store.createGrant(user.id, "Progress agent", {
+      let { agentConnection } = store.createAgentConnection(user.id, "Progress agent", {
         mode: "all",
         capabilities: ["browser"],
         overrides: [],
@@ -264,9 +307,9 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
           async close() {},
         },
       );
-      const session = control.openSession(grant, device.device.id, ["browser"]);
+      const session = control.openSession(agentConnection, device.device.id, ["browser"]);
       const started = await control.execute(
-        grant,
+        agentConnection,
         session.id,
         "browser_exec",
         {
@@ -278,8 +321,8 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
       );
       await dispatched;
       if (ending === "disconnect" || ending === "disconnect-zero") control.dropConnection(ticket);
-      if (ending === "rotate") ({ grant } = await control.rotateGrant(grant));
-      const result = control.operationStatus(grant, started.operation_id);
+      if (ending === "rotate") ({ agentConnection } = await control.rotateAgentConnection(agentConnection));
+      const result = control.operationStatus(agentConnection, started.operation_id);
       assert.equal(result.status, "outcome_unknown");
       const progress = result.result as JsonObject;
       assert.equal(progress.steps_completed, ending === "disconnect-zero" ? 0 : 1, JSON.stringify(result));
@@ -297,7 +340,7 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
         "No queued step may run",
       );
       assert.deepEqual(
-        { ...control.operationStatus(grant, started.operation_id), session: undefined },
+        { ...control.operationStatus(agentConnection, started.operation_id), session: undefined },
         { ...result, session: undefined },
         "Late runtime completion cannot replace diagnostics",
       );

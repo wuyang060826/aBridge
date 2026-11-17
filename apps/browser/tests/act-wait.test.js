@@ -58,7 +58,7 @@ function fixture(navigationTimeout = 15000) {
       },
     },
   };
-  const bridge = new BrowserBridge(chrome, { navigationTimeout, uuid: () => `observation-${++sequence}` });
+  const bridge = new BrowserBridge(chrome, { navigationTimeout });
   const request = (method, params = {}) =>
     bridge.dispatch({ id: `request-${++sequence}`, method, session_id: "s", params });
   return { bridge, chrome, request, writes: () => writes, reads: () => readsAfterWrite };

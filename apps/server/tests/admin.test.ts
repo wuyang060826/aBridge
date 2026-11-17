@@ -174,12 +174,12 @@ test("only administrators create accounts, identities stay independent, overview
     const browser = f.store.createDevice(created.json().id, "Chromium", ["browser"], "browser");
     const revoked = f.store.createDevice(created.json().id, "Removed", ["shell"]);
     f.store.revokeDevice(revoked.device.id);
-    const grant = f.store.createGrant(created.json().id, "Agent", {
+    const agentConnection = f.store.createAgentConnection(created.json().id, "Agent", {
       mode: "all",
       capabilities: ["shell"],
       overrides: [],
     });
-    for (const key of [computer.key, browser.key, grant.key])
+    for (const key of [computer.key, browser.key, agentConnection.key])
       assert.equal(
         (await call("GET", "/api/admin/overview", { authorization: "Bearer " + key })).statusCode,
         401,

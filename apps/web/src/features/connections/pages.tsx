@@ -3,11 +3,12 @@ import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import { useCredentialGuard } from "../../lib/credential-guard.js";
 import { z } from "zod";
-import { api, grantSchema, type Device, type Grant } from "../../lib/api.js";
+import { api } from "../../lib/api.js";
+import { agentConnectionViewSchema, type AgentConnectionView } from "@abridge/protocol";
+import type { Device, RunAction } from "../../lib/types.js";
 import { CopyButton } from "../../components/actions.js";
 import { ConnectionEditor } from "./editor.js";
 import { ConnectionPreview } from "./preview.js";
-import type { RunAction } from "../../lib/types.js";
 
 export function connectionParameters(origin: string, key = "<AGENT_KEY>"): string {
   return JSON.stringify({ url: `${origin}/mcp`, headers: { Authorization: `Bearer ${key}` } }, null, 2);
@@ -95,7 +96,7 @@ export function ConnectionCreatePage({
   run: RunAction;
   notify: (message: string) => void;
 }) {
-  const [created, setCreated] = useState<Grant | null>(null);
+  const [created, setCreated] = useState<AgentConnectionView | null>(null);
   const [secret, setSecret] = useState("");
   const [saved, setSaved] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -106,7 +107,7 @@ export function ConnectionCreatePage({
   const available = devices.filter((device) => device.status !== "revoked");
   return (
     <div class="task-page">
-      <a class="device-back" href="#grants">
+      <a class="device-back" href="#connections">
         <ArrowLeft aria-hidden="true" />
         Agent 连接
       </a>
@@ -150,7 +151,7 @@ export function ConnectionCreatePage({
                   class="primary"
                   disabled={!saved}
                   onClick={() => {
-                    location.hash = `grants/${encodeURIComponent(created.id)}`;
+                    location.hash = `connections/${encodeURIComponent(created.id)}`;
                   }}
                 >
                   查看连接
@@ -170,14 +171,14 @@ export function ConnectionCreatePage({
                 inline
                 devices={devices}
                 close={() => {
-                  location.hash = "grants";
+                  location.hash = "connections";
                 }}
                 submit={async (input) => {
                   setCreating(true);
                   try {
                     const result = await api(
-                      "/api/client-grants",
-                      grantSchema.extend({ key: z.string() }),
+                      "/api/agent-connections",
+                      agentConnectionViewSchema.extend({ key: z.string() }),
                       input,
                     );
                     setCreated(result);
@@ -199,7 +200,7 @@ export function ConnectionCreatePage({
 }
 
 export function ConnectionPage({
-  grant,
+  connection,
   section,
   run,
   edit,
@@ -208,30 +209,30 @@ export function ConnectionPage({
   reconnect,
   activity,
 }: {
-  grant: Grant | undefined;
+  connection: AgentConnectionView | undefined;
   section?: string;
   run: RunAction;
-  edit: (grant: Grant) => void;
-  rotate: (grant: Grant) => void;
-  revoke: (grant: Grant) => void;
-  reconnect: (grant: Grant) => void;
+  edit: (connection: AgentConnectionView) => void;
+  rotate: (connection: AgentConnectionView) => void;
+  revoke: (connection: AgentConnectionView) => void;
+  reconnect: (connection: AgentConnectionView) => void;
   activity?: ComponentChildren;
 }) {
-  if (!grant)
+  if (!connection)
     return (
       <>
-        <a class="device-back" href="#grants">
+        <a class="device-back" href="#connections">
           <ArrowLeft aria-hidden="true" />
           Agent 连接
         </a>
         <section class="surface empty">
           <h1>找不到此连接</h1>
-          <a href="#grants">返回连接列表</a>
+          <a href="#connections">返回连接列表</a>
         </section>
       </>
     );
-  const revoked = grant.revoked_at !== null;
-  const expired = grant.expires_at !== null && grant.expires_at <= Date.now() / 1000;
+  const revoked = connection.revoked_at !== null;
+  const expired = connection.expires_at !== null && connection.expires_at <= Date.now() / 1000;
   const activeSection = ["config", "activity", "settings"].includes(section ?? "") ? section : "permissions";
   const status = revoked ? "已撤销" : expired ? "已到期" : "已授权";
   const sections = [
@@ -242,27 +243,27 @@ export function ConnectionPage({
   ];
   return (
     <>
-      <a class="device-back" href="#grants">
+      <a class="device-back" href="#connections">
         <ArrowLeft aria-hidden="true" />
         Agent 连接
       </a>
       <div class="page-title">
         <div>
           <div class="device-title">
-            <h1>{grant.name}</h1>
+            <h1>{connection.name}</h1>
             <span class={`status-badge ${!revoked && !expired ? "active" : ""}`}>{status}</span>
           </div>
           <p class="muted">
-            {grant.authentication === "platform" ? "平台授权连接" : "Agent Key 连接"}
+            {connection.authentication === "platform" ? "平台授权连接" : "Agent Key 连接"}
             {revoked
               ? ""
-              : grant.expires_at !== null
-                ? ` · 有效至 ${new Date(grant.expires_at * 1000).toLocaleDateString("zh-CN")}`
+              : connection.expires_at !== null
+                ? ` · 有效至 ${new Date(connection.expires_at * 1000).toLocaleDateString("zh-CN")}`
                 : ""}
           </p>
         </div>
-        {grant.can_reconnect && (
-          <button class="primary" onClick={() => reconnect(grant)}>
+        {connection.can_reconnect && (
+          <button class="primary" onClick={() => reconnect(connection)}>
             重新授权
           </button>
         )}
@@ -270,14 +271,14 @@ export function ConnectionPage({
       {expired && !revoked && (
         <div class="connection-expired-notice" role="status">
           <p>连接已到期</p>
-          <button onClick={() => edit(grant)}>修改有效期</button>
+          <button onClick={() => edit(connection)}>修改有效期</button>
         </div>
       )}
       <nav class="subnav" aria-label="连接详情">
         {sections.map(([key, label]) => (
           <a
             key={key}
-            href={`#grants/${encodeURIComponent(grant.id)}/${key}`}
+            href={`#connections/${encodeURIComponent(connection.id)}/${key}`}
             aria-current={activeSection === key ? "page" : undefined}
           >
             {label}
@@ -286,15 +287,15 @@ export function ConnectionPage({
       </nav>
       {activeSection === "permissions" ? (
         <section class="setup-panel">
-          <ConnectionPreview key={grant.id} grant={grant} edit={() => edit(grant)} />
+          <ConnectionPreview key={connection.id} connection={connection} edit={() => edit(connection)} />
         </section>
       ) : activeSection === "config" ? (
         <section class="setup-panel">
-          {grant.authentication === "platform" ? (
+          {connection.authentication === "platform" ? (
             <div class="empty">
               <h2>由平台管理接入</h2>
-              {grant.can_reconnect && (
-                <button class="primary" onClick={() => reconnect(grant)}>
+              {connection.can_reconnect && (
+                <button class="primary" onClick={() => reconnect(connection)}>
                   重新授权
                 </button>
               )}
@@ -302,7 +303,7 @@ export function ConnectionPage({
           ) : revoked ? (
             <div class="empty">
               <h2>此连接已撤销</h2>
-              <a class="button-link primary" href="#grants/new">
+              <a class="button-link primary" href="#connections/new">
                 创建连接
               </a>
             </div>
@@ -317,17 +318,17 @@ export function ConnectionPage({
           <section class="settings-section">
             <div>
               <h2>连接信息</h2>
-              <code class="small muted">{grant.id}</code>
+              <code class="small muted">{connection.id}</code>
             </div>
-            {!revoked && <button onClick={() => edit(grant)}>编辑连接</button>}
+            {!revoked && <button onClick={() => edit(connection)}>编辑连接</button>}
           </section>
-          {grant.authentication === "key" && !revoked && (
+          {connection.authentication === "key" && !revoked && (
             <section class="settings-section">
               <div>
                 <h2>重新生成 Agent Key</h2>
                 <p class="muted">旧 Key 立即失效。请将新 Key 更新到 Agent 中。</p>
               </div>
-              <button onClick={() => rotate(grant)}>重新生成 Key</button>
+              <button onClick={() => rotate(connection)}>重新生成 Key</button>
             </section>
           )}
           {!revoked && (
@@ -336,7 +337,7 @@ export function ConnectionPage({
                 <h2>撤销连接</h2>
                 <p class="muted">停止当前会话，并移除此 Agent 对设备的访问权限。</p>
               </div>
-              <button class="danger" onClick={() => revoke(grant)}>
+              <button class="danger" onClick={() => revoke(connection)}>
                 撤销连接
               </button>
             </section>
@@ -346,7 +347,7 @@ export function ConnectionPage({
               <div>
                 <h2>连接已撤销</h2>
               </div>
-              {grant.can_reconnect && <button onClick={() => reconnect(grant)}>重新授权</button>}
+              {connection.can_reconnect && <button onClick={() => reconnect(connection)}>重新授权</button>}
             </section>
           )}
         </div>

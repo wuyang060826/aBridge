@@ -1,17 +1,17 @@
 import {
-  COMPUTER_WINDOW_PID_REQUIRED,
   DESKTOP_OBSERVATION_SECONDS,
   MAX_IMAGE_BYTES,
-  MAX_ACT_WAIT_AFTER_MS,
-  actWaitAfterSchema,
-  computerActionSchema,
-  computerPidSchema,
   computerWindowIdSchema,
+  computerAppsSchema,
+  computerWindowsSchema,
+  computerOpenSchema,
+  computerObserveSchema,
+  computerActSchema,
+  referenceId,
   type DesktopFocusStatus,
 } from "@abridge/protocol";
-import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { DesktopError, checkAbort, integer, invalid } from "./errors.js";
+import { DesktopError, checkAbort, invalid, parseArguments } from "./errors.js";
 import type { NativeDriver, Target, NativeAction, NativeObservation } from "./native.js";
 type Observation = {
   id: string;
@@ -36,10 +36,8 @@ export class Computer {
     readonly native: NativeDriver,
     private readonly now = () => performance.now(),
   ) {}
-  async apps(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const query = args.query;
-    if (query !== undefined && (typeof query !== "string" || query.length > 200))
-      invalid("query must be a string of at most 200 characters");
+  async apps(input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const { query } = parseArguments(computerAppsSchema, input);
     const apps = (await this.native.apps(signal)).filter((a) =>
       typeof query === "string"
         ? `${a.name}\n${a.bundle_id ?? ""}`.toLowerCase().includes(query.toLowerCase())
@@ -59,8 +57,8 @@ export class Computer {
     if (rows.length < apps.length) result.truncated = true;
     return result;
   }
-  async windows(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const pid = args.pid === undefined ? undefined : integer(args.pid, "pid", 1, 2147483647);
+  async windows(input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const { pid } = parseArguments(computerWindowsSchema, input);
     const windows = await this.native.windows(pid, signal);
     let running: boolean | null = null;
     if (pid !== undefined) {
@@ -86,25 +84,16 @@ export class Computer {
         : {}),
     };
   }
-  open(
-    session: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  open(session: string, args: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.serial(session, () => this.openLocked(session, args, signal));
   }
   private async openLocked(
     session: string,
-    args: Record<string, unknown>,
+    input: unknown,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const args = parseArguments(computerOpenSchema, input);
     const bundle = args.bundle_id;
-    if (
-      typeof bundle !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(bundle) ||
-      bundle.length > 250
-    )
-      invalid("bundle_id must be an exact application identifier");
     if (!(await this.native.apps(signal)).some((a) => a.bundle_id === bundle))
       throw new DesktopError("app_not_found", "Application is not installed");
     checkAbort(signal);
@@ -193,45 +182,32 @@ export class Computer {
       return undefined;
     }
   }
-  observe(
-    session: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  observe(session: string, args: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.serial(session, () => this.observeLocked(session, args, signal));
   }
   private async observeLocked(
     session: string,
-    args: Record<string, unknown>,
+    input: unknown,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const args = parseArguments(computerObserveSchema, input);
     this.assertOpen(session);
     checkAbort(signal);
     const previous = this.targets.get(session);
-    if (args.desktop !== undefined && typeof args.desktop !== "boolean") invalid("desktop must be a boolean");
-    if (args.screenshot !== undefined && typeof args.screenshot !== "boolean")
-      invalid("screenshot must be a boolean");
     const query = args.query;
-    if (query !== undefined && (typeof query !== "string" || query.length > 200))
-      invalid("query must be at most 200 characters");
     let target: Target;
     if (args.pid !== undefined || args.window_id !== undefined) {
-      if (args.desktop === true) invalid("Select a window or desktop");
-      if (args.pid === undefined) invalid(COMPUTER_WINDOW_PID_REQUIRED);
-      const pid = computerPidSchema.safeParse(args.pid);
-      if (!pid.success) invalid(pid.error.issues[0]!.message);
+      const pid = args.pid!; // Shared schema requires pid when window_id is supplied.
       if (args.window_id !== undefined) {
-        const windowId = computerWindowIdSchema.safeParse(args.window_id);
-        if (!windowId.success) invalid(windowId.error.issues[0]!.message);
-        target = { pid: pid.data, window_id: windowId.data };
+        target = { pid, window_id: args.window_id };
       } else {
         const windows = (
-          await this.native.windows(pid.data, signal).catch((error: unknown) => {
+          await this.native.windows(pid, signal).catch((error: unknown) => {
             checkAbort(signal);
             this.assertOpen(session);
             throw error;
           })
-        ).filter((w) => w.pid === pid.data && computerWindowIdSchema.safeParse(w.window_id).success);
+        ).filter((w) => w.pid === pid && computerWindowIdSchema.safeParse(w.window_id).success);
         checkAbort(signal);
         this.assertOpen(session);
         if (!windows.length)
@@ -244,7 +220,7 @@ export class Computer {
             "window_selection_required",
             "This application has multiple windows; call computer_windows(pid=...) and pass both pid and window_id to computer_observe to select one",
           );
-        target = { pid: pid.data, window_id: windows[0]!.window_id };
+        target = { pid: pid, window_id: windows[0]!.window_id };
       }
     } else if (args.desktop === true) target = { desktop: true };
     else if (previous && "pid" in previous) target = previous;
@@ -264,7 +240,7 @@ export class Computer {
     this.assertOpen(session);
     const focus = before === after ? before : undefined;
     const observation: Observation = {
-      id: `obs_${randomUUID().replaceAll("-", "")}`,
+      id: referenceId("obs"),
       created: this.now(),
       target,
       refs: new Map(),
@@ -345,18 +321,15 @@ export class Computer {
     }
     return result;
   }
-  act(
-    session: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
+  act(session: string, args: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.serial(session, () => this.actLocked(session, args, signal));
   }
   private async actLocked(
     session: string,
-    args: Record<string, unknown>,
+    input: unknown,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const args = parseArguments(computerActSchema, input);
     this.assertOpen(session);
     const observation = this.observations.get(session);
     if (
@@ -365,37 +338,20 @@ export class Computer {
       this.now() - observation.created > DESKTOP_OBSERVATION_SECONDS * 1000
     )
       throw new DesktopError("stale_observation", "Observe the target again before acting");
-    const parsed = computerActionSchema.safeParse(args.action);
-    if (!parsed.success) invalid("action must match the desktop action schema");
-    const outer = args;
-    args = parsed.data;
-    const action = args.type;
-    if (
-      typeof action !== "string" ||
-      !["click", "double_click", "type", "key", "move", "drag", "scroll"].includes(action)
-    )
-      invalid("Unsupported desktop action");
-    if (outer.observe_after !== undefined && typeof outer.observe_after !== "boolean")
-      invalid("observe_after must be a boolean");
-    if (outer.screenshot !== undefined && typeof outer.screenshot !== "boolean")
-      invalid("screenshot must be a boolean");
-    if (outer.screenshot === true && outer.observe_after === false)
-      invalid("screenshot requires observe_after=true");
-    const waiting = actWaitAfterSchema.safeParse(outer.wait_after_ms);
-    if (!waiting.success) invalid(`wait_after_ms must be an integer between 0 and ${MAX_ACT_WAIT_AFTER_MS}`);
+    const action = args.action;
     if ("desktop" in observation.target && !observation.focus)
       throw new DesktopError(
         "focus_unavailable",
         "Desktop observation has unconfirmed focus; observe the desktop again after focus is verifiable, or call computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true",
       );
     const native: NativeAction = {
-      action,
+      action: action.type,
       target: observation.target,
       capture_id: observation.capture_id,
     };
-    const ref = args.element_ref;
+    const ref = "element_ref" in action ? action.element_ref : undefined;
     if (ref !== undefined) {
-      if (typeof ref !== "string" || !observation.refs.has(ref))
+      if (!observation.refs.has(ref))
         throw new DesktopError("invalid_reference", "Element reference is not in this observation");
       native.native_ref = observation.refs.get(ref);
     }
@@ -415,64 +371,40 @@ export class Computer {
         invalid("Coordinates must be inside the observed screenshot");
       return { x, y };
     };
-    if (["click", "double_click"].includes(action)) {
-      if (ref !== undefined && (args.x !== undefined || args.y !== undefined))
-        invalid("Use an element reference or coordinates");
-      if (ref === undefined) Object.assign(native, point(args.x, args.y));
-      if (args.button !== undefined && !["left", "right", "middle"].includes(String(args.button)))
-        invalid("Invalid mouse button");
-      native.button = args.button as string | undefined;
+    switch (action.type) {
+      case "click":
+      case "double_click":
+        if (ref === undefined) Object.assign(native, point(action.x, action.y));
+        native.button = action.button;
+        break;
+      case "type":
+        native.text = action.text;
+        break;
+      case "key":
+        native.key = action.key;
+        break;
+      case "move":
+        Object.assign(native, point(action.x, action.y));
+        break;
+      case "drag": {
+        Object.assign(native, point(action.x, action.y));
+        const to = point(action.to_x, action.to_y);
+        native.to_x = to.x;
+        native.to_y = to.y;
+        break;
+      }
+      case "scroll":
+        if (!observation.width || !observation.height)
+          throw new DesktopError("screenshot_required", "Observe with a screenshot before scrolling");
+        native.x = Math.floor(observation.width / 2);
+        native.y = Math.floor(observation.height / 2);
+        native.delta_x = action.delta_x;
+        native.delta_y = action.delta_y;
+        break;
     }
-    if (action === "type") {
-      if (typeof args.text !== "string" || args.text.length > 10000 || args.text.includes("\0"))
-        invalid("text must contain at most 10000 characters");
-      native.text = args.text;
-    }
-    if (action === "key") {
-      if (typeof args.key !== "string" || !args.key || args.key.length > 100)
-        invalid("key must contain at most 100 characters");
-      native.key = args.key;
-    }
-    if (["move", "drag"].includes(action)) Object.assign(native, point(args.x, args.y));
-    if (action === "drag") {
-      const to = point(args.to_x, args.to_y);
-      native.to_x = to.x;
-      native.to_y = to.y;
-    }
-    if (action === "scroll") {
-      if (!observation.width || !observation.height)
-        throw new DesktopError("screenshot_required", "Observe with a screenshot before scrolling");
-      native.x = Math.floor(observation.width / 2);
-      native.y = Math.floor(observation.height / 2);
-      const dx = args.delta_x ?? 0,
-        dy = args.delta_y ?? 0;
-      if (
-        typeof dx !== "number" ||
-        typeof dy !== "number" ||
-        !Number.isFinite(dx) ||
-        !Number.isFinite(dy) ||
-        Math.abs(dx) > 10000 ||
-        Math.abs(dy) > 10000 ||
-        (!dx && !dy) ||
-        (dx && dy)
-      )
-        invalid("Scroll requires one nonzero axis");
-      native.delta_x = dx;
-      native.delta_y = dy;
-    }
-    if (args.modifiers !== undefined) {
-      if (
-        !Array.isArray(args.modifiers) ||
-        args.modifiers.some(
-          (m) =>
-            typeof m !== "string" ||
-            !["cmd", "command", "meta", "ctrl", "control", "alt", "option", "shift", "fn"].includes(m),
-        )
-      )
-        invalid("Invalid modifiers");
-      native.modifiers = (args.modifiers as string[]).map(
-        (m) => ({ command: "cmd", control: "ctrl", alt: "option" })[m] ?? m,
-      );
+    if ("modifiers" in action) {
+      const aliases: Record<string, string> = { command: "cmd", control: "ctrl", alt: "option" };
+      native.modifiers = action.modifiers.map((modifier) => aliases[modifier] ?? modifier);
     }
     checkAbort(signal);
     if (observation.focus) {
@@ -491,13 +423,13 @@ export class Computer {
     this.assertOpen(session);
     this.observations.delete(session);
     const result = await this.native.act(session, native, signal);
-    if (outer.observe_after === false && outer.screenshot !== true) return result;
+    if (args.observe_after === false && args.screenshot !== true) return result;
     const followUp = new AbortController();
     const followUpSignal = signal ? AbortSignal.any([signal, followUp.signal]) : followUp.signal;
     this.followUpControllers.set(session, followUp);
     try {
       this.assertOpen(session);
-      if (waiting.data > 0) await delay(waiting.data, undefined, { signal: followUpSignal });
+      if (args.wait_after_ms > 0) await delay(args.wait_after_ms, undefined, { signal: followUpSignal });
       checkAbort(followUpSignal);
       return {
         ...result,
@@ -505,7 +437,7 @@ export class Computer {
           session,
           {
             ...("pid" in observation.target ? observation.target : { desktop: true }),
-            screenshot: outer.screenshot === true,
+            screenshot: args.screenshot === true,
           },
           followUpSignal,
         ),

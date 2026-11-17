@@ -3,9 +3,7 @@ import { ActionButton } from "../../components/actions.js";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
 import { Field, Form, Modal } from "../../components/forms.js";
 import { useState } from "preact/hooks";
-import type { Device } from "../../lib/api.js";
-import type { ManagementData } from "../../lib/types.js";
-import type { Mutate, RunAction } from "../../lib/types.js";
+import type { Device, ManagementData, Mutate, RunAction } from "../../lib/types.js";
 import { ArrowLeft, ChevronRight, Square } from "lucide-preact";
 import { ActivityPage } from "../activity/page.js";
 import { connectionCapabilities } from "../connections/policy.js";
@@ -179,21 +177,25 @@ export function DevicePage({
               <section class="device-access">
                 <div class="section-heading">
                   <h2>授权的 Agent</h2>
-                  <a href="#grants/new">连接 Agent</a>
+                  <a href="#connections/new">连接 Agent</a>
                 </div>
                 <div class="access-list">
-                  {data.grants
+                  {data.connections
                     .filter(
-                      (grant) =>
-                        grant.revoked_at === null &&
-                        (grant.expires_at === null || grant.expires_at > Date.now() / 1000) &&
-                        connectionCapabilities(grant, device).length,
+                      (connection) =>
+                        connection.revoked_at === null &&
+                        (connection.expires_at === null || connection.expires_at > Date.now() / 1000) &&
+                        connectionCapabilities(connection, device).length,
                     )
-                    .map((grant) => (
-                      <a class="access-row" href={`#grants/${encodeURIComponent(grant.id)}`} key={grant.id}>
-                        <span class="name">{grant.name}</span>
+                    .map((connection) => (
+                      <a
+                        class="access-row"
+                        href={`#connections/${encodeURIComponent(connection.id)}`}
+                        key={connection.id}
+                      >
+                        <span class="name">{connection.name}</span>
                         <div class="caps">
-                          {connectionCapabilities(grant, device).map((cap) => (
+                          {connectionCapabilities(connection, device).map((cap) => (
                             <span class="cap" key={cap}>
                               <CapabilityIcon capability={cap} />
                               {capabilityLabels[cap]}
@@ -203,11 +205,11 @@ export function DevicePage({
                         <ChevronRight aria-hidden="true" />
                       </a>
                     ))}
-                  {!data.grants.some(
-                    (grant) =>
-                      grant.revoked_at === null &&
-                      (grant.expires_at === null || grant.expires_at > Date.now() / 1000) &&
-                      connectionCapabilities(grant, device).length,
+                  {!data.connections.some(
+                    (connection) =>
+                      connection.revoked_at === null &&
+                      (connection.expires_at === null || connection.expires_at > Date.now() / 1000) &&
+                      connectionCapabilities(connection, device).length,
                   ) && <div class="compact-empty">暂无授权</div>}
                 </div>
               </section>

@@ -1,24 +1,29 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
-  COMPUTER_WINDOW_PID_REQUIRED,
   VERSION,
   MAX_IMAGE_BYTES,
   capabilitySchema,
-  computerActionSchema,
-  computerPidSchema,
-  computerWindowIdSchema,
-  browserActionSchema,
-  browserQuerySchema,
+  computerAppsSchema,
+  computerWindowsSchema,
+  computerOpenSchema,
+  computerObserveSchema,
+  computerActSchema,
+  browserOpenSchema,
+  browserObserveSchema,
+  browserActSchema,
   browserReadSchema,
   browserWaitSchema,
   browserExecSchema,
-  actWaitAfterSchema,
+  commandExecuteSchema,
+  filesListSchema,
+  fileReadSchema,
+  fileWriteSchema,
   type DeviceTool,
 } from "@abridge/protocol";
 import { ControlService } from "./control.js";
 import { commandOutputPage } from "./command-output.js";
-import { BridgeError, object, type Grant, type JsonObject } from "./types.js";
+import { BridgeError, object, type AgentConnection, type JsonObject } from "./types.js";
 
 const id = z.string().min(1).max(100);
 const base = {
@@ -26,14 +31,9 @@ const base = {
   operation_id: id
     .optional()
     .describe(
-      "Usually omit for a new operation. For retrying the same request in the same session, reuse the original key or returned operation_id. Keys are scoped to the session; query/cancel with the returned operation_id. Never replay an unknown side effect in a new session.",
+      "Usually omit for a new operation. Returned IDs are op_ plus 8 Base64URL characters; reserve this format for server IDs. For retrying the same request in the same session, reuse the original key or returned operation_id. Keys are scoped to the session; query/cancel with the returned operation_id. Never replay an unknown side effect in a new session.",
     ),
 };
-const path = z
-  .string()
-  .min(1)
-  .max(4096)
-  .refine((value) => !value.includes("\0"), "Path contains NUL");
 const wait = z.number().finite().min(0).max(30).default(15);
 const outputLimit = z.number().int().min(1024).max(12000).default(6000);
 const offset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0);
@@ -70,20 +70,25 @@ export function contentResponse(value: unknown): { content: (TextContent | Image
 }
 
 /** Stateless HTTP requests get isolated MCP transport state; control sessions remain domain state. */
-export function createMcpServer(control: ControlService, grant: Grant): McpServer {
+export function createMcpServer(control: ControlService, agentConnection: AgentConnection): McpServer {
   const server = new McpServer({ name: "aBridge", version: VERSION });
   function register<S extends z.ZodRawShape>(
     name: string,
     description: string,
-    shape: S,
+    schema: z.ZodObject<S>,
     run: (args: z.infer<z.ZodObject<S>>) => Promise<unknown> | unknown,
   ): void {
     server.registerTool(
       name,
-      { description: "aBridge: " + description, inputSchema: z.object(shape).strict() },
+      { description: "aBridge: " + description, inputSchema: z.object(schema.shape).strict() },
       async (args) => {
         try {
-          const value = await run(args),
+          // Cross-field contract errors use the same structured result as domain refusals.
+          // MCP still exposes the shared fields, defaults and scalar bounds.
+          const parsed = schema.safeParse(args);
+          if (!parsed.success)
+            throw new BridgeError("invalid_arguments", parsed.error.issues[0]!.message, 422);
+          const value = await run(parsed.data),
             response = contentResponse(value);
           if (
             object(value) &&
@@ -102,257 +107,186 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
       },
     );
   }
-  const exec = (tool: DeviceTool, args: JsonObject): Promise<unknown> => {
+  const exec = (
+    tool: DeviceTool,
+    args: { session_id: string; operation_id?: string } & JsonObject,
+  ): Promise<unknown> => {
     const { session_id, operation_id, ...arguments_ } = args;
-    return control.execute(grant, session_id as string, tool, arguments_, operation_id as string | undefined);
+    return control.execute(agentConnection, session_id, tool, arguments_, operation_id);
   };
   register(
     "devices_list",
     "List granted devices, available capabilities and your active sessions. Discovery does not renew sessions.",
-    {},
+    z.object({}).strict(),
     () => ({
-      connection: control.connectionInfo(grant),
-      devices: control.devices(grant),
+      connection: control.connectionInfo(agentConnection),
+      devices: control.devices(agentConnection),
     }),
   );
   register(
     "device_get",
     "Read one granted device and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
-    { device_id: id },
-    (a) => control.deviceView(control.authorizedDevice(grant, a.device_id), grant),
+    z.object({ device_id: id }).strict(),
+    (a) => control.deviceView(control.authorizedDevice(agentConnection, a.device_id), agentConnection),
   );
   register(
     "session_open",
     "Open a capability-scoped session on an explicit online device. Returns the session and device details including name, kind and platform. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
-    { device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) },
+    z.object({ device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) }).strict(),
     (a) => {
-      const session = control.openSession(grant, a.device_id, a.capabilities);
+      const session = control.openSession(agentConnection, a.device_id, a.capabilities);
       return {
         ...session,
         server_time: control.sessionInfo(session).server_time,
-        device: control.deviceView(control.authorizedDevice(grant, session.device_id), grant),
+        device: control.deviceView(
+          control.authorizedDevice(agentConnection, session.device_id),
+          agentConnection,
+        ),
       };
     },
   );
   register(
     "session_close",
     "Close a session and its task tab, retaining Profile authorization and personal tabs.",
-    { session_id: id },
-    (a) => control.closeSession(grant, a.session_id),
+    z.object({ session_id: id }).strict(),
+    (a) => control.closeSession(agentConnection, a.session_id),
   );
   register(
     "computer_apps",
     "Find running apps; query also finds installed apps. Pass a returned bundle_id to computer_open.",
-    { ...base, query: z.string().max(200).optional() },
+    computerAppsSchema.safeExtend(base),
     (a) => exec("computer_apps", a),
   );
   register(
     "computer_windows",
     "List windows for an explicit PID. Observe the returned window before acting.",
-    { ...base, pid: z.number().int().positive() },
+    computerWindowsSchema.safeExtend(base),
     (a) => exec("computer_windows", a),
   );
   register(
     "computer_open",
     "Launch or activate an app by exact bundle_id and return its observation. Continue from result.observation; never relaunch to refresh.",
-    {
-      ...base,
-      bundle_id: z
-        .string()
-        .min(3)
-        .max(200)
-        .regex(/^[A-Za-z0-9][A-Za-z0-9.-]+$/),
-      screenshot: z.boolean().default(false),
-    },
+    computerOpenSchema.safeExtend(base),
     (a) => exec("computer_open", a),
   );
   register(
     "computer_observe",
     "Observe the selected window with native image by default. Pass pid alone to observe its only window; multiple windows return window_selection_required and no windows return window_unavailable. Use computer_windows(pid=...) then pass both pid and window_id to select a specific window. Omit both to reuse the session's selected window. Observation references last 120s until an action. desktop=true selects the whole desktop; capture does not require verified focus. Desktop results include focus_status (confirmed or unconfirmed). Unavailable or changing focus returns the observation with focus_status=unconfirmed and pixel_actions=false; desktop actions then refuse with focus_unavailable. Observe again once focus is verifiable, or use computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true.",
-    {
-      ...base,
-      pid: computerPidSchema
-        .optional()
-        .describe(
-          "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
-        ),
-      window_id: computerWindowIdSchema
-        .optional()
-        .describe("Specific window returned by computer_windows; requires pid. Omit to select by pid alone."),
-      screenshot: z.boolean().default(true),
-      query: z.string().max(200).optional(),
-      desktop: z
-        .boolean()
-        .default(false)
-        .describe(
-          "Select the whole desktop instead of a window; cannot be combined with pid or window_id. Capture proceeds even when focus cannot be verified. focus_status=confirmed requires exactly one verifiable active regular application and the same unambiguous on-screen ordinary front window before and after capture; otherwise focus_status=unconfirmed and pixel_actions=false. Desktop actions require confirmed focus. Observe again once focus is verifiable, or use computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true.",
-        ),
-    },
-    (a) => {
-      if (a.desktop && (a.pid !== undefined || a.window_id !== undefined))
-        throw new BridgeError("invalid_arguments", "Desktop observation cannot select a window", 422);
-      if (a.window_id !== undefined && a.pid === undefined)
-        throw new BridgeError("invalid_arguments", COMPUTER_WINDOW_PID_REQUIRED, 422);
-      return exec("computer_observe", a);
-    },
+    computerObserveSchema.safeExtend(base),
+    (a) => exec("computer_observe", a),
   );
-  const after = {
-    observe_after: z.boolean().default(true),
-    screenshot: z.boolean().default(false),
-    wait_after_ms: actWaitAfterSchema.describe(
-      "Wait after the action completes before its follow-up observation or screenshot, in milliseconds (default 2000; 0 skips). Ignored when observe_after=false. This is a delay, not an operation timeout.",
-    ),
-  };
   register(
     "computer_act",
     "Act once on a current desktop observation. Whole-desktop actions require focus_status=confirmed and recheck current focus before input: unavailable focus returns focus_unavailable and changed focus returns focus_changed. Observe again or select a window via computer_windows. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
-    {
-      ...base,
-      observation_id: z.string().regex(/^obs_[a-f0-9]{32}$/),
-      action: computerActionSchema,
-      ...after,
-    },
-    (a) => {
-      if (a.screenshot && !a.observe_after)
-        throw new BridgeError("invalid_arguments", "Screenshot requires observe_after=true", 422);
-      return exec("computer_act", a);
-    },
+    computerActSchema.safeExtend(base),
+    (a) => exec("computer_act", a),
   );
   register(
     "browser_open",
     "Navigate the current task tab using the existing Profile/login and return its observation. To visit a link whose URL was observed, navigate to that URL here. Do not reopen to wait for loading.",
-    { ...base, url: z.string().min(1).max(8192), screenshot: z.boolean().default(false) },
-    (a) => exec("browser_open", { ...a, observe_after: true }),
+    browserOpenSchema.safeExtend(base),
+    (a) => exec("browser_open", a),
   );
   register(
     "browser_observe",
     "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after 10s and actions/navigation.",
-    { ...base, screenshot: z.boolean().default(false), query: browserQuerySchema.optional() },
+    browserObserveSchema.safeExtend(base),
     (a) => exec("browser_observe", a),
   );
   register(
     "browser_act",
     "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native actions already scroll and check the target. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
-    { ...base, observation_id: id, action: browserActionSchema, ...after },
-    (a) => {
-      if (a.screenshot && !a.observe_after)
-        throw new BridgeError("invalid_arguments", "Screenshot requires observe_after=true", 422);
-      return exec("browser_act", a);
-    },
+    browserActSchema.safeExtend(base),
+    (a) => exec("browser_act", a),
   );
   register(
     "browser_read",
     "Read current page text or loaded table rows, or page a saved snapshot without capturing again. Offsets count text characters or table rows. Read coverage and truncation before drawing conclusions.",
-    { ...base, ...browserReadSchema.shape },
+    browserReadSchema.safeExtend(base),
     (a) => exec("browser_read", a),
   );
   register(
     "browser_wait",
     "Wait for a selector or page text condition in the existing task tab. This is read-only; a timeout never justifies repeating an executed action.",
-    { ...base, ...browserWaitSchema.shape },
-    (a) => {
-      const parsed = browserWaitSchema.safeParse({
-        frame_selector: a.frame_selector,
-        selector: a.selector,
-        text: a.text,
-        state: a.state,
-        value: a.value,
-        timeout_ms: a.timeout_ms,
-      });
-      if (!parsed.success)
-        throw new BridgeError(
-          "invalid_arguments",
-          "Use selector or text; value waits require selector and value",
-          422,
-        );
-      return exec("browser_wait", a);
-    },
+    browserWaitSchema.safeExtend(base),
+    (a) => exec("browser_wait", a),
   );
   register(
     "browser_exec",
-    "Run an async JavaScript function body for batch actions or custom extraction; use await and return a JSON value. page always addresses the current task tab; a clicked link's new tab is not automatically adopted. Native locator actions already scroll and check their target. Available: page.goto(url), page.observe(options), page.locator(css).click({hold_ms:1500})/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. No setTimeout/setInterval in this outer runtime: prefer page.wait or locator.waitFor for conditions; use await page.sleep(ms) for a cancellable 0-10000 ms delay. click() is a normal native click; click({hold_ms:1500}) holds the native mouse button before release. DOM dispatchEvent is synthetic input, not a native gesture. An unsupported tool gesture does not prove the website lacks that gesture. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use command_status for that same operation; command_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.",
-    { ...base, ...browserExecSchema.shape, wait_seconds: wait },
+    "Run an async JavaScript function body for batch actions or custom extraction; use await and return a JSON value. page always addresses the current task tab; a clicked link's new tab is not automatically adopted. Native locator actions already scroll and check their target. Available: page.goto(url), page.observe(options), page.locator(css).click({hold_ms:1500})/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. No setTimeout/setInterval in this outer runtime: prefer page.wait or locator.waitFor for conditions; use await page.sleep(ms) for a cancellable 0-10000 ms delay. click() is a normal native click; click({hold_ms:1500}) holds the native mouse button before release. DOM dispatchEvent is synthetic input, not a native gesture. An unsupported tool gesture does not prove the website lacks that gesture. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use operation_status for that same operation; operation_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.",
+    browserExecSchema.safeExtend({ ...base, wait_seconds: wait }),
     async (a) => {
       const { session_id, operation_id, wait_seconds, ...args } = a;
-      const started = await control.execute(grant, session_id, "browser_exec", args, operation_id, false);
-      return control.waitOperation(grant, started.operation_id, wait_seconds);
+      const started = await control.execute(
+        agentConnection,
+        session_id,
+        "browser_exec",
+        args,
+        operation_id,
+        false,
+      );
+      return control.waitOperation(agentConnection, started.operation_id, wait_seconds);
     },
   );
   register(
     "command_execute",
-    "Run a user shell command. Short commands return output and exit code directly; wait_seconds defaults to 15s. Yielding does not cancel. Page retained output using next_output_offsets and command_status, never rerun.",
-    {
-      ...base,
-      command: z
-        .string()
-        .min(1)
-        .max(65536)
-        .refine((v) => v.trim().length > 0 && !v.includes("\0")),
-      cwd: path.optional(),
-      env: z
-        .record(
-          z.string().regex(/^[^=\u0000]+$/),
-          z.string().refine((v) => !v.includes("\0")),
-        )
-        .optional(),
-      timeout: z.number().finite().min(1).max(120).default(30),
-      wait_seconds: wait,
-      output_limit_chars: outputLimit,
-    },
+    "Run a user shell command. Short commands return output and exit code directly; wait_seconds defaults to 15s. Yielding does not cancel. Page retained output using next_output_offsets and operation_status, never rerun.",
+    commandExecuteSchema.safeExtend({ ...base, wait_seconds: wait, output_limit_chars: outputLimit }),
     async (a) => {
       const { wait_seconds, output_limit_chars, session_id, operation_id, ...args } = a;
-      const started = await control.execute(grant, session_id, "command_execute", args, operation_id, false);
+      const started = await control.execute(
+        agentConnection,
+        session_id,
+        "command_execute",
+        args,
+        operation_id,
+        false,
+      );
       return commandOutputPage(
-        await control.waitOperation(grant, started.operation_id, wait_seconds),
+        await control.waitOperation(agentConnection, started.operation_id, wait_seconds),
         output_limit_chars,
       );
     },
   );
   register(
-    "command_status",
+    "operation_status",
     "Wait for an existing operation or page retained stdout/stderr, without executing it again. Copy next_output_offsets. Offsets count Unicode characters. Results expire after ten minutes.",
-    {
-      operation_id: id,
-      wait_seconds: wait,
-      output_limit_chars: outputLimit,
-      stdout_offset: offset,
-      stderr_offset: offset,
-    },
+    z
+      .object({
+        operation_id: id,
+        wait_seconds: wait,
+        output_limit_chars: outputLimit,
+        stdout_offset: offset,
+        stderr_offset: offset,
+      })
+      .strict(),
     async (a) =>
       commandOutputPage(
-        await control.waitOperation(grant, a.operation_id, a.wait_seconds),
+        await control.waitOperation(agentConnection, a.operation_id, a.wait_seconds),
         a.output_limit_chars,
         a.stdout_offset,
         a.stderr_offset,
       ),
   );
   register(
-    "command_cancel",
+    "operation_cancel",
     "Request cancellation and wait for the terminal receipt. An unknown outcome must be inspected before retrying.",
-    { operation_id: id },
-    (a) => control.cancelOperation(grant, a.operation_id),
+    z.object({ operation_id: id }).strict(),
+    (a) => control.cancelOperation(agentConnection, a.operation_id),
   );
   register(
     "files_list",
     "List directory entries at an explicit path.",
-    { ...base, path, limit: z.number().int().min(1).max(500).default(200) },
+    filesListSchema.safeExtend(base),
     (a) => exec("files_list", a),
   );
-  register(
-    "file_read",
-    "Read a UTF-8 file, bounded to one MiB.",
-    { ...base, path, max_bytes: z.number().int().min(1).max(1048576).default(1048576) },
-    (a) => exec("file_read", a),
+  register("file_read", "Read a UTF-8 file, bounded to one MiB.", fileReadSchema.safeExtend(base), (a) =>
+    exec("file_read", a),
   );
   register(
     "file_write",
     "Write a UTF-8 file. Content is bounded to one MiB.",
-    {
-      ...base,
-      path,
-      content: z.string().refine((v) => Buffer.byteLength(v, "utf8") <= 1048576, "Content exceeds one MiB"),
-      overwrite: z.boolean().default(false),
-    },
+    fileWriteSchema.safeExtend(base),
     (a) => exec("file_write", a),
   );
   return server;

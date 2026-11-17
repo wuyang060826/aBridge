@@ -18,7 +18,7 @@ function within(value: unknown, limit: number): void {
   if (jsonLength(value) > limit)
     throw new BridgeError(
       "output_budget",
-      "Output metadata exceeds the budget; increase output_limit_chars and read command_status",
+      "Output metadata exceeds the budget; increase output_limit_chars and read operation_status",
       422,
     );
 }

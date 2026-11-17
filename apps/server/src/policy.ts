@@ -4,16 +4,16 @@ import {
   type Capability,
   type ConnectionPolicy,
 } from "@abridge/protocol";
-import { BridgeError, type Device, type Grant } from "./types.js";
+import { BridgeError, type Device, type AgentConnection } from "./types.js";
 
 /** Resolve account, device selection, type and capability limits in one place. */
 export function deviceAccess(
-  grant: Grant,
+  agentConnection: AgentConnection,
   device: Device,
 ): { access: "allowed" | "not_granted" | "no_capabilities"; capabilities: Capability[] } {
-  if (device.owner_id !== grant.owner_id || device.revoked_at !== null)
+  if (device.owner_id !== agentConnection.owner_id || device.revoked_at !== null)
     return { access: "not_granted", capabilities: [] };
-  const policy = grant.policy;
+  const policy = agentConnection.policy;
   const entry = (policy.mode === "selected" ? policy.devices : policy.overrides).find(
     (item) => item.device_id === device.id,
   );
@@ -44,9 +44,15 @@ export function validatePolicy(
   }
   return policy;
 }
-export function grantExpired(grant: Pick<Grant, "expires_at">, now: number): boolean {
-  return grant.expires_at !== null && grant.expires_at <= now;
+export function agentConnectionExpired(
+  agentConnection: Pick<AgentConnection, "expires_at">,
+  now: number,
+): boolean {
+  return agentConnection.expires_at !== null && agentConnection.expires_at <= now;
 }
-export function sessionDeadline(grant: Pick<Grant, "expires_at">, deadline: number): number {
-  return grant.expires_at === null ? deadline : Math.min(deadline, grant.expires_at);
+export function sessionDeadline(
+  agentConnection: Pick<AgentConnection, "expires_at">,
+  deadline: number,
+): number {
+  return agentConnection.expires_at === null ? deadline : Math.min(deadline, agentConnection.expires_at);
 }

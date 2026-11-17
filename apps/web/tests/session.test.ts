@@ -33,15 +33,22 @@ function response(path: string, owner = "A"): Response {
           status: "online",
           paused: false,
           available: { files: true },
+          active_operations: [],
+          last_seen: 0,
+          created_at: 0,
         },
       ],
     });
-  if (path === "/api/client-grants")
+  if (path === "/api/agent-connections")
     return Response.json({
-      grants: [
+      connections: [
         {
-          id: `grant-${owner}`,
+          id: `connection-${owner}`,
           name: `Agent ${owner}`,
+          authentication: "key",
+          can_reconnect: false,
+          created_at: 0,
+          last_used: null,
           policy: { mode: "all", capabilities: ["files"], overrides: [] },
           expires_at: null,
           revoked_at: null,
@@ -182,7 +189,7 @@ test("poll failures invalidate realtime state, preserve metadata, recover, and s
   const f = await fixture((path) => {
     if (failure === "network") throw new Error("Network unavailable");
     if (failure === "401") return unauthorized();
-    if (failure === "partial" && path === "/api/client-grants")
+    if (failure === "partial" && path === "/api/agent-connections")
       return Response.json({ error: { message: "Unavailable" } }, { status: 503 });
     return response(path);
   });
@@ -197,7 +204,7 @@ test("poll failures invalidate realtime state, preserve metadata, recover, and s
       assert.equal(f.state.data.devices[0]?.available, undefined);
       assert.equal(f.state.data.devices[0]?.paused, undefined);
       assert.equal(f.state.data.devices[0]?.name, "Device A");
-      assert.equal(f.state.data.grants[0]?.name, "Agent A");
+      assert.equal(f.state.data.connections[0]?.name, "Agent A");
       failure = undefined;
       await f.state.refresh();
       await f.settle();
@@ -209,7 +216,7 @@ test("poll failures invalidate realtime state, preserve metadata, recover, and s
     await f.settle();
     assert.equal(f.state.phase, "login");
     assert.equal(f.state.user, null);
-    assert.deepEqual(f.state.data, { devices: [], grants: [] });
+    assert.deepEqual(f.state.data, { devices: [], connections: [] });
   } finally {
     await f.dispose();
   }
@@ -241,7 +248,7 @@ test("an identity change during the data requests retries instead of publishing 
     switchDuringRead = false;
   const f = await fixture((path) => {
     const result = response(path, owner);
-    if (switchDuringRead && path === "/api/client-grants") {
+    if (switchDuringRead && path === "/api/agent-connections") {
       switchDuringRead = false;
       owner = "B";
     }
@@ -254,7 +261,7 @@ test("an identity change during the data requests retries instead of publishing 
     await f.settle();
     assert.equal(f.state.user?.id, "B");
     assert.equal(f.state.data.devices[0]?.id, "device-B");
-    assert.equal(f.state.data.grants[0]?.id, "grant-B");
+    assert.equal(f.state.data.connections[0]?.id, "connection-B");
     assert.ok(
       !f.snapshots.some((state) => state.user?.id === "B" && state.data.devices[0]?.id === "device-A"),
     );
@@ -292,7 +299,7 @@ test("a late refresh cannot replace a newer account or restore a signed-out sess
     await f.settle();
     assert.equal(f.state.user, null);
     assert.equal(f.state.phase, "login");
-    assert.deepEqual(f.state.data, { devices: [], grants: [] });
+    assert.deepEqual(f.state.data, { devices: [], connections: [] });
   } finally {
     await f.dispose();
   }

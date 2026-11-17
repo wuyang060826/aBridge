@@ -75,7 +75,7 @@ function fixture() {
       },
     },
   };
-  const bridge = new BrowserBridge(chrome, { now: () => now, uuid: () => `observation-${++sequence}` });
+  const bridge = new BrowserBridge(chrome, { now: () => now });
   const request = (method, session_id = "s1", params = {}) =>
     bridge.dispatch({
       id: `request-${++sequence}`,
@@ -141,9 +141,22 @@ test("cross-session, expired and navigation-invalidated references never write",
   await f.request("open", "s2", { url: "https://example.com/" });
   const one = (await f.request("observe")).result;
   const two = (await f.request("observe", "s2")).result;
+  assert.match(one.observation_id, /^obs_[A-Za-z0-9_-]{8}$/);
+  assert.notEqual(one.observation_id, two.observation_id);
   assert.equal(
     (
       await f.request("act", "s2", {
+        observation_id: one.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).error.code,
+    "stale_observation",
+  );
+  const replacement = (await f.request("observe")).result;
+  assert.notEqual(replacement.observation_id, one.observation_id);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
         observation_id: one.observation_id,
         action: { type: "click", element_ref: "e1" },
       })
@@ -154,7 +167,7 @@ test("cross-session, expired and navigation-invalidated references never write",
   assert.equal(
     (
       await f.request("act", "s1", {
-        observation_id: one.observation_id,
+        observation_id: replacement.observation_id,
         action: { type: "click", element_ref: "e1" },
       })
     ).error.code,
@@ -217,9 +230,9 @@ test("duplicate request IDs do not replay; detach and stop invalidate state", as
   assert.equal((await f.bridge.dispatch(request)).error.code, "duplicate_request");
   await f.request("observe");
   f.chrome.debugger.onDetach.emit({ tabId: 2 });
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
   await f.bridge.stop();
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
   assert.equal(f.tabs.size, 1);
 });
 test("oversized screenshots reject without storing an observation", async () => {
@@ -232,7 +245,7 @@ test("oversized screenshots reject without storing an observation", async () => 
   await f.request("open", "s1", { url: "https://example.com/" });
   const result = await f.request("observe", "s1", { screenshot: true });
   assert.equal(result.error.code, "screenshot_too_large");
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
 });
 test("stop during tab creation removes the late task tab and cannot resurrect a session", async () => {
   const f = fixture();
@@ -253,7 +266,7 @@ test("stop during tab creation removes the late task tab and cannot resurrect a 
   await stopping;
   const result = await opening;
   assert.equal(result.error.code, "session_closed");
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
   assert.equal(f.tabs.size, 1);
 });
 test("concurrent same-session operations reject instead of racing tab ownership", async () => {
@@ -306,7 +319,7 @@ test("open waits for pending URL and completed navigation, including navigation 
 });
 test("denied redirect removes the tab while navigation wait retains a recoverable task", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 15;
+  f.bridge.tabs.navigationTimeout = 15;
   const create = f.chrome.tabs.create;
   f.chrome.tabs.create = async (params) => {
     const tab = await create(params);
@@ -326,6 +339,9 @@ test("denied redirect removes the tab while navigation wait retains a recoverabl
 });
 test("stop concurrent with debugger attach leaves no usable session or late observation", async () => {
   const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  f.chrome.debugger.onDetach.emit({ tabId: 2 });
+  f.calls.length = 0;
   let release;
   f.chrome.debugger.attach = async () =>
     new Promise((resolve) => {
@@ -335,14 +351,13 @@ test("stop concurrent with debugger attach leaves no usable session or late obse
   f.chrome.debugger.detach = async () => {
     detached++;
   };
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
   const observing = f.request("observe");
   await new Promise((resolve) => setTimeout(resolve, 0));
   await f.bridge.stop();
   release();
   assert.equal((await observing).error.code, "session_closed");
   assert.equal(detached, 1);
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
   assert.equal(f.calls.filter((c) => c[0] === "Accessibility.getFullAXTree").length, 0);
 });
 test("stop during in-flight DOM action reports unknown and never replays", async () => {
@@ -371,7 +386,7 @@ test("stop during in-flight DOM action reports unknown and never replays", async
   release();
   assert.equal((await acting).error.code, "outcome_unknown");
   assert.equal(writes, 1);
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
 });
 test("screenshots use MCP top-level image fields and raw-byte limit", async () => {
   const f = fixture();
@@ -403,7 +418,7 @@ test("failed tab cleanup remains tracked, blocks new tasks and can be retried by
   assert.equal((await f.request("close")).error.code, "cleanup_failed");
   assert.equal((await f.request("close")).error.code, "cleanup_failed");
   assert.deepEqual(stored.owned_task_tabs, [2]);
-  assert.equal(f.bridge.ownedTabs.has(2), true);
+  assert.equal(f.bridge.tabs.ownedTabs.has(2), true);
   assert.equal((await f.request("open", "s2", { url: "https://example.com/" })).error.code, "cleanup_failed");
   f.chrome.tabs.remove = remove;
   assert.equal((await f.request("stop")).result.closed, true);
@@ -499,7 +514,7 @@ test("observation keeps visible text once, actionable refs, link destinations an
   assert.equal(result.elements[1].disabled, undefined);
   assert.equal(result.elements[2].expanded, false);
   assert.equal(result.elements[3].url, undefined);
-  assert.equal(f.bridge.sessions.get("s1").observation.refs.get("e1"), 7);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.refs.get("e1"), 7);
 });
 test("observation reports text and interactive-list truncation explicitly", async () => {
   const f = fixture();
@@ -560,16 +575,16 @@ test("parameter errors preserve observation and are rejected before opening or d
   const invalid = await f.request("open", "s1", { url: "https://example.com/", observe_after: "yes" });
   assert.equal(invalid.error.code, "invalid_params");
   assert.equal(f.tabs.size, 1);
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const obs = (await f.request("observe")).result;
   const invalidAct = await f.request("act", "s1", {
     observation_id: obs.observation_id,
     action: { type: "fill", element_ref: "e2", text: 42 },
   });
   assert.equal(invalidAct.error.code, "invalid_action");
-  assert.equal(f.bridge.sessions.get("s1").observation.id, obs.observation_id);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.id, obs.observation_id);
   assert.equal((await f.request("observe", "s1", { query: 42 })).error.code, "invalid_params");
-  assert.equal(f.bridge.sessions.get("s1").observation.id, obs.observation_id);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.id, obs.observation_id);
   const acted = await f.request("act", "s1", {
     observation_id: obs.observation_id,
     action: { type: "click", element_ref: "e1" },
@@ -581,7 +596,7 @@ test("parameter errors preserve observation and are rejected before opening or d
 
 test("bounded observations preserve late query matches without sending the full page", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
     if (method === "Accessibility.getFullAXTree")
@@ -612,12 +627,12 @@ test("bounded observations preserve late query matches without sending the full 
   assert.match(queried.text, /Person Zebra/);
   assert.equal(queried.elements.length, 1);
   assert.equal(queried.elements[0].name, "Person Zebra");
-  assert.equal(f.bridge.sessions.get("s1").observation.refs.get(queried.elements[0].element_ref), 500);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.refs.get(queried.elements[0].element_ref), 500);
 });
 
 test("link metadata collection uses bounded concurrency instead of serial round trips", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   let active = 0,
     peak = 0;
@@ -648,7 +663,7 @@ test("link metadata collection uses bounded concurrency instead of serial round 
 
 test("navigation wait yields pending state and preserves the same task tab for later observation", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 10;
+  f.bridge.tabs.navigationTimeout = 10;
   const create = f.chrome.tabs.create;
   f.chrome.tabs.create = async (params) => {
     const tab = await create(params);
@@ -677,7 +692,7 @@ test("navigation wait yields pending state and preserves the same task tab for l
 
 test("post-action navigation wait reports loading without losing or repeating the completed action", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 10;
+  f.bridge.tabs.navigationTimeout = 10;
   const opened = await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
@@ -709,7 +724,7 @@ test("post-action navigation wait reports loading without losing or repeating th
 
 test("bounded default output preserves the first ten profile cards before unrelated footer content", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   const cards = Array.from(
     { length: 10 },
@@ -803,12 +818,12 @@ test("post-observation retry stops after bounded repeated navigation and honors 
   const closed = await f.request("open", "s1", { url: "https://example.com/next" });
   assert.equal(closed.result.observation_error.code, "session_closed");
   assert.equal(reads, 1);
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
 });
 
 test("retry shares the original readiness budget and never reattaches after debugger detach", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 20;
+  f.bridge.tabs.navigationTimeout = 20;
   const send = f.chrome.debugger.sendCommand;
   let reads = 0;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
@@ -857,16 +872,16 @@ test("timed-out read retry cannot publish a late observation", async () => {
   const result = await f.request("open", "s1", { url: "https://example.com/" });
   assert.equal(result.result.observation_error.code, "observation_timeout");
   assert.equal(reads, 2);
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
   release({ nodes: [] });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
   assert.equal(f.calls.filter((c) => c[0] === "create").length, 1);
 });
 
 test("attach and setup obey observation deadline and late cleanup precedes a later attach", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 20;
+  f.bridge.tabs.navigationTimeout = 20;
   let release,
     attaches = 0,
     detaches = 0;
@@ -884,21 +899,21 @@ test("attach and setup obey observation deadline and late cleanup precedes a lat
   assert.equal(result.result.observation_error.code, "observation_timeout");
   assert.equal(attaches, 1);
   assert.equal(detaches, 0);
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
   const later = f.request("observe");
   release();
   const observed = await later;
   assert.ok(observed.result.observation_id);
   assert.equal(attaches, 2);
   assert.equal(detaches, 1);
-  assert.equal(f.bridge.sessions.get("s1").attached, true);
+  assert.equal(f.bridge.tabs.tasks.get("s1").attached, true);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(detaches, 1);
 });
 
 test("Page.enable obeys observation deadline and its late result cannot detach a new session", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 20;
+  f.bridge.tabs.navigationTimeout = 20;
   const send = f.chrome.debugger.sendCommand;
   let release,
     detaches = 0,
@@ -915,7 +930,7 @@ test("Page.enable obeys observation deadline and its late result cannot detach a
   };
   const result = await f.request("open", "s1", { url: "https://example.com/" });
   assert.equal(result.result.observation_error.code, "observation_timeout");
-  assert.equal(f.bridge.sessions.get("s1").observation, null);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, null);
   await f.bridge.close("s1");
   const next = await f.request("open", "s2", { url: "https://other.example/" });
   assert.ok(next.result.observation.observation_id);
@@ -923,12 +938,12 @@ test("Page.enable obeys observation deadline and its late result cannot detach a
   release({});
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(detaches, before);
-  assert.equal(f.bridge.sessions.get("s2").attached, true);
+  assert.equal(f.bridge.tabs.tasks.get("s2").attached, true);
 });
 
 test("late attach cleanup never detaches a replacement session that owns the same tab id", async () => {
   const f = fixture();
-  f.bridge.navigationTimeout = 20;
+  f.bridge.tabs.navigationTimeout = 20;
   let release,
     attaches = 0,
     detaches = 0;
@@ -957,12 +972,12 @@ test("late attach cleanup never detaches a replacement session that owns the sam
   release();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(detaches, 0);
-  assert.equal(f.bridge.sessions.get("s2").attached, true);
+  assert.equal(f.bridge.tabs.tasks.get("s2").attached, true);
 });
 
 test("protected field values never affect query matches, truncation or returned metadata", async () => {
   const f = fixture();
-  await f.request("open", "s1", { url: "https://example.com/", observe_after: false });
+  await f.request("open", "s1", { url: "https://example.com/" });
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
     if (method === "Accessibility.getFullAXTree")
@@ -1005,6 +1020,7 @@ test("saved text snapshots page without recapturing changed content and isolate 
     return send(target, method, params);
   };
   const first = (await f.request("read", "s1", { mode: "text", limit: 4 })).result;
+  assert.match(first.snapshot_id, /^snap_[A-Za-z0-9_-]{8}$/);
   assert.equal(first.text, "0123");
   assert.equal(first.next_offset, 4);
   const next = (
@@ -1015,8 +1031,16 @@ test("saved text snapshots page without recapturing changed content and isolate 
   assert.equal(next.cached, true);
   assert.equal(reads, 1);
   await f.request("open", "s2", { url: "https://example.com/" });
+  const other = (await f.request("read", "s2")).result;
+  assert.notEqual(other.snapshot_id, first.snapshot_id);
   assert.equal(
     (await f.request("read", "s2", { snapshot_id: first.snapshot_id })).error.code,
+    "snapshot_missing",
+  );
+  const replacement = (await f.request("read", "s1")).result;
+  assert.notEqual(replacement.snapshot_id, first.snapshot_id);
+  assert.equal(
+    (await f.request("read", "s1", { snapshot_id: first.snapshot_id })).error.code,
     "snapshot_missing",
   );
 });
@@ -1088,7 +1112,7 @@ test("evaluate returns bounded serializable values and never replays failed scri
     "outcome_unknown",
   );
   assert.equal(runs, 2);
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
 });
 
 test("locator actions resolve each target anew and reject ambiguous selectors", async () => {
@@ -1220,12 +1244,13 @@ test("same-origin frames evaluate in their default context and unsupported frame
   unsupported = true;
   const before = f.calls.length;
   for (const method of ["read", "wait", "evaluate", "locate_act"]) {
-    const result = await f.request(method, "s1", {
-      ...args,
-      selector: "#name",
-      expression: "6*7",
-      action: { type: "fill", text: "wrong document" },
-    });
+    const params = {
+      read: { ...args, selector: "#name" },
+      wait: { ...args, selector: "#name" },
+      evaluate: { ...args, expression: "6*7" },
+      locate_act: { ...args, selector: "#name", action: { type: "fill", text: "wrong document" } },
+    };
+    const result = await f.request(method, "s1", params[method]);
     assert.equal(result.error.code, "unsupported_frame");
   }
   assert.equal(f.calls.slice(before).filter((call) => call[0].startsWith("Input.")).length, 0);
@@ -1239,17 +1264,17 @@ test("frame context tracking clears on context reset, detach and tab release", a
       context: { id: 9, auxData: { frameId: "child", isDefault: true } },
     });
   created();
-  assert.equal(f.bridge.frameContexts.get(2).get("child"), 9);
+  assert.equal(f.bridge.tabs.frameContexts.get(2).get("child"), 9);
   f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextsCleared", {});
-  assert.equal(f.bridge.frameContexts.has(2), false);
+  assert.equal(f.bridge.tabs.frameContexts.has(2), false);
   created();
   f.chrome.debugger.onDetach.emit({ tabId: 2 });
-  assert.equal(f.bridge.frameContexts.has(2), false);
+  assert.equal(f.bridge.tabs.frameContexts.has(2), false);
   created();
   await f.request("close");
-  assert.equal(f.bridge.frameContexts.has(2), false);
+  assert.equal(f.bridge.tabs.frameContexts.has(2), false);
   created();
-  assert.equal(f.bridge.frameContexts.has(2), false);
+  assert.equal(f.bridge.tabs.frameContexts.has(2), false);
 });
 
 test("read refuses navigation races without publishing misattributed snapshots", async () => {
@@ -1269,7 +1294,7 @@ test("read refuses navigation races without publishing misattributed snapshots",
       return send(target, method, params);
     };
     assert.equal((await f.request("read")).error.code, "stale_observation");
-    assert.equal(f.bridge.sessions.get("s1").snapshot, undefined);
+    assert.equal(f.bridge.tabs.tasks.get("s1").snapshot, undefined);
   }
 });
 
@@ -1509,7 +1534,7 @@ test("evaluate timeout waits for one cleanup and reports failure without losing 
   const result = await evaluating;
   assert.equal(result.error.code, "outcome_unknown");
   assert.equal(removals, 1);
-  assert.ok(f.bridge.ownedTabs.has(2));
+  assert.ok(f.bridge.tabs.ownedTabs.has(2));
   assert.match(JSON.stringify(result.error), /cleanup|清理/);
   assert.match(JSON.stringify(result.error), /timeout|超时/);
 });
@@ -1531,10 +1556,10 @@ test("missing task tab requires reopening and never replays an old action", asyn
 test("query arrays reject empty, blank and oversized terms before changing observations", async () => {
   const f = fixture();
   await f.request("open", "s1", { url: "https://example.com/" });
-  const original = f.bridge.sessions.get("s1").observation;
+  const original = f.bridge.tabs.tasks.get("s1").observation;
   for (const query of ["", " ", [], [""], ["valid", " "], ["x".repeat(201)], Array(21).fill("x")]) {
     assert.equal((await f.request("observe", "s1", { query })).error.code, "invalid_params");
-    assert.equal(f.bridge.sessions.get("s1").observation, original);
+    assert.equal(f.bridge.tabs.tasks.get("s1").observation, original);
   }
 });
 
@@ -1588,6 +1613,82 @@ test("cancelled open during tab creation removes the late tab and does not navig
   const result = await opening;
   assert.ok(result.error, JSON.stringify(result));
   assert.deepEqual(f.removed, [2]);
-  assert.equal(f.bridge.sessions.size, 0);
+  assert.equal(f.bridge.tabs.tasks.size, 0);
   assert.equal(f.calls.filter((entry) => entry[0] === "Accessibility.getFullAXTree").length, 0);
+});
+
+test("shared action validation rejects malformed input before CDP preparation and keeps the observation", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = opened.result.observation;
+  const before = f.calls.length;
+  for (const action of [
+    { type: "press", element_ref: "e1", key: "k".repeat(33) },
+    { type: "select", element_ref: "e1", values: Array.from({ length: 101 }, () => "x") },
+  ]) {
+    const response = await f.request("act", "s1", {
+      observation_id: observation.observation_id,
+      action,
+      observe_after: false,
+    });
+    assert.equal(response.status, "refused");
+    assert.equal(response.error.code, "invalid_action");
+  }
+  assert.equal(f.calls.length, before, "Rejected input must not scroll, focus or dispatch native input");
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.id, observation.observation_id);
+});
+
+test("locator resolution preserves the prior observation when the resolved node disappears", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const previous = f.bridge.tabs.tasks.get("s1").observation;
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+    if (method === "DOM.querySelectorAll") return { nodeIds: [3] };
+    if (method === "DOM.describeNode") return { node: { backendNodeId: 100 } };
+    if (method === "DOM.resolveNode") return {};
+    return send(target, method, params);
+  };
+  const before = f.calls.length;
+  const response = await f.request("locate_act", "s1", {
+    selector: "#missing-after-lookup",
+    action: { type: "click" },
+  });
+  assert.equal(response.status, "refused");
+  assert.equal(response.error.code, "stale_observation");
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, previous);
+  assert.equal(
+    f.calls
+      .slice(before)
+      .some(([method]) => method.startsWith("Input.") || method === "Runtime.callFunctionOn"),
+    false,
+  );
+});
+
+test("disposing the browser runtime releases task resources and event subscriptions", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const events = [
+    f.chrome.tabs.onUpdated,
+    f.chrome.tabs.onRemoved,
+    f.chrome.debugger.onDetach,
+    f.chrome.debugger.onEvent,
+  ];
+  assert.equal(
+    events.every((event) => event.listeners.length > 0),
+    true,
+  );
+  await f.bridge.dispose();
+  assert.equal(f.bridge.sessionCount, 0);
+  assert.deepEqual([...f.bridge.sessionIds], []);
+  assert.equal(f.tabs.size, 1);
+  assert.equal(
+    events.every((event) => event.listeners.length === 0),
+    true,
+  );
+  const result = await f.request("open", "s1", { url: "https://example.com/" });
+  assert.equal(result.error.code, "session_closed");
+  assert.equal(f.tabs.size, 1);
+  await f.bridge.dispose();
 });

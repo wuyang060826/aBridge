@@ -115,7 +115,7 @@ async function fixture() {
         device_id: "fixture",
         connection_epoch: 1,
         sequence: ++sequence,
-        grant_version: 1,
+        device_credential_version: 1,
         session_capabilities: ["files"],
         operation_id: id,
         session_id: session,

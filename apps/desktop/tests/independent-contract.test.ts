@@ -163,7 +163,7 @@ test("independent: dispatch expires while native capability diagnostics are pend
       device_id: "dev_fixture",
       connection_epoch: 1,
       sequence: 1,
-      grant_version: 1,
+      device_credential_version: 1,
       session_capabilities: ["files"],
       operation_id: "expires",
       session_id: "fixture",

@@ -1,3 +1,11 @@
+import {
+  commandExecuteSchema,
+  filesListSchema,
+  fileReadSchema,
+  fileWriteSchema,
+  deviceToolRequestSchema,
+  type DeviceToolRequest,
+} from "@abridge/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:fs";
 import { open, stat, opendir, lstat } from "node:fs/promises";
@@ -8,10 +16,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { readBounded } from "./io.js";
 import { Computer } from "./computer.js";
 import { CuaNativeDriver, type NativeDriver } from "./native.js";
-import { DesktopError, checkAbort, integer, invalid, record, stringArg } from "./errors.js";
+import { DesktopError, checkAbort, parseArguments } from "./errors.js";
 export type OutputHandler = (operationId: string, stream: "stdout" | "stderr", data: string) => Promise<void>;
-const MAX_OUTPUT_BYTES = 131072,
-  MAX_FILE_BYTES = 1048576;
+const MAX_OUTPUT_BYTES = 131072;
 function expand(path: string): string {
   return resolve(path === "~" ? homedir() : path.startsWith("~/") ? `${homedir()}/${path.slice(2)}` : path);
 }
@@ -45,7 +52,8 @@ export class LocalExecutor {
   ): Promise<Record<string, unknown>> {
     checkAbort(signal);
     try {
-      return await this.executeTool(operationId, tool, args, sessionId, signal);
+      const request = parseArguments(deviceToolRequestSchema, { tool, arguments: args });
+      return await this.executeTool(operationId, request, sessionId, signal);
     } catch (error) {
       if (
         error instanceof Error &&
@@ -63,11 +71,11 @@ export class LocalExecutor {
   }
   private async executeTool(
     operationId: string,
-    tool: string,
-    args: Record<string, unknown>,
+    request: DeviceToolRequest,
     sessionId?: string,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
+    const { tool, arguments: args } = request;
     switch (tool) {
       case "command_execute":
         return this.commandExecute(operationId, args, signal);
@@ -94,17 +102,10 @@ export class LocalExecutor {
         throw new DesktopError("unknown_tool", "This desktop device does not provide that tool");
     }
   }
-  async commandExecute(
-    id: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const command = stringArg(args, "command");
-    const timeout = args.timeout ?? 30;
-    if (typeof timeout !== "number" || !Number.isFinite(timeout) || timeout < 1 || timeout > 120)
-      invalid("timeout must be between 1 and 120 seconds");
-    if (args.cwd !== undefined && typeof args.cwd !== "string") invalid("cwd must be a path");
-    const cwd = expand((args.cwd as string) || homedir());
+  async commandExecute(id: string, input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const args = parseArguments(commandExecuteSchema, input);
+    const { command, timeout } = args;
+    const cwd = expand(args.cwd || homedir());
     try {
       if (!(await stat(cwd)).isDirectory())
         throw new DesktopError("invalid_cwd", "Working directory does not exist");
@@ -113,18 +114,6 @@ export class LocalExecutor {
       throw new DesktopError("invalid_cwd", "Working directory does not exist or is inaccessible");
     }
     const supplied = args.env ?? {};
-    if (
-      !record(supplied) ||
-      Object.entries(supplied).some(
-        ([key, value]) =>
-          !key ||
-          key.includes("=") ||
-          key.includes("\0") ||
-          typeof value !== "string" ||
-          value.includes("\0"),
-      )
-    )
-      invalid("env must contain string names and values");
     const env: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR"])
       if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -197,9 +186,10 @@ export class LocalExecutor {
       this.processes.delete(id);
     }
   }
-  async filesList(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const path = expand(stringArg(args, "path")),
-      limit = integer(args.limit ?? 200, "limit", 1, 500);
+  async filesList(input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const args = parseArguments(filesListSchema, input);
+    const path = expand(args.path),
+      limit = args.limit;
     const entries: Record<string, unknown>[] = [];
     let truncated = false;
     const directory = await opendir(path);
@@ -225,9 +215,10 @@ export class LocalExecutor {
     entries.sort((a, b) => String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase()));
     return { path, entries, truncated };
   }
-  async fileRead(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const path = expand(stringArg(args, "path")),
-      max = integer(args.max_bytes ?? MAX_FILE_BYTES, "max_bytes", 1, MAX_FILE_BYTES);
+  async fileRead(input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const args = parseArguments(fileReadSchema, input);
+    const path = expand(args.path),
+      max = args.max_bytes;
     const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       checkAbort(signal);
@@ -248,15 +239,11 @@ export class LocalExecutor {
       await file.close();
     }
   }
-  async fileWrite(args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    const path = expand(stringArg(args, "path"));
-    if (typeof args.content !== "string" || !args.content.isWellFormed())
-      invalid("content must be a well-formed Unicode string");
+  async fileWrite(input: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const args = parseArguments(fileWriteSchema, input);
+    const path = expand(args.path);
     const bytes = Buffer.from(args.content);
-    if (bytes.length > MAX_FILE_BYTES)
-      throw new DesktopError("file_too_large", "Content exceeds the 1048576 byte limit");
-    const overwrite = args.overwrite ?? false;
-    if (typeof overwrite !== "boolean") invalid("overwrite must be a boolean");
+    const overwrite = args.overwrite;
     checkAbort(signal);
     // Do not block on special files or truncate before validating the opened target.
     // Following symlinks remains supported for ordinary user files.

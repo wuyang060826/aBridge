@@ -16,7 +16,7 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
   try {
     const url = await server.start();
     const user = await server.store.createUser("wait-fixture", "wait-fixture-password");
-    const grant = server.store.createGrant(user.id, "Wait fixture", {
+    const agentConnection = server.store.createAgentConnection(user.id, "Wait fixture", {
       mode: "all",
       capabilities: ["screen", "input", "browser"],
       overrides: [],
@@ -26,7 +26,7 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
       const response = await fetch(url + "/mcp", {
         method: "POST",
         headers: {
-          authorization: "Bearer " + grant.key,
+          authorization: "Bearer " + agentConnection.key,
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
         },
@@ -107,7 +107,7 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
       const session = JSON.parse(opened.result!.content![0]!.text!) as { id: string };
       const args: JsonObject = {
         session_id: session.id,
-        observation_id: kind === "computer" ? "obs_" + "a".repeat(32) : "browser-fixture-observation",
+        observation_id: "obs_Ab12_-xy",
         action: { type: "click", element_ref: "e1" },
       };
       for (const value of [undefined, 0, 25, 10000]) {
@@ -131,6 +131,15 @@ test("act MCP schemas expose the shared delay and forward validated defaults wit
         });
         assert.ok(response.error || response.result?.isError, JSON.stringify(response));
         assert.equal(dispatches.length, count, "Invalid wait must be rejected before device dispatch");
+      }
+      for (const observation_id of ["obs_" + "a".repeat(32), "obs_1234567", "snap_12345678"]) {
+        const count = dispatches.length;
+        const response = await rpc("tools/call", {
+          name: `${kind}_act`,
+          arguments: { ...args, observation_id },
+        });
+        assert.ok(response.error || response.result?.isError, JSON.stringify(response));
+        assert.equal(dispatches.length, count, "Both clients must use the shared short observation format");
       }
     }
   } finally {

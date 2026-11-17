@@ -72,7 +72,11 @@ test("device details use the current policy when another request changes an auth
   const f = await fixture();
   try {
     const { device, key: deviceKey } = f.store.createDevice(f.user.id, "Mini", ["files", "shell"]);
-    const { grant, key } = f.store.createGrant(f.user.id, "Agent", selected(device.id, ["files", "shell"]));
+    const { agentConnection, key } = f.store.createAgentConnection(
+      f.user.id,
+      "Agent",
+      selected(device.id, ["files", "shell"]),
+    );
     await f.control.attachConnection(
       deviceKey,
       "computer",
@@ -82,7 +86,7 @@ test("device details use the current policy when another request changes an auth
     // An MCP request can retain this snapshot while another HTTP request edits its policy.
     const authenticated = f.store.authenticateAgent(key)!;
     const changed = await f.api(
-      `/api/client-grants/${grant.id}`,
+      `/api/agent-connections/${agentConnection.id}`,
       { name: "Agent", policy: selected(device.id, ["shell"]), expires_at: null },
       "PATCH",
     );
@@ -117,8 +121,17 @@ test("connection administration explains the three-account/two-MCP-device differ
         { device_id: browser.device.id, capabilities: ["browser"] },
       ],
     };
-    const created = await f.api("/api/client-grants", { name: "My agent", policy });
+    const created = await f.api("/api/agent-connections", { name: "My agent", policy });
     assert.equal(created.status, 200);
+    const connectionList = await f.api("/api/agent-connections");
+    assert.equal(connectionList.status, 200);
+    assert.equal("grants" in connectionList.body, false);
+    assert.deepEqual(
+      (connectionList.body.connections as { id: string }[]).map((item) => item.id),
+      [created.body.id],
+    );
+    assert.equal((await f.api("/api/client-grants")).status, 404);
+
     assert.equal(created.body.expires_at, null);
     assert.equal("token_digest" in created.body, false);
     const id = String(created.body.id),
@@ -126,7 +139,7 @@ test("connection administration explains the three-account/two-MCP-device differ
     const initial = (await f.mcp(key)).value!;
     assert.equal(initial.connection.id, id);
     assert.deepEqual(new Set(initial.devices.map((d) => d.id)), new Set([air.device.id, browser.device.id]));
-    const preview = await f.api(`/api/client-grants/${id}/preview`);
+    const preview = await f.api(`/api/agent-connections/${id}/preview`);
     const devices = preview.body.devices as {
       id: string;
       access: string;
@@ -140,7 +153,7 @@ test("connection administration explains the three-account/two-MCP-device differ
       devices: [...policy.devices, { device_id: mini.device.id, capabilities: ["shell"] }],
     };
     const changed = await f.api(
-      `/api/client-grants/${id}`,
+      `/api/agent-connections/${id}`,
       { name: "Renamed agent", policy: nextPolicy, expires_at: null },
       "PATCH",
     );
@@ -155,30 +168,36 @@ test("connection administration explains the three-account/two-MCP-device differ
     assert.equal(
       (
         await f.api(
-          `/api/client-grants/${id}`,
+          `/api/agent-connections/${id}`,
           { name: "Invalid", policy: selected(foreign.device.id, ["files"]), expires_at: null },
           "PATCH",
         )
       ).status,
       404,
     );
-    const foreignGrant = f.store.createGrant(
+    const foreignAgentConnection = f.store.createAgentConnection(
       foreignUser.id,
       "Foreign agent",
       selected(foreign.device.id, ["files"]),
     );
-    assert.equal((await f.api(`/api/client-grants/${foreignGrant.grant.id}/preview`)).status, 404);
+    assert.equal(
+      (await f.api(`/api/agent-connections/${foreignAgentConnection.agentConnection.id}/preview`)).status,
+      404,
+    );
     assert.equal(
       (
         await f.api(
-          `/api/client-grants/${id}`,
+          `/api/agent-connections/${id}`,
           { name: "Invalid", policy: selected(browser.device.id, ["shell"]), expires_at: null },
           "PATCH",
         )
       ).status,
       422,
     );
-    assert.equal((await f.api("/api/client-grants", { name: "Invalid", policy, expires_at: 0 })).status, 422);
+    assert.equal(
+      (await f.api("/api/agent-connections", { name: "Invalid", policy, expires_at: 0 })).status,
+      422,
+    );
     assert.equal(
       connectionPolicySchema.safeParse({
         mode: "selected",
@@ -197,10 +216,10 @@ test("connection administration explains the three-account/two-MCP-device differ
       }).success,
       false,
     );
-    const listed = await f.api("/api/client-grants");
+    const listed = await f.api("/api/agent-connections");
     assert.equal(JSON.stringify(listed.body).includes("token_digest"), false);
     assert.equal(JSON.stringify(listed.body).includes(key), false);
-    const rotated = await f.api(`/api/client-grants/${id}/rotate`, {});
+    const rotated = await f.api(`/api/agent-connections/${id}/rotate`, {});
     assert.equal(rotated.status, 200);
     assert.equal((await f.mcp(key)).status, 401);
     assert.equal((await f.mcp(String(rotated.body.key))).value!.devices.length, 3);
@@ -212,7 +231,7 @@ test("connection administration explains the three-account/two-MCP-device differ
 test("all-device connections include future owned devices and exact per-device overrides", async () => {
   const f = await fixture();
   try {
-    const created = await f.api("/api/client-grants", {
+    const created = await f.api("/api/agent-connections", {
       name: "All my devices",
       policy: { mode: "all", capabilities: ["screen", "input", "files", "shell", "browser"], overrides: [] },
     });
@@ -226,7 +245,7 @@ test("all-device connections include future owned devices and exact per-device o
     f.store.createDevice(other.id, "Other device", ["files"]);
     assert.equal((await f.mcp(key)).value!.devices.length, 2);
     await f.api(
-      `/api/client-grants/${id}`,
+      `/api/agent-connections/${id}`,
       {
         name: "All my devices",
         policy: {
@@ -260,7 +279,7 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
   try {
     const user = await store.createUser("owner", "synthetic-owner-password");
     const device = store.createDevice(user.id, "Mini", ["files", "shell"]);
-    const { grant, key } = store.createGrant(
+    const { agentConnection, key } = store.createAgentConnection(
       user.id,
       "Agent",
       selected(device.device.id, ["files", "shell"]),
@@ -278,9 +297,9 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
       { capabilities: { files: true, shell: true }, paused: false },
       transport,
     );
-    const session = control.openSession(grant, device.device.id, ["files"]);
+    const session = control.openSession(agentConnection, device.device.id, ["files"]);
     const completed = await control.execute(
-      grant,
+      agentConnection,
       session.id,
       "file_read",
       { path: "/synthetic" },
@@ -294,9 +313,9 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
       status: "executed",
       result: { content: "private fixture" },
     });
-    assert.ok(control.operationStatus(grant, completed.operation_id).result);
+    assert.ok(control.operationStatus(agentConnection, completed.operation_id).result);
     const pending = await control.execute(
-      grant,
+      agentConnection,
       session.id,
       "file_read",
       { path: "/pending" },
@@ -304,10 +323,15 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
       false,
     );
     const waiting = assert.rejects(
-      control.waitOperation(grant, pending.operation_id, 15),
+      control.waitOperation(agentConnection, pending.operation_id, 15),
       (error: unknown) => error instanceof BridgeError && error.code === "forbidden",
     );
-    await control.updateGrant(grant, "Agent", selected(device.device.id, ["shell"]), null);
+    await control.updateAgentConnection(
+      agentConnection,
+      "Agent",
+      selected(device.device.id, ["shell"]),
+      null,
+    );
     await waiting;
     assert.equal(store.session(session.id)!.status, "revoked");
     assert.ok(
@@ -317,9 +341,11 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
       ),
     );
     assert.ok(frames.some((frame) => frame.type === "session_close" && frame.session_id === session.id));
-    assert.throws(() => control.operationStatus(grant, completed.operation_id), { code: "forbidden" });
+    assert.throws(() => control.operationStatus(agentConnection, completed.operation_id), {
+      code: "forbidden",
+    });
     assert.ok(store.authenticateAgent(key));
-    const current = store.grant(grant.id)!;
+    const current = store.agentConnection(agentConnection.id)!;
     const shellSession = control.openSession(current, device.device.id, ["shell"]);
     const command = await control.execute(
       current,
@@ -332,14 +358,14 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
     const oldWaiting = assert.rejects(control.waitOperation(current, command.operation_id, 15), {
       code: "unauthorized",
     });
-    const rotated = await control.rotateGrant(current);
+    const rotated = await control.rotateAgentConnection(current);
     await oldWaiting;
     assert.equal(store.authenticateAgent(key), undefined);
     assert.ok(store.authenticateAgent(rotated.key));
-    assert.deepEqual(rotated.grant.policy, current.policy);
+    assert.deepEqual(rotated.agentConnection.policy, current.policy);
     assert.throws(() => control.devices(current), { code: "unauthorized" });
     assert.equal(store.session(shellSession.id)!.status, "revoked");
-    await control.revokeGrant(rotated.grant);
+    await control.revokeAgentConnection(rotated.agentConnection);
     assert.equal(store.authenticateAgent(rotated.key), undefined);
   } finally {
     await control.shutdown();
@@ -356,17 +382,26 @@ test("indefinite connections retain bounded sessions; shorter expiry applies imm
   try {
     const user = await store.createUser("owner", "synthetic-owner-password"),
       device = store.createDevice(user.id, "Mini", ["files"]);
-    const { grant } = store.createGrant(user.id, "Agent", selected(device.device.id, ["files"]));
+    const { agentConnection } = store.createAgentConnection(
+      user.id,
+      "Agent",
+      selected(device.device.id, ["files"]),
+    );
     const transport: DeviceTransport = { async send() {}, async close() {} };
     await control.attachConnection(device.key, "computer", { capabilities: { files: true } }, transport);
-    const session = control.openSession(grant, device.device.id, ["files"]);
+    const session = control.openSession(agentConnection, device.device.id, ["files"]);
     assert.equal(session.lease_until, now + 300);
-    const updated = await control.updateGrant(grant, "Agent", grant.policy, now + 40);
+    const updated = await control.updateAgentConnection(
+      agentConnection,
+      "Agent",
+      agentConnection.policy,
+      now + 40,
+    );
     assert.equal(store.session(session.id)!.lease_until, now + 40);
     now += 41;
     await control.tick();
     assert.equal(store.session(session.id)!.status, "revoked");
-    const preview = control.previewGrant(updated) as {
+    const preview = control.previewAgentConnection(updated) as {
       connection: { status: string };
       devices: { available: Record<string, boolean> }[];
     };

@@ -20,8 +20,8 @@ export const platformLabels = {
   android: "Android",
   chrome: "Chrome",
 } as const;
-export function platformIcon(platform: string): keyof typeof platformLabels | undefined {
-  switch (platform.trim().toLowerCase()) {
+export function platformIcon(platform: string | null): keyof typeof platformLabels | undefined {
+  switch (platform?.trim().toLowerCase()) {
     case "darwin":
     case "macos":
     case "mac os":
@@ -48,7 +48,7 @@ export function DeviceIcon({
   describePlatform = false,
 }: {
   kind: "computer" | "browser";
-  platform?: string;
+  platform?: string | null;
   describePlatform?: boolean;
 }) {
   const brand = platformIcon(platform);
@@ -70,6 +70,7 @@ export function DeviceIcon({
   );
 }
 
-export function platformName(value: string): string {
-  return { darwin: "macOS", win32: "Windows", "Browser extension": "Chromium" }[value] ?? (value || "—");
+export function platformName(value: string | null): string {
+  if (!value) return "未知平台";
+  return { darwin: "macOS", win32: "Windows", "Browser extension": "浏览器扩展" }[value] ?? value;
 }

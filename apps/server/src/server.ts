@@ -9,7 +9,9 @@ import {
   VERSION,
   MAX_MESSAGE_BYTES,
   capabilitySchema,
-  connectionPolicySchema,
+  agentConnectionInputSchema,
+  activityFilterSchema,
+  type AgentConnectionView,
   deviceKindSchema,
   deviceHelloSchema,
   deviceRenameSchema,
@@ -28,7 +30,14 @@ import { DeviceAuthorizations } from "./device-authorization.js";
 import { ControlService } from "./control.js";
 import { createMcpServer } from "./mcp.js";
 import { WebSocketTransport } from "./transport.js";
-import { BridgeError, object, type AttachedDevice, type Device, type Grant, type User } from "./types.js";
+import {
+  BridgeError,
+  object,
+  type DeviceConnection,
+  type Device,
+  type AgentConnection,
+  type User,
+} from "./types.js";
 
 export interface ServerConfig {
   dbPath: string;
@@ -53,9 +62,6 @@ const capabilities = z
   .max(5)
   .refine((a) => new Set(a).size === a.length, "Capabilities must be unique");
 const name = z.string().trim().min(1).max(120);
-const connectionSchema = z
-  .object({ name, policy: connectionPolicySchema, expires_at: z.number().finite().nullable().default(null) })
-  .strict();
 const deviceSchema = z.object({ name, capabilities, kind: deviceKindSchema.default("computer") }).strict();
 const bearer = (request: FastifyRequest): string => {
   const value = request.headers.authorization;
@@ -67,9 +73,13 @@ const cookie = (request: FastifyRequest, name = "abridge_session"): string =>
     .map((part) => part.trim())
     .find((part) => part.startsWith(name + "="))
     ?.slice(name.length + 1) ?? "";
-const publicGrant = (grant: Grant) => {
-  const { token_digest: _, owner_id: __, ...visible } = grant;
-  return { ...visible, authentication: grant.token_digest === null ? "platform" : "key" };
+const publicAgentConnection = (agentConnection: AgentConnection): AgentConnectionView => {
+  const { token_digest: _, owner_id: __, ...visible } = agentConnection;
+  return {
+    ...visible,
+    authentication: agentConnection.token_digest === null ? "platform" : "key",
+    can_reconnect: false,
+  };
 };
 
 /** Composition root: domain state is created once and never owned by HTTP request handlers. */
@@ -387,64 +397,63 @@ export async function createServer(config: ServerConfig) {
     store.audit(device.owner_id, device.id, null, null, "device_credentials", "rotated");
     return { id: device.id, key };
   });
-  app.get("/api/client-grants", async (request) => ({
-    grants: store
-      .grants(account(request).id)
-      .map((grant) => ({ ...publicGrant(grant), can_reconnect: store.canReconnectPlatformGrant(grant) })),
+  app.get("/api/agent-connections", async (request) => ({
+    connections: store.agentConnections(account(request).id).map((agentConnection) => ({
+      ...publicAgentConnection(agentConnection),
+      can_reconnect: store.canReconnectPlatformAgentConnection(agentConnection),
+    })),
   }));
-  function ownedGrant(request: FastifyRequest): Grant {
+  function ownedAgentConnection(request: FastifyRequest): AgentConnection {
     const user = account(request),
-      grant = store.grant((request.params as { id: string }).id);
-    if (!grant || grant.owner_id !== user.id) throw new BridgeError("not_found", "Connection not found", 404);
-    return grant;
+      agentConnection = store.agentConnection((request.params as { id: string }).id);
+    if (!agentConnection || agentConnection.owner_id !== user.id)
+      throw new BridgeError("not_found", "Connection not found", 404);
+    return agentConnection;
   }
   function connectionBody(value: unknown) {
-    const body = connectionSchema.parse(value);
+    const body = agentConnectionInputSchema.parse(value);
     if (body.expires_at !== null && body.expires_at <= Date.now() / 1000)
       throw new BridgeError("invalid_expiry", "Expiry must be in the future or unset", 422);
     return body;
   }
-  app.post("/api/client-grants", async (request) => {
+  app.post("/api/agent-connections", async (request) => {
     const user = account(request),
       body = connectionBody(request.body);
-    const result = store.createGrant(user.id, body.name, body.policy, body.expires_at);
-    return { ...publicGrant(result.grant), key: result.key };
+    const result = store.createAgentConnection(user.id, body.name, body.policy, body.expires_at);
+    return { ...publicAgentConnection(result.agentConnection), key: result.key };
   });
-  app.patch("/api/client-grants/:id", async (request) => {
-    const grant = ownedGrant(request),
+  app.patch("/api/agent-connections/:id", async (request) => {
+    const agentConnection = ownedAgentConnection(request),
       body = connectionBody(request.body);
-    return publicGrant(await control.updateGrant(grant, body.name, body.policy, body.expires_at));
+    return publicAgentConnection(
+      await control.updateAgentConnection(agentConnection, body.name, body.policy, body.expires_at),
+    );
   });
-  app.post("/api/client-grants/:id/reconnect", async (request) => {
-    const grant = ownedGrant(request);
+  app.post("/api/agent-connections/:id/reconnect", async (request) => {
+    const agentConnection = ownedAgentConnection(request);
     z.object({}).strict().parse(request.body);
-    return publicGrant(store.reconnectPlatformGrant(grant));
+    return publicAgentConnection(store.reconnectPlatformAgentConnection(agentConnection));
   });
-  app.post("/api/client-grants/:id/rotate", async (request) => {
-    const result = await control.rotateGrant(ownedGrant(request));
-    return { ...publicGrant(result.grant), key: result.key };
+  app.post("/api/agent-connections/:id/rotate", async (request) => {
+    const result = await control.rotateAgentConnection(ownedAgentConnection(request));
+    return { ...publicAgentConnection(result.agentConnection), key: result.key };
   });
-  app.get("/api/client-grants/:id/preview", async (request) => control.previewGrant(ownedGrant(request)));
-  app.post("/api/client-grants/:id/revoke", async (request) => {
+  app.get("/api/agent-connections/:id/preview", async (request) =>
+    control.previewAgentConnection(ownedAgentConnection(request)),
+  );
+  app.post("/api/agent-connections/:id/revoke", async (request) => {
     const user = account(request),
-      grant = store.grant((request.params as { id: string }).id);
-    if (!grant || grant.owner_id !== user.id) throw new BridgeError("not_found", "Grant not found", 404);
-    await control.revokeGrant(grant);
+      agentConnection = store.agentConnection((request.params as { id: string }).id);
+    if (!agentConnection || agentConnection.owner_id !== user.id)
+      throw new BridgeError("not_found", "Agent connection not found", 404);
+    await control.revokeAgentConnection(agentConnection);
     return { ok: true };
   });
   app.get("/api/activity", async (request) => {
     const user = account(request);
-    const filters = z
-      .object({
-        device_id: z.string().min(1).max(120).optional(),
-        grant_id: z.string().min(1).max(120).optional(),
-        tool: z.string().min(1).max(120).optional(),
-        offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
-      })
-      .strict()
-      .parse(request.query);
+    const filters = activityFilterSchema.parse(request.query);
     return {
-      operations: store.operations(user.id, filters),
+      operations: store.operations(user.id, filters).map(({ key_hash: _keyHash, ...operation }) => operation),
       total: store.operationCount(user.id, filters),
       tools: store.operationTools(user.id, filters.device_id),
       events: store.auditEvents(user.id),
@@ -490,9 +499,9 @@ export async function createServer(config: ServerConfig) {
   });
   app.all("/mcp", async (request, reply) => {
     const token = bearer(request);
-    const grant = store.authenticateAgent(token) ?? (await identity.authenticate(token));
-    if (!grant) throw new BridgeError("unauthorized", "A valid Agent Bearer key is required", 401);
-    const mcp = createMcpServer(control, grant),
+    const agentConnection = store.authenticateAgent(token) ?? (await identity.authenticate(token));
+    if (!agentConnection) throw new BridgeError("unauthorized", "A valid Agent Bearer key is required", 401);
+    const mcp = createMcpServer(control, agentConnection),
       transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
@@ -536,7 +545,7 @@ export async function createServer(config: ServerConfig) {
       },
       (socket, request) => {
         const transport = new WebSocketTransport(socket);
-        let ticket: AttachedDevice | undefined,
+        let ticket: DeviceConnection | undefined,
           closed = false,
           queue = Promise.resolve();
         const timer = setTimeout(() => {

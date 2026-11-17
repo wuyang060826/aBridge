@@ -1,6 +1,25 @@
 /** Shared wire contract. Product implementations consume these definitions. */
 import { z } from "zod";
 import packageInfo from "../../../package.json" with { type: "json" };
+import { observationIdSchema, snapshotIdSchema } from "./reference-id.js";
+export {
+  observationIdSchema,
+  snapshotIdSchema,
+  createReferenceIdGenerator,
+  referenceId,
+  operationIdPattern,
+} from "./reference-id.js";
+
+import {
+  deviceCapabilities,
+  capabilitySchema,
+  deviceKindSchema,
+  connectionLossSchema,
+  deviceMetadataSchema,
+  policyCapabilities,
+  type Capability,
+} from "./common.js";
+export * from "./common.js";
 
 export const VERSION = packageInfo.version;
 export const deviceRenameSchema = z.object({ name: z.string().trim().min(1).max(120) }).strict();
@@ -41,10 +60,6 @@ export const adminOverviewSchema = z.object({
 });
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export const PROTOCOL_VERSION = "abridge/1";
-export const CAPABILITIES = ["screen", "input", "shell", "files", "browser"] as const;
-export type Capability = (typeof CAPABILITIES)[number];
-export type DeviceKind = "computer" | "browser";
-export const DESKTOP_CAPABILITIES = ["screen", "input", "shell", "files"] as const;
 export const OBSERVATION_SECONDS = 10;
 export const DESKTOP_OBSERVATION_SECONDS = 120;
 export type DesktopFocusStatus = "confirmed" | "unconfirmed";
@@ -70,47 +85,6 @@ export const actWaitAfterSchema = z
   .min(0)
   .max(MAX_ACT_WAIT_AFTER_MS)
   .default(DEFAULT_ACT_WAIT_AFTER_MS);
-export const sessionStateSchema = z.enum([
-  "active",
-  "stopped",
-  "expired",
-  "revoked",
-  "connection_lost",
-  "connection_replaced",
-  "server_restarted",
-]);
-export type SessionState = z.infer<typeof sessionStateSchema>;
-export const sessionInfoSchema = z.object({
-  id: z.string(),
-  device_id: z.string(),
-  capabilities: z.array(z.enum(CAPABILITIES)),
-  status: sessionStateSchema,
-  lease_until: z.number(),
-  server_time: z.number(),
-});
-export type SessionInfo = z.infer<typeof sessionInfoSchema>;
-export interface SessionErrorDetails {
-  session?: SessionInfo;
-  sessions?: SessionInfo[];
-}
-export const connectionLossSchema = z.object({
-  reason: z.enum([
-    "connection_lost",
-    "connection_replaced",
-    "server_restarted",
-    "revoked",
-    "heartbeat_expired",
-    "send_failed",
-    "receive_queue_exceeded",
-    "invalid_message",
-    "maintenance_failed",
-  ]),
-  at: z.number(),
-  connection_epoch: z.number(),
-  heartbeat_age_seconds: z.number(),
-  close_code: z.number().int().optional(),
-});
-export type ConnectionLoss = z.infer<typeof connectionLossSchema>;
 export const SESSION_IDLE_SECONDS = 300;
 export const DEVICE_LEASE_SECONDS = 30;
 export const CONNECTION_LEASE_SECONDS = DEVICE_LEASE_SECONDS;
@@ -144,9 +118,6 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
-export function deviceCapabilities(kind: DeviceKind): readonly Capability[] {
-  return kind === "browser" ? ["browser"] : DESKTOP_CAPABILITIES;
-}
 export function requiredCapabilities(tool: DeviceTool, args: Record<string, unknown>): Set<Capability> {
   const required = new Set<Capability>([TOOL_CAPABILITIES[tool]]);
   if (
@@ -157,40 +128,6 @@ export function requiredCapabilities(tool: DeviceTool, args: Record<string, unkn
   }
   return required;
 }
-export const capabilitySchema = z.enum(CAPABILITIES);
-const policyCapabilities = z
-  .array(capabilitySchema)
-  .max(5)
-  .refine((value) => new Set(value).size === value.length, "Capabilities must be unique");
-export const devicePermissionSchema = z
-  .object({ device_id: z.string().min(1).max(100), capabilities: policyCapabilities })
-  .strict();
-const uniqueDevices = (value: { device_id: string }[]) =>
-  new Set(value.map((item) => item.device_id)).size === value.length;
-export const connectionPolicySchema = z.discriminatedUnion("mode", [
-  z
-    .object({
-      mode: z.literal("selected"),
-      devices: z
-        .array(devicePermissionSchema.extend({ capabilities: policyCapabilities.min(1) }))
-        .min(0)
-        .max(100)
-        .refine(uniqueDevices, "Devices must be unique"),
-    })
-    .strict(),
-  z
-    .object({
-      mode: z.literal("all"),
-      capabilities: policyCapabilities.min(1),
-      overrides: z.array(devicePermissionSchema).max(100).refine(uniqueDevices, "Devices must be unique"),
-    })
-    .strict(),
-]);
-export type DevicePermission = z.infer<typeof devicePermissionSchema>;
-export type ConnectionPolicy = z.infer<typeof connectionPolicySchema>;
-
-export const deviceKindSchema = z.enum(["computer", "browser"]);
-
 export const DESKTOP_AUTH_CALLBACK_PATH = "/abridge/callback";
 export const BROWSER_AUTH_CALLBACK_PATH = "/abridge-authorize";
 const authorizationIdSchema = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
@@ -308,7 +245,10 @@ const clickSchema = z
 const typeSchema = z
   .object({
     type: z.literal("type"),
-    text: z.string().max(10000),
+    text: z
+      .string()
+      .max(10000)
+      .refine((value) => !value.includes("\0"), "Text contains NUL"),
     element_ref: elementRefSchema.optional(),
   })
   .strict();
@@ -345,12 +285,12 @@ export const computerActionSchema = z.discriminatedUnion("type", [
   dragSchema,
   scrollSchema,
 ]);
-// Browser diagnostics stay bounded across extension, server and script receipts.
-const browserErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
-export const browserErrorSchema = browserErrorDetailSchema.extend({
-  cause: browserErrorDetailSchema.optional(),
+// Operation diagnostics stay bounded across clients, server and script receipts.
+const operationErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
+export const operationErrorSchema = operationErrorDetailSchema.extend({
+  cause: operationErrorDetailSchema.optional(),
   connection: connectionLossSchema.optional(),
-  cleanup_error: browserErrorDetailSchema.optional(),
+  cleanup_error: operationErrorDetailSchema.optional(),
   recovery: z
     .object({
       action: z.enum(["browser_open", "stop"]),
@@ -359,13 +299,13 @@ export const browserErrorSchema = browserErrorDetailSchema.extend({
     .optional(),
 });
 // Disconnect diagnostics are server-owned, never accepted from device receipts.
-export const deviceErrorSchema = browserErrorSchema.omit({ connection: true });
-export type BrowserError = z.infer<typeof browserErrorSchema>;
+export const deviceErrorSchema = operationErrorSchema.omit({ connection: true });
+export type OperationError = z.infer<typeof operationErrorSchema>;
 export const browserStepFailureSchema = z.object({
   operation_id: z.string().min(1).max(100),
   method: z.string().min(1).max(32),
   status: z.enum(["refused", "failed", "outcome_unknown", "cancelled"]),
-  error: browserErrorSchema,
+  error: operationErrorSchema,
 });
 export type BrowserStepFailure = z.infer<typeof browserStepFailureSchema>;
 export const browserQuerySchema = z.union([
@@ -379,46 +319,54 @@ export const browserQuerySchema = z.union([
       "Query terms exceed 2000 characters",
     ),
 ]);
+const browserClickSchema = z
+  .object({
+    type: z.literal("click"),
+    element_ref: elementRefSchema,
+    hold_ms: z.number().int().min(0).max(10000).optional(),
+  })
+  .strict();
+const browserFillSchema = z
+  .object({ type: z.literal("fill"), element_ref: elementRefSchema, text: z.string().max(60000) })
+  .strict();
+const browserHoverSchema = z.object({ type: z.literal("hover"), element_ref: elementRefSchema }).strict();
+const browserPressSchema = z
+  .object({ type: z.literal("press"), element_ref: elementRefSchema, key: z.string().min(1).max(32) })
+  .strict();
+const browserSelectSchema = z
+  .object({
+    type: z.literal("select"),
+    element_ref: elementRefSchema,
+    values: z.array(z.string().max(60000)).min(1).max(100),
+  })
+  .strict();
+const browserScrollSchema = z
+  .object({
+    type: z.literal("scroll"),
+    element_ref: elementRefSchema,
+    delta_x: z.number().finite().min(-10000).max(10000).default(0),
+    delta_y: z.number().finite().min(-10000).max(10000),
+  })
+  .strict();
 export const browserActionSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("click"),
-      element_ref: elementRefSchema,
-      hold_ms: z.number().int().min(0).max(10000).optional(),
-    })
-    .strict(),
-  z.object({ type: z.literal("fill"), element_ref: elementRefSchema, text: z.string().max(60000) }).strict(),
-  z.object({ type: z.literal("hover"), element_ref: elementRefSchema }).strict(),
-  z
-    .object({ type: z.literal("press"), element_ref: elementRefSchema, key: z.string().min(1).max(100) })
-    .strict(),
-  z
-    .object({
-      type: z.literal("select"),
-      element_ref: elementRefSchema,
-      values: z.array(z.string().max(60000)).min(1).max(100),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("scroll"),
-      element_ref: elementRefSchema,
-      delta_x: z.number().finite().min(-10000).max(10000).default(0),
-      delta_y: z.number().finite().min(-10000).max(10000),
-    })
-    .strict(),
+  browserClickSchema,
+  browserFillSchema,
+  browserHoverSchema,
+  browserPressSchema,
+  browserSelectSchema,
+  browserScrollSchema,
 ]);
 export const browserLocateActSchema = z
   .object({
     frame_selector: z.string().min(1).max(2000).optional(),
     selector: z.string().min(1).max(2000),
     action: z.discriminatedUnion("type", [
-      browserActionSchema.options[0].omit({ element_ref: true }),
-      browserActionSchema.options[1].omit({ element_ref: true }),
-      browserActionSchema.options[2].omit({ element_ref: true }),
-      browserActionSchema.options[3].omit({ element_ref: true }),
-      browserActionSchema.options[4].omit({ element_ref: true }),
-      browserActionSchema.options[5].omit({ element_ref: true }),
+      browserClickSchema.omit({ element_ref: true }),
+      browserFillSchema.omit({ element_ref: true }),
+      browserHoverSchema.omit({ element_ref: true }),
+      browserPressSchema.omit({ element_ref: true }),
+      browserSelectSchema.omit({ element_ref: true }),
+      browserScrollSchema.omit({ element_ref: true }),
     ]),
   })
   .strict();
@@ -426,7 +374,7 @@ export const browserReadSchema = z
   .object({
     frame_selector: z.string().min(1).max(2000).optional(),
     mode: z.enum(["text", "tables"]).default("text"),
-    snapshot_id: z.string().min(1).max(100).optional(),
+    snapshot_id: snapshotIdSchema.optional(),
     offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
     limit: z.number().int().min(1).max(24000).default(12000),
     selector: z.string().min(1).max(2000).optional(),
@@ -463,6 +411,160 @@ export const browserExecSchema = z
 export type ComputerAction = z.infer<typeof computerActionSchema>;
 export type BrowserAction = z.infer<typeof browserActionSchema>;
 
+/** Tool arguments are parsed at every untrusted entry using this single contract. */
+export const computerAppsSchema = z.object({ query: z.string().max(200).optional() }).strict();
+export const computerWindowsSchema = z.object({ pid: computerPidSchema }).strict();
+export const computerOpenSchema = z
+  .object({
+    bundle_id: z
+      .string()
+      .min(3)
+      .max(200)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9.-]+$/),
+    screenshot: z.boolean().default(false),
+  })
+  .strict();
+export const computerObserveSchema = z
+  .object({
+    pid: computerPidSchema
+      .optional()
+      .describe(
+        "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
+      ),
+    window_id: computerWindowIdSchema
+      .optional()
+      .describe("Specific window returned by computer_windows; requires pid. Omit to select by pid alone."),
+    screenshot: z.boolean().default(true),
+    query: z.string().max(200).optional(),
+    desktop: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Select the whole desktop instead of a window; cannot be combined with pid or window_id. Capture proceeds even when focus cannot be verified. Desktop actions require confirmed focus; otherwise observe again or select a window using computer_windows.",
+      ),
+  })
+  .strict()
+  .refine(
+    (a) => !a.desktop || (a.pid === undefined && a.window_id === undefined),
+    "Desktop observation cannot select a window",
+  )
+  .refine((a) => a.window_id === undefined || a.pid !== undefined, COMPUTER_WINDOW_PID_REQUIRED);
+export const actionObservationShape = {
+  observe_after: z.boolean().default(true),
+  screenshot: z.boolean().default(false),
+  wait_after_ms: actWaitAfterSchema.describe(
+    "Wait after the action completes before its follow-up observation or screenshot, in milliseconds (default 2000; 0 skips). Ignored when observe_after=false. This is a delay, not an operation timeout.",
+  ),
+};
+const screenshotRequiresObservation = (a: { screenshot: boolean; observe_after: boolean }) =>
+  !a.screenshot || a.observe_after;
+export const computerActSchema = z
+  .object({
+    observation_id: observationIdSchema,
+    action: computerActionSchema,
+    ...actionObservationShape,
+  })
+  .strict()
+  .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
+export const browserOpenSchema = z
+  .object({ url: z.string().min(1).max(8192), screenshot: z.boolean().default(false) })
+  .strict();
+export const browserObserveSchema = z
+  .object({ screenshot: z.boolean().default(false), query: browserQuerySchema.optional() })
+  .strict();
+export const browserActSchema = z
+  .object({
+    observation_id: observationIdSchema,
+    action: browserActionSchema,
+    ...actionObservationShape,
+  })
+  .strict()
+  .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
+const filePathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => !value.includes("\0"), "Path contains NUL");
+export const commandExecuteSchema = z
+  .object({
+    command: z
+      .string()
+      .min(1)
+      .max(65536)
+      .refine((value) => value.trim().length > 0 && !value.includes("\0")),
+    cwd: filePathSchema.optional(),
+    env: z
+      .record(
+        z.string().regex(/^[^=\u0000]+$/),
+        z.string().refine((value) => !value.includes("\0")),
+      )
+      .optional(),
+    timeout: z.number().finite().min(1).max(120).default(30),
+  })
+  .strict();
+export const filesListSchema = z
+  .object({ path: filePathSchema, limit: z.number().int().min(1).max(500).default(200) })
+  .strict();
+export const fileReadSchema = z
+  .object({ path: filePathSchema, max_bytes: z.number().int().min(1).max(1048576).default(1048576) })
+  .strict();
+export const fileWriteSchema = z
+  .object({
+    path: filePathSchema,
+    content: z
+      .string()
+      .refine((value) => value.isWellFormed(), "Content must be well-formed Unicode")
+      .refine((value) => new TextEncoder().encode(value).length <= 1048576, "Content exceeds one MiB"),
+    overwrite: z.boolean().default(false),
+  })
+  .strict();
+export const toolArgumentSchemas = {
+  computer_apps: computerAppsSchema,
+  computer_windows: computerWindowsSchema,
+  computer_open: computerOpenSchema,
+  computer_observe: computerObserveSchema,
+  computer_act: computerActSchema,
+  browser_open: browserOpenSchema,
+  browser_observe: browserObserveSchema,
+  browser_act: browserActSchema,
+  browser_read: browserReadSchema,
+  browser_wait: browserWaitSchema,
+  browser_evaluate: browserEvaluateSchema,
+  browser_exec: browserExecSchema,
+  browser_locate_act: browserLocateActSchema,
+  command_execute: commandExecuteSchema,
+  files_list: filesListSchema,
+  file_read: fileReadSchema,
+  file_write: fileWriteSchema,
+} satisfies Record<DeviceTool, z.ZodType>;
+export type DeviceToolArguments<T extends DeviceTool> = z.output<(typeof toolArgumentSchemas)[T]>;
+export type DeviceToolInput<T extends DeviceTool> = z.input<(typeof toolArgumentSchemas)[T]>;
+const toolRequest = <T extends DeviceTool>(tool: T) =>
+  z.object({ tool: z.literal(tool), arguments: toolArgumentSchemas[tool] }).strict();
+export const deviceToolRequestSchema = z.discriminatedUnion("tool", [
+  toolRequest("computer_apps"),
+  toolRequest("computer_windows"),
+  toolRequest("computer_open"),
+  toolRequest("computer_observe"),
+  toolRequest("computer_act"),
+  toolRequest("browser_open"),
+  toolRequest("browser_observe"),
+  toolRequest("browser_act"),
+  toolRequest("browser_read"),
+  toolRequest("browser_wait"),
+  toolRequest("browser_evaluate"),
+  toolRequest("browser_exec"),
+  toolRequest("browser_locate_act"),
+  toolRequest("command_execute"),
+  toolRequest("files_list"),
+  toolRequest("file_read"),
+  toolRequest("file_write"),
+]);
+export type DeviceToolRequest = z.infer<typeof deviceToolRequestSchema>;
+export function parseDeviceToolRequest(value: unknown): DeviceToolRequest {
+  return deviceToolRequestSchema.parse(value);
+}
+
 export const deviceDispatchEnvelopeSchema = z
   .object({
     type: z.literal("dispatch"),
@@ -470,7 +572,7 @@ export const deviceDispatchEnvelopeSchema = z
     device_id: z.string().min(1),
     connection_epoch: z.number().int().positive(),
     sequence: z.number().int().positive(),
-    grant_version: z.number().int().positive(),
+    device_credential_version: z.number().int().positive(),
     session_capabilities: z.array(capabilitySchema),
     client_name: z.string().optional(),
     operation_id: z.string().min(1),
@@ -499,8 +601,7 @@ export const deviceHelloSchema = z
     protocol: z.literal(PROTOCOL_VERSION),
     capabilities: z.record(z.string(), z.boolean()),
     paused: z.boolean(),
-    platform: z.string(),
-    version: z.string(),
+    ...deviceMetadataSchema.shape,
   })
   .passthrough();
 export const browserHelloSchema = deviceHelloSchema.extend({
@@ -520,3 +621,5 @@ export const deviceWelcomeSchema = z
     heartbeat_interval: z.number().positive(),
   })
   .passthrough();
+
+export * from "./management.js";

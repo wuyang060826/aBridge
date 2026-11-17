@@ -6,9 +6,10 @@ import { connectionCapabilities } from "../connections/policy.js";
 
 export function OverviewPage({ data }: { data: ManagementData }) {
   const devices = data.devices.filter((device) => device.status !== "revoked");
-  const grants = data.grants.filter(
-    (grant) =>
-      grant.revoked_at === null && (grant.expires_at === null || grant.expires_at > Date.now() / 1000),
+  const connections = data.connections.filter(
+    (connection) =>
+      connection.revoked_at === null &&
+      (connection.expires_at === null || connection.expires_at > Date.now() / 1000),
   );
   const ready = devices.filter(
     (device) =>
@@ -17,7 +18,7 @@ export function OverviewPage({ data }: { data: ManagementData }) {
       device.capabilities.some((cap) => device.available?.[cap]),
   );
   const hasAccess = devices.some((device) =>
-    grants.some((grant) => connectionCapabilities(grant, device).length > 0),
+    connections.some((connection) => connectionCapabilities(connection, device).length > 0),
   );
   return (
     <>
@@ -34,7 +35,7 @@ export function OverviewPage({ data }: { data: ManagementData }) {
           {ready.length} 台就绪
         </span>
         <span>{devices.length} 台设备</span>
-        <span>{grants.length} 个有效连接</span>
+        <span>{connections.length} 个有效连接</span>
       </div>
       {!hasAccess && (
         <section class="next-action">
@@ -42,7 +43,7 @@ export function OverviewPage({ data }: { data: ManagementData }) {
             <span class="step-number">{devices.length ? "2" : "1"}</span>
             <h2>{devices.length ? "连接你的 Agent" : "添加第一台设备"}</h2>
           </div>
-          <a class="button primary" href={devices.length ? "#grants/new" : "#devices/new"}>
+          <a class="button primary" href={devices.length ? "#connections/new" : "#devices/new"}>
             {devices.length ? "创建连接" : "选择设备"}
           </a>
         </section>
@@ -79,19 +80,23 @@ export function OverviewPage({ data }: { data: ManagementData }) {
           <section>
             <div class="section-heading">
               <h2>Agent 连接</h2>
-              <a href="#grants/new" aria-label="创建 Agent 连接">
+              <a href="#connections/new" aria-label="创建 Agent 连接">
                 <Plus aria-hidden="true" />
               </a>
             </div>
             <div class="overview-inventory">
-              {grants.length ? (
-                grants.map((grant) => (
-                  <a class="overview-grant" href={`#grants/${encodeURIComponent(grant.id)}`} key={grant.id}>
-                    <span class="name">{grant.name}</span>
+              {connections.length ? (
+                connections.map((connection) => (
+                  <a
+                    class="overview-connection"
+                    href={`#connections/${encodeURIComponent(connection.id)}`}
+                    key={connection.id}
+                  >
+                    <span class="name">{connection.name}</span>
                     <span class="small muted">
-                      {grant.policy.mode === "all"
+                      {connection.policy.mode === "all"
                         ? "全部设备"
-                        : `${devices.filter((device) => connectionCapabilities(grant, device).length).length} 台设备`}
+                        : `${devices.filter((device) => connectionCapabilities(connection, device).length).length} 台设备`}
                     </span>
                     <ChevronRight aria-hidden="true" />
                   </a>
