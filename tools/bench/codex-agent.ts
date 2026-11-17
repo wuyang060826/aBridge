@@ -141,6 +141,7 @@ export async function runCodexAgent(options: {
   sessionId: string;
   taskPrompt: string;
   model: string;
+  modelCatalogPath?: string;
   timeoutMs: number;
   signal?: AbortSignal;
 }): Promise<AgentTranscript & { exitCode: number | null; timedOut: boolean }> {
@@ -170,6 +171,8 @@ export async function runCodexAgent(options: {
     'model_reasoning_effort="medium"',
     `mcp_servers={abridge={url=${JSON.stringify(options.serverUrl.replace(/\/$/, "") + "/mcp")},bearer_token_env_var="ABRIDGE_BENCH_AGENT_KEY",enabled_tools=["browser_observe","browser_read","browser_act","browser_wait"],required=true,default_tools_approval_mode="approve",tools={browser_observe={approval_mode="approve"},browser_read={approval_mode="approve"},browser_act={approval_mode="approve"},browser_wait={approval_mode="approve"}}}}`,
   ];
+  if (options.modelCatalogPath)
+    settings.push(`model_catalog_json=${JSON.stringify(options.modelCatalogPath)}`);
   // The prompt contains the task and opaque session ID only; grading implementation is not provided.
   const prompt = [
     "Complete the browser task using only the abridge browser_observe, browser_read, browser_act and browser_wait tools.",

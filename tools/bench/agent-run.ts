@@ -16,7 +16,13 @@ function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 const { values } = parseArgs({
-  options: { out: { type: "string" }, chrome: { type: "string" }, preflight: { type: "boolean" } },
+  options: {
+    out: { type: "string" },
+    chrome: { type: "string" },
+    preflight: { type: "boolean" },
+    holdout: { type: "boolean" },
+    "model-catalog": { type: "string" },
+  },
 });
 const root = resolve(import.meta.dirname, "../..");
 const interrupted = new AbortController();
@@ -55,6 +61,18 @@ interface Episode {
 const episodes: Episode[] = [];
 let persisting = Promise.resolve();
 try {
+  const modelCatalogPath = values["model-catalog"] ? resolve(values["model-catalog"]) : undefined;
+  const catalogBytes = modelCatalogPath ? await readFile(modelCatalogPath) : undefined;
+  if (catalogBytes) {
+    const catalog: unknown = JSON.parse(catalogBytes.toString("utf8"));
+    if (
+      !record(catalog) ||
+      !Array.isArray(catalog.models) ||
+      catalog.models.filter((model) => record(model) && model.slug === suite.requestedModel).length !== 1
+    )
+      throw Error("Model catalog must contain exactly one entry for the requested model");
+  }
+  const modelCatalogSha256 = catalogBytes ? createHash("sha256").update(catalogBytes).digest("hex") : null;
   environment = await createBenchmarkEnvironment({
     manifest,
     chromeExecutable: values.chrome,
@@ -68,13 +86,17 @@ try {
       .update(await readFile(join(root, "tools/bench", name)))
       .digest("hex");
   const taskNames = values.preflight ? ["click-test"] : suite.tasks;
-  const seeds = values.preflight ? [0] : suite.seeds;
+  const seeds = values.preflight ? [0] : values.holdout ? [2] : suite.seeds;
   const plan = seeds.flatMap((seed) => taskNames.map((task) => ({ task, seed })));
   const protocol = {
     ...suite,
     tasks: taskNames,
     seeds,
-    mode: values.preflight ? "agent-preflight-not-scored" : "real-agent-public-task-subset",
+    mode: values.preflight
+      ? "agent-preflight-not-scored"
+      : values.holdout
+        ? "real-agent-holdout"
+        : "real-agent-public-task-subset",
     actions:
       "rendered DOM and native screenshots; only observe/read/act/wait; no executable JS, source access or hidden grader",
     officialLimitsOverridden: true,
@@ -85,7 +107,7 @@ try {
   };
   await writeFile(
     join(env.runDirectory, "frozen-protocol.json"),
-    JSON.stringify({ protocol, benchmarkFiles, upstream: manifest }, null, 2),
+    JSON.stringify({ protocol, benchmarkFiles, modelCatalogSha256, upstream: manifest }, null, 2),
   );
   async function execute(task: string, seed: number, index: number) {
     const result: Episode = {
@@ -154,6 +176,7 @@ try {
         sessionId: session,
         taskPrompt: `Complete the task on the already-open local page using this aBridge session. First observe the page with screenshot=true; the goal may be visual. Follow the rendered instruction and finish the required UI action.\nVisible task instruction: ${initialized.query}\nUse fresh observation references. Do not access task scripts, hidden state, rewards, or grading code. Do not use any tool outside the attached aBridge browser tools. Do not open another page or session. Work autonomously within ${suite.episodeLimitMs / 1000} seconds and ${suite.maxToolCalls} tool calls; then briefly report completion.`,
         model: suite.requestedModel,
+        modelCatalogPath,
         timeoutMs: suite.episodeLimitMs,
         signal: AbortSignal.any([interrupted.signal, budget.signal]),
       });
@@ -172,6 +195,12 @@ try {
           2,
         ),
       );
+      // Killing the actor does not settle an in-flight browser operation. Budget failures
+      // already fail the episode; do not race the grader against that operation or replay input.
+      if (result.timedOut || result.budgetExceeded) {
+        result.failure = result.timedOut ? "time_budget" : "tool_budget";
+        return;
+      }
       const graded = (
         await env.runCode(
           session,
@@ -285,12 +314,20 @@ try {
         .digest("hex") !== hash
     )
       throw Error(`Benchmark source changed during run: ${name}`);
+  if (
+    modelCatalogPath &&
+    createHash("sha256")
+      .update(await readFile(modelCatalogPath))
+      .digest("hex") !== modelCatalogSha256
+  )
+    throw Error("Model catalog changed during run");
   const report = {
     schemaVersion: 1,
     recordedAt: new Date().toISOString(),
     productVersion: JSON.parse(await readFile(join(root, "package.json"), "utf8")).version as string,
     productCommit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
     benchmarkFiles,
+    modelCatalogSha256,
     workerSha256: createHash("sha256")
       .update(await readFile(join(root, "dist/browser/worker.js")))
       .digest("hex"),
