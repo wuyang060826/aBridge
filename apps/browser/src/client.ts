@@ -118,7 +118,7 @@ export class BrowserDeviceClient {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
     this.crypto = options.crypto ?? globalThis.crypto;
-    this.timers = options.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
+    this.timers = options.timers ?? globalThis;
   }
   start(): Promise<void> {
     if (this.disposed) return Promise.reject(fail("client_closed", "浏览器客户端已关闭"));

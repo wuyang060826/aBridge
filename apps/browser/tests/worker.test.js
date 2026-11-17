@@ -180,7 +180,7 @@ function harness(t, local = {}, session = {}, settings = {}) {
     WebSocket: Socket,
     fetch: (...args) => environment.fetch(...args),
     crypto: environment.crypto,
-    timers: environment.timers,
+    ...(settings.defaultTimers ? {} : { timers: environment.timers }),
     now: () => environment.now(),
   });
   t.after(() => client.close());
@@ -226,6 +226,31 @@ function harness(t, local = {}, session = {}, settings = {}) {
     nextResult,
   };
 }
+test("default timers preserve the global receiver through connection and shutdown", async (t) => {
+  const original = {};
+  const called = new Set();
+  for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) {
+    original[name] = globalThis[name];
+    globalThis[name] = function (...args) {
+      assert.equal(this, globalThis, `${name} requires the browser global receiver`);
+      called.add(name);
+      return Reflect.apply(original[name], globalThis, args);
+    };
+  }
+  try {
+    const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
+    const h = harness(t, local, {}, { defaultTimers: true });
+    await h.start();
+    const deadline = Date.now() + 2000;
+    while (!(await h.popup({ type: "status" })).connected && Date.now() < deadline) await delay(5);
+    assert.equal((await h.popup({ type: "status" })).connected, true);
+    await h.client.close();
+    for (const name of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"])
+      assert.ok(called.has(name), `${name} was exercised without injected timers`);
+  } finally {
+    Object.assign(globalThis, original);
+  }
+});
 test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
   let authorizationRequest;
   const local = {},
