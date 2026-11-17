@@ -31,11 +31,11 @@
 | 文件                                           | 用途                                 | 入口                                       |
 | ---------------------------------------------- | ------------------------------------ | ------------------------------------------ |
 | [build-native.ts](build-native.ts)             | 编译、签名并按输入指纹复用 App 壳    | `desktop:build`；安装器和 macOS 打包器调用 |
-| [install-desktop.ts](install-desktop.ts)       | 安装独立 Node、桌面依赖与 App        | `desktop:install`；macOS 打包器调用        |
+| [install-desktop.ts](install-desktop.ts)       | 安装包含原生程序与 SDK 的 App        | `desktop:install`；macOS 打包器调用        |
 | [package-macos.ts](package-macos.ts)           | 生成包含运行时的便携 App 分发包      | `package:macos`；发布 CI                   |
 | [sign-macos-release.sh](sign-macos-release.sh) | 配置临时签名环境并执行签名、公证打包 | 发布 CI 在签名启用时调用                   |
 
-构建与安装参数见 [部署说明](../docs/deployment.md)。这些脚本在准备产品时执行，安装完成后的 App 使用已复制的运行时。
+构建与安装参数见 [部署说明](../docs/deployment.md)。这些脚本在准备产品时执行，安装完成后的 App 使用包内 Swift 程序和 Cua dylib。
 
 ## 按需品牌资源生成
 
@@ -48,18 +48,17 @@
 
 ## 共用模块、配置与测试
 
-| 文件或目录                                                     | 用途                                         | 使用位置                           |
-| -------------------------------------------------------------- | -------------------------------------------- | ---------------------------------- |
-| [lib/dependency-closure.ts](lib/dependency-closure.ts)         | 复制锁定的桌面生产依赖及许可                 | 安装器、安装测试                   |
-| [lib/node-runtime.ts](lib/node-runtime.ts)                     | 获取官方 Node 并校验版本、校验和与可搬移性   | 安装器、安装测试                   |
-| [lib/process.ts](lib/process.ts)                               | 共用外部进程执行封装                         | 原生构建、安装、打包及其他工具模块 |
-| [lib/sign-runtime.ts](lib/sign-runtime.ts)                     | 在封装 App 前签名嵌套原生代码                | 原生构建                           |
-| [config/commitlint.json](config/commitlint.json)               | 提交消息规范                                 | `commitlint`、commit hook 与 CI    |
-| [tests/desktop-install.test.ts](tests/desktop-install.test.ts) | 安装参数、依赖复制、运行时校验及构建指纹测试 | `test.ts` 自动发现                 |
-| [fixtures/desktop.swift](fixtures/desktop.swift)               | 受控桌面窗口验收目标                         | 手工验收                           |
-| [fixtures/browser_fixture.ts](fixtures/browser_fixture.ts)     | 受控浏览器表单与登录态验收目标               | 手工验收、浏览器商店验收           |
-| [fixtures/README.md](fixtures/README.md)                       | 启动验收目标、核对结果与清理说明             | 手工验收指南                       |
+| 文件或目录                                                     | 用途                                      | 使用位置                           |
+| -------------------------------------------------------------- | ----------------------------------------- | ---------------------------------- |
+| [lib/process.ts](lib/process.ts)                               | 共用外部进程执行封装                      | 原生构建、安装、打包及其他工具模块 |
+| [config/commitlint.json](config/commitlint.json)               | 提交消息规范                              | `commitlint`、commit hook 与 CI    |
+| [tests/desktop-install.test.ts](tests/desktop-install.test.ts) | 安装参数、原生程序/SDK 校验及构建指纹测试 | `test.ts` 自动发现                 |
+| [fixtures/desktop.swift](fixtures/desktop.swift)               | 受控桌面窗口验收目标                      | 手工验收                           |
+| [fixtures/browser_fixture.ts](fixtures/browser_fixture.ts)     | 受控浏览器表单与登录态验收目标            | 手工验收、浏览器商店验收           |
+| [fixtures/README.md](fixtures/README.md)                       | 启动验收目标、核对结果与清理说明          | 手工验收指南                       |
 
 `fixtures/` 保存可复用的受控验收源码，不是中间过程产物。临时编译文件使用临时目录，验收后清理；需要保留的日志、截图和验收结果放入已忽略的 `.local/`，不混入 `tools/`。
 
 `test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。
+
+原生回归：`apps/desktop/tests/native-*.test.ts` 覆盖电脑执行与真实 WebSocket/Shell 生命周期；`tools/tests/native-{contract,lifecycle,updater}.test.ts` 覆盖共享契约对齐、授权存储和原生更新器。macOS 上编译 Swift 6 fixture，其他平台跳过原生专属用例。`npm run check` 在 macOS 同时构建完整 App。

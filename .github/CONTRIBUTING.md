@@ -2,7 +2,7 @@
 
 ## 开发环境
 
-使用 Node.js 22.13.0+ 与 npm；根 `package.json` 和锁文件定义依赖及脚本。产品代码统一使用 strict TypeScript，管理台使用 Preact；macOS 壳仍使用 Swift，构建 App 另需 Xcode Command Line Tools。
+使用 Node.js 22.13.0+ 与 npm；根 `package.json` 和锁文件定义依赖及脚本。Server、扩展和管理台使用 strict TypeScript，管理台使用 Preact；macOS 使用 Swift 6 原生运行时及 AppKit UI，构建 App 另需 Xcode Command Line Tools。
 
 ```sh
 npm ci
@@ -10,20 +10,20 @@ npm run build
 npm run check
 ```
 
-`npm ci` 安装锁定依赖；构建生成可运行 JavaScript、管理台和扩展，不在用户运行时调用编译器。检查包含类型、格式、测试及分发边界，具体步骤以根脚本为准。编辑后使用 `npm run format`。
+`npm ci` 安装锁定依赖；构建生成 Server JavaScript、管理台、扩展及 macOS 原生 App（Apple Silicon 上），不在用户运行时调用编译器。检查包含类型、格式、测试及分发边界，具体步骤以根脚本为准。编辑后使用 `npm run format`。
 
 源码按 npm workspaces 管理，运行依赖归应用声明，根目录只声明开发工具：
 
-| 目录                           | 职责                                                  |
-| ------------------------------ | ----------------------------------------------------- |
-| `apps/server/`                 | Server、唯一 Server CLI、MCP、授权和持久化            |
-| `apps/desktop/`                | 桌面执行器与唯一 Desktop CLI；`native/` 内含 Swift 壳 |
-| `apps/browser/`                | 独立扩展；`src/` 为逻辑，`public/` 为静态资源         |
-| `apps/web/`                    | 随 Server 分发的管理台                                |
-| `packages/protocol/`           | 跨进程共享契约                                        |
-| `packages/shared/`             | Node 应用共享的路径约定                               |
-| [`tools/`](../tools/README.md) | 构建、安装与分发检查                                  |
-| `tools/fixtures/`              | 自有桌面窗口和浏览器表单                              |
+| 目录                           | 职责                                          |
+| ------------------------------ | --------------------------------------------- |
+| `apps/server/`                 | Server、唯一 Server CLI、MCP、授权和持久化    |
+| `apps/desktop/`                | 原生桌面客户端、AppKit UI 与更新器            |
+| `apps/browser/`                | 独立扩展；`src/` 为逻辑，`public/` 为静态资源 |
+| `apps/web/`                    | 随 Server 分发的管理台                        |
+| `packages/protocol/`           | 跨进程共享契约                                |
+| `packages/shared/`             | Node 应用共享的路径约定                       |
+| [`tools/`](../tools/README.md) | 构建、安装与分发检查                          |
+| `tools/fixtures/`              | 自有桌面窗口和浏览器表单                      |
 
 应用内部使用相对导入；共享包只通过 `@abridge/protocol`、`@abridge/shared/paths` 导入，不直接遍历其他应用源码。`npm run architecture:check` 校验生产导入图、声明依赖与 workspace 接口；应用测试放在各自 `tests/` 中。
 
@@ -31,14 +31,14 @@ npm run check
 
 先读 [README](../README.md) 的工作方式，再看[执行链与状态归属](../docs/architecture.md#执行链与状态归属)。按要修改的行为选择一条链路阅读：
 
-| 行为                   | 代码路径                                                                         | 重点回归入口                                                      |
-| ---------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| 普通工具调用           | 协议参数 → `server/mcp.ts` → `control.ts` → 设备客户端 → 执行器                  | Server `server.test.ts`、`session-recovery.test.ts`               |
-| 浏览器脚本与页面输入   | `browser-execution.ts` → `browser-runtime.ts` → 普通工具链 → `browser/bridge.ts` | Server `browser-code.test.ts`、Browser `bridge.test.js`           |
-| 浏览器连接、停止与重连 | `browser/worker.ts` → `client.ts` → `task-tabs.ts`                               | Browser `worker.test.js`、Server `browser-worker.test.ts`         |
-| 桌面观察与输入         | `desktop/client.ts` → `executor.ts` → `computer.ts` → `native.ts`                | Desktop `desktop-focus.test.ts`、`admission-cancellation.test.ts` |
+| 行为                   | 代码路径                                                                                           | 重点回归入口                                                |
+| ---------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 普通工具调用           | 协议参数 → `server/mcp.ts` → `control.ts` → 设备客户端 → 执行器                                    | Server `server.test.ts`、`session-recovery.test.ts`         |
+| 浏览器脚本与页面输入   | `browser-execution.ts` → `browser-runtime.ts` → 普通工具链 → `browser/bridge.ts`                   | Server `browser-code.test.ts`、Browser `bridge.test.js`     |
+| 浏览器连接、停止与重连 | `browser/worker.ts` → `client.ts` → `task-tabs.ts`                                                 | Browser `worker.test.js`、Server `browser-worker.test.ts`   |
+| 桌面观察与输入         | `desktop/native/runtime/Client.swift` → `Executor.swift` → `Computer.swift` → `NativeDriver.swift` | Desktop `native-execution.test.ts`、`native-client.test.ts` |
 
-表中路径位于对应 `apps/*/src/`，测试位于 `apps/*/tests/`。阅读异步流程时先确认状态所有者、资源失效条件和副作用开始位置，再跟踪正常结果与取消回执；设备连接、控制会话、任务标签和单次操作有不同的生命周期。
+TypeScript 路径位于对应 `apps/*/src/`，Swift 路径位于 `apps/desktop/native/`，测试位于 `apps/*/tests/`。阅读异步流程时先确认状态所有者、资源失效条件和副作用开始位置，再跟踪正常结果与取消回执；设备连接、控制会话、任务标签和单次操作有不同的生命周期。
 
 ## 修改与验证
 
@@ -90,6 +90,6 @@ npm run hooks
 
 ## 版本与分发
 
-版本只在根 `package.json` 维护，构建和打包生成其余产物的版本。修改包内容时核对 Server 分发包不带桌面 SDK，扩展只包含已构建的浏览器资源，App 安装器复制独立运行时而不是依赖 npm 临时缓存路径。
+版本只在根 `package.json` 维护，构建和打包生成其余产物的版本。修改包内容时核对 Server 分发包不带桌面 SDK，扩展只包含已构建的浏览器资源，App 包内包含原生客户端、更新器与 SDK，不包含 Node 或 npm 依赖。
 
 [部署文档](../docs/deployment.md) 说明本地分发与安装。候选包可以先从本地 tarball 验证；包名存在于构建脚本不代表 npm 已发布。项目使用 Apache-2.0 许可证，第三方组件保留各自的许可。公开发布或替换真实部署须按用户任务范围执行。

@@ -1,21 +1,23 @@
+import { tmpdir } from "node:os";
 /** Opt-in real macOS rename/restart/rollback acceptance using disposable signed Apps. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { acquireOfficialNode } from "./lib/node-runtime.js";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { installUpdate } from "../apps/desktop/src/updater.js";
 import { plist } from "./build-native.js";
 import { run } from "./lib/process.js";
 if (process.platform !== "darwin") throw Error("Requires macOS");
 const root = resolve(import.meta.dirname, ".."),
-  work = await mkdtemp(join(root, ".local/updater-live-"));
+  work = await mkdtemp(join(tmpdir(), "abridge-updater-live-"));
 const app = join(work, "aBridge.app"),
   state = join(work, "state"),
   pids = new Set<number>();
-const portableNode = (await acquireOfficialNode(join(homedir(), "Library/Caches/aBridge/Node"))).node;
+const updater = join(root, "dist/desktop/aBridge.app/Contents/MacOS/abridge-updater");
+async function installUpdate(plan: string, parent: number) {
+  const result = JSON.parse(await run(updater, ["install", plan, String(parent)]));
+  assert.equal(result.ready, true);
+}
 async function fixture(path: string, version: string) {
   await mkdir(join(path, "Contents/MacOS"), { recursive: true });
   await copyFile(join(work, "fixture"), join(path, "Contents/MacOS/aBridge"));
@@ -36,9 +38,8 @@ async function fixture(path: string, version: string) {
 async function stage(version: string, current: string) {
   const staging = await mkdtemp(join(work, ".abridge-update-"));
   await fixture(join(staging, "aBridge.app"), version);
-  await copyFile(portableNode, join(staging, "node"));
-  await chmod(join(staging, "node"), 0o700);
-  await copyFile(join(root, "dist/desktop/updater.mjs"), join(staging, "updater.mjs"));
+  await copyFile(updater, join(staging, "abridge-updater"));
+  await chmod(join(staging, "abridge-updater"), 0o700);
   const plan = join(staging, "plan.json");
   await writeFile(
     plan,
@@ -89,21 +90,6 @@ try {
     "-framework",
     "AppKit",
   ]);
-  await fixture(app, "0.4.6");
-  // Exercise real GitHub download, digest, ZIP and signature checks without installing it.
-  if (!process.argv.includes("--skip-download")) {
-    const downloadResult = JSON.parse(
-      await run(
-        process.execPath,
-        [join(root, "dist/desktop/updater.mjs"), "download", app, "0.4.6", "0.4.7", state],
-        { timeout: 240000 },
-      ),
-    );
-    if (!downloadResult.plan) throw Error(downloadResult.error || "Missing download plan");
-    const downloadPlan = downloadResult.plan as string;
-    await rm(join(downloadPlan, ".."), { recursive: true, force: true });
-    console.log("PASS official release download, digest and signature validation");
-  }
   await fixture(app, "0.4.7");
   const old = spawn(join(app, "Contents/MacOS/aBridge"), ["--state-dir", state], { stdio: "ignore" });
   const oldPid = await awaitVersion("0.4.7");

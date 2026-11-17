@@ -1,9 +1,9 @@
-/** Build a relocatable App containing Node and its production dependency closure. */
+/** Build a relocatable native App with its arm64 Cua library. */
 import { mkdtemp, readFile, mkdir, rm, writeFile, cp, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { installDesktop, parseDesktopInstallOptions, smokeDesktopRuntime } from "./install-desktop.js";
+import { smokeDesktopRuntime } from "./install-desktop.js";
 import { buildNative, PROJECT_ROOT } from "./build-native.js";
 import { run } from "./lib/process.js";
 const { values } = parseArgs({
@@ -20,27 +20,16 @@ const work = await mkdtemp(join(tmpdir(), "abridge-macos-package-")),
 await mkdir(out, { recursive: true });
 let pendingArchive: string | undefined;
 try {
-  const installed = await installDesktop(
-    parseDesktopInstallOptions(["--app", join(work, "development.app"), "--state-dir", join(work, "state")]),
-    PROJECT_ROOT,
-  );
   const app = join(work, "portable/aBridge.app");
-  await buildNative({
-    output: app,
-    node: installed.node,
-    cli: installed.cli,
-    bundledRuntime: installed.runtime,
-    signingIdentity: identity,
-    force: true,
-  });
+  await buildNative({ output: app, signingIdentity: identity, force: true });
   const metadata = JSON.parse(await readFile(join(app, "Contents/Resources/runtime.json"), "utf8"));
-  if (JSON.stringify(metadata) !== JSON.stringify({ runtime_mode: "bundled" }))
+  if (JSON.stringify(metadata) !== JSON.stringify({ runtime_mode: "native" }))
     throw Error("Portable metadata contains machine-specific paths");
-  await smokeDesktopRuntime(join(app, "Contents/Resources/runtime"));
+  await smokeDesktopRuntime(app);
   const label = notarize ? "notarized" : identity === "-" ? "unsigned" : "signed-unnotarized";
   const archive = join(out, `aBridge-${version}-macos-arm64-${label}.zip`);
   const submission = join(work, "submission.zip");
-  await run("/usr/bin/ditto", ["-c", "-k", "--keepParent", app, submission]);
+  await run("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", "--keepParent", app, submission]);
   if (notarize) {
     const { APPLE_API_KEY_FILE: key, APPLE_API_KEY_ID: keyId, APPLE_API_ISSUER: issuer } = process.env;
     if (!key || !keyId || !issuer)
@@ -68,7 +57,7 @@ try {
       throw Error(`Notarization was not accepted: ${result.status} (${result.id})`);
     await run("/usr/bin/xcrun", ["stapler", "staple", app]);
     await run("/usr/bin/xcrun", ["stapler", "validate", app]);
-    await run("/usr/bin/ditto", ["-c", "-k", "--keepParent", app, submission]);
+    await run("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--noextattr", "--keepParent", app, submission]);
   }
   pendingArchive = archive + ".pending";
   await cp(submission, pendingArchive);

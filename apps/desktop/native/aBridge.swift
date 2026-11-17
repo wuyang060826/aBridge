@@ -100,14 +100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
-        if runtime["runtime_mode"] == "bundled", let resources = Bundle.main.resourceURL {
-            runtime["node_path"] = resources.appendingPathComponent("runtime/node").path
-            runtime["cli_path"] = resources.appendingPathComponent("runtime/cli.js").path
+        runtime["cli_path"] = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-desktop").path
+        if runtime["state_dir"] == nil {
             runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/aBridge").path
         }
         let savedDirectories = UserDefaults.standard.dictionary(forKey: "aBridgeStateDirectories") as? [String: String] ?? [:]
-        if runtime["runtime_mode"] == "bundled", let saved = savedDirectories[Bundle.main.bundleURL.path] {
+        if let saved = savedDirectories[Bundle.main.bundleURL.path] {
             runtime["state_dir"] = saved
         }
         if let index = CommandLine.arguments.firstIndex(of: "--state-dir"),
@@ -549,7 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         addFullWidth(diagnosticsBox, to: diagnostics)
         diagnosticsContent.isHidden = true
         diagnosticsBox.isHidden = true
-        addEnvironmentRow("runtime", title: "Node.js", to: diagnosticsContent)
+        addEnvironmentRow("runtime", title: "原生客户端", to: diagnosticsContent)
         addEnvironmentRow("driver", title: "Cua Driver", to: diagnosticsContent)
         addEnvironmentRow("execution", title: "执行权限", to: diagnosticsContent)
         addDivider(to: diagnosticsContent)
@@ -1126,12 +1125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func runUpdater(_ arguments: [String], completion: @escaping ([String: Any]) -> Void) {
-        guard let node = runtime["node_path"], let cli = runtime["cli_path"] else {
-            completion(["error": "运行时文件缺失"]); return
-        }
         let process = Process(), output = Pipe()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [URL(fileURLWithPath: cli).deletingLastPathComponent().appendingPathComponent("updater.mjs").path] + arguments
+        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-updater")
+        process.arguments = arguments
         process.standardOutput = output
         process.standardError = errorLog()
         updateProcess = process
@@ -1235,14 +1231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func runtimeProcess(arguments: [String]) -> Process? {
-        guard let node = runtime["node_path"], let cli = runtime["cli_path"],
-              node.hasPrefix("/"), cli.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: node),
-              FileManager.default.fileExists(atPath: cli)
+        guard let cli = runtime["cli_path"], cli.hasPrefix("/"),
+              FileManager.default.isExecutableFile(atPath: cli)
         else { return nil }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [cli] + arguments
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: cli).deletingLastPathComponent()
         var environment = ProcessInfo.processInfo.environment
         environment["ABRIDGE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
@@ -1390,10 +1384,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func renderEnvironment(_ report: [String: Any]) {
         guard !report.isEmpty else { return }
-        let node = report["runtime"] as? [String: Any] ?? [:]
-        let version = node["node"] as? String ?? ""
-        environmentLabels["runtime"]?.stringValue = node["ready"] as? Bool == true
-            ? "\(version) · 已就绪" : "Node.js 不可用"
+        let native = report["runtime"] as? [String: Any] ?? [:]
+        let version = native["version"] as? String ?? appVersion
+        environmentLabels["runtime"]?.stringValue = native["ready"] as? Bool == true
+            ? "\(version) · 已就绪" : "原生客户端不可用"
         let driver = report["driver"] as? [String: Any] ?? [:]
         if driver["installed"] == nil {
             environmentLabels["driver"]?.stringValue = "尚未检查"

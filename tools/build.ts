@@ -1,5 +1,7 @@
 /** Build deployable applications; workspace source packages are bundled, external dependencies are not. */
 import { build, type Plugin } from "esbuild";
+import { desktopContract } from "@abridge/protocol/desktop-contract";
+import { buildNative } from "./build-native.js";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, ".."),
@@ -27,7 +29,7 @@ const workspaceSources: Plugin = {
 };
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
-for (const app of ["server", "desktop"] as const) {
+for (const app of ["server"] as const) {
   const result = await build({
     entryPoints: [join(root, "apps", app, "src/cli.ts")],
     outfile: join(out, app, "cli.js"),
@@ -86,13 +88,11 @@ await build({
 });
 console.log(`Built Server, Desktop, management console and Browser ${packageInfo.version}`);
 
-// Standalone updater remains runnable after the App bundle is replaced.
-await build({
-  entryPoints: [join(root, "apps/desktop/src/updater-cli.ts")],
-  outfile: join(out, "desktop/updater.mjs"),
-  bundle: true,
-  platform: "node",
-  format: "esm",
-  target: "node22.13",
-  packages: "external",
-});
+await mkdir(join(out, "desktop"), { recursive: true });
+await writeFile(
+  join(out, "desktop/desktop-contract.json"),
+  JSON.stringify(desktopContract(), null, 2) + "\n",
+);
+if (process.platform === "darwin" && process.arch === "arm64") {
+  await buildNative({ output: join(out, "desktop/aBridge.app"), signingIdentity: "-" });
+}

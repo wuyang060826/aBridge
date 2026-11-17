@@ -1,5 +1,6 @@
 /** Shared identities, capabilities and lifecycle metadata. */
 import { z } from "zod";
+import { portable } from "./portable.js";
 
 export const CAPABILITIES = ["screen", "input", "shell", "files", "browser"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
@@ -50,10 +51,11 @@ export function deviceCapabilities(kind: DeviceKind): readonly Capability[] {
   return kind === "browser" ? ["browser"] : DESKTOP_CAPABILITIES;
 }
 export const capabilitySchema = z.enum(CAPABILITIES);
-export const policyCapabilities = z
-  .array(capabilitySchema)
-  .max(5)
-  .refine((value) => new Set(value).size === value.length, "Capabilities must be unique");
+export const policyCapabilities = portable(
+  z.array(capabilitySchema).max(5),
+  ["unique"],
+  "Capabilities must be unique",
+);
 export const devicePermissionSchema = z
   .object({ device_id: z.string().min(1).max(100), capabilities: policyCapabilities })
   .strict();

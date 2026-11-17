@@ -5,7 +5,7 @@ dist/
 build/
 coverage/
 *.tsbuildinfo
-runtime/
+/runtime/
 *.db
 *.db-shm
 *.db-wal

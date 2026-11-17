@@ -1,3 +1,4 @@
+import { portable } from "./portable.js";
 /** Shared wire contract. Product implementations consume these definitions. */
 import { z } from "zod";
 import packageInfo from "../../../package.json" with { type: "json" };
@@ -22,7 +23,9 @@ import {
 export * from "./common.js";
 
 export const VERSION = packageInfo.version;
-export const deviceRenameSchema = z.object({ name: z.string().trim().min(1).max(120) }).strict();
+export const deviceRenameSchema = z
+  .object({ name: z.string().trim().min(1).max(120).meta({ "x-trim": true }) })
+  .strict();
 export const deviceRenameResultSchema = deviceRenameSchema.extend({ id: z.string().min(1) }).strict();
 export const adminSessionSchema = z.object({ admin: z.literal(true) }).strict();
 export const adminCreateUserSchema = z
@@ -225,30 +228,28 @@ export const deviceBindingInputSchema = z
 const modifierSchema = z.enum(["cmd", "command", "ctrl", "control", "alt", "option", "shift", "fn"]);
 const coordinateSchema = z.number().finite().nonnegative();
 const elementRefSchema = z.string().min(1).max(100);
-const clickSchema = z
-  .object({
-    type: z.enum(["click", "double_click"]),
-    element_ref: elementRefSchema.optional(),
-    x: coordinateSchema.optional(),
-    y: coordinateSchema.optional(),
-    button: z.enum(["left", "right", "middle"]).default("left"),
-    modifiers: z.array(modifierSchema).default([]),
-  })
-  .strict()
-  .refine(
-    (a) =>
-      a.element_ref !== undefined
-        ? a.x === undefined && a.y === undefined
-        : a.x !== undefined && a.y !== undefined,
-    "Use element_ref or both screenshot coordinates",
-  );
+const clickSchema = portable(
+  z
+    .object({
+      type: z.enum(["click", "double_click"]),
+      element_ref: elementRefSchema.optional(),
+      x: coordinateSchema.optional(),
+      y: coordinateSchema.optional(),
+      button: z.enum(["left", "right", "middle"]).default("left"),
+      modifiers: z.array(modifierSchema).default([]),
+    })
+    .strict(),
+  [
+    "or",
+    ["and", ["exists", "element_ref"], ["not", ["exists", "x"]], ["not", ["exists", "y"]]],
+    ["and", ["not", ["exists", "element_ref"]], ["exists", "x"], ["exists", "y"]],
+  ],
+  "Use element_ref or both screenshot coordinates",
+);
 const typeSchema = z
   .object({
     type: z.literal("type"),
-    text: z
-      .string()
-      .max(10000)
-      .refine((value) => !value.includes("\0"), "Text contains NUL"),
+    text: portable(z.string().max(10000), ["noNul"], "Text contains NUL"),
     element_ref: elementRefSchema.optional(),
   })
   .strict();
@@ -269,14 +270,21 @@ const dragSchema = z
     to_y: coordinateSchema,
   })
   .strict();
-const scrollSchema = z
-  .object({
-    type: z.literal("scroll"),
-    delta_y: z.number().finite().min(-10000).max(10000),
-    delta_x: z.number().finite().min(-10000).max(10000).default(0),
-  })
-  .strict()
-  .refine((a) => Boolean(a.delta_x) !== Boolean(a.delta_y), "Scroll requires one nonzero axis");
+const scrollSchema = portable(
+  z
+    .object({
+      type: z.literal("scroll"),
+      delta_y: z.number().finite().min(-10000).max(10000),
+      delta_x: z.number().finite().min(-10000).max(10000).default(0),
+    })
+    .strict(),
+  [
+    "or",
+    ["and", ["truthy", "delta_x"], ["not", ["truthy", "delta_y"]]],
+    ["and", ["truthy", "delta_y"], ["not", ["truthy", "delta_x"]]],
+  ],
+  "Scroll requires one nonzero axis",
+);
 export const computerActionSchema = z.discriminatedUnion("type", [
   clickSchema,
   typeSchema,
@@ -424,31 +432,40 @@ export const computerOpenSchema = z
     screenshot: z.boolean().default(false),
   })
   .strict();
-export const computerObserveSchema = z
-  .object({
-    pid: computerPidSchema
-      .optional()
-      .describe(
-        "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
-      ),
-    window_id: computerWindowIdSchema
-      .optional()
-      .describe("Specific window returned by computer_windows; requires pid. Omit to select by pid alone."),
-    screenshot: z.boolean().default(true),
-    query: z.string().max(200).optional(),
-    desktop: z
-      .boolean()
-      .default(false)
-      .describe(
-        "Select the whole desktop instead of a window; cannot be combined with pid or window_id. Capture proceeds even when focus cannot be verified. Desktop actions require confirmed focus; otherwise observe again or select a window using computer_windows.",
-      ),
-  })
-  .strict()
-  .refine(
-    (a) => !a.desktop || (a.pid === undefined && a.window_id === undefined),
+export const computerObserveSchema = portable(
+  portable(
+    z
+      .object({
+        pid: computerPidSchema
+          .optional()
+          .describe(
+            "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
+          ),
+        window_id: computerWindowIdSchema
+          .optional()
+          .describe(
+            "Specific window returned by computer_windows; requires pid. Omit to select by pid alone.",
+          ),
+        screenshot: z.boolean().default(true),
+        query: z.string().max(200).optional(),
+        desktop: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Select the whole desktop instead of a window; cannot be combined with pid or window_id. Capture proceeds even when focus cannot be verified. Desktop actions require confirmed focus; otherwise observe again or select a window using computer_windows.",
+          ),
+      })
+      .strict(),
+    [
+      "or",
+      ["not", ["truthy", "desktop"]],
+      ["and", ["not", ["exists", "pid"]], ["not", ["exists", "window_id"]]],
+    ],
     "Desktop observation cannot select a window",
-  )
-  .refine((a) => a.window_id === undefined || a.pid !== undefined, COMPUTER_WINDOW_PID_REQUIRED);
+  ),
+  ["or", ["not", ["exists", "window_id"]], ["exists", "pid"]],
+  COMPUTER_WINDOW_PID_REQUIRED,
+);
 export const actionObservationShape = {
   observe_after: z.boolean().default(true),
   screenshot: z.boolean().default(false),
@@ -458,14 +475,17 @@ export const actionObservationShape = {
 };
 const screenshotRequiresObservation = (a: { screenshot: boolean; observe_after: boolean }) =>
   !a.screenshot || a.observe_after;
-export const computerActSchema = z
-  .object({
-    observation_id: observationIdSchema,
-    action: computerActionSchema,
-    ...actionObservationShape,
-  })
-  .strict()
-  .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
+export const computerActSchema = portable(
+  z
+    .object({
+      observation_id: observationIdSchema,
+      action: computerActionSchema,
+      ...actionObservationShape,
+    })
+    .strict(),
+  ["or", ["not", ["truthy", "screenshot"]], ["truthy", "observe_after"]],
+  "Screenshot requires observe_after=true",
+);
 export const browserOpenSchema = z
   .object({ url: z.string().min(1).max(8192), screenshot: z.boolean().default(false) })
   .strict();
@@ -480,24 +500,17 @@ export const browserActSchema = z
   })
   .strict()
   .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
-const filePathSchema = z
-  .string()
-  .min(1)
-  .max(4096)
-  .refine((value) => !value.includes("\0"), "Path contains NUL");
+const filePathSchema = portable(z.string().min(1).max(4096), ["noNul"], "Path contains NUL");
 export const commandExecuteSchema = z
   .object({
-    command: z
-      .string()
-      .min(1)
-      .max(65536)
-      .refine((value) => value.trim().length > 0 && !value.includes("\0")),
+    command: portable(
+      z.string().min(1).max(65536),
+      ["and", ["noNul"], ["nonblank"]],
+      "Command must be nonblank and NUL-free",
+    ),
     cwd: filePathSchema.optional(),
     env: z
-      .record(
-        z.string().regex(/^[^=\u0000]+$/),
-        z.string().refine((value) => !value.includes("\0")),
-      )
+      .record(z.string().regex(/^[^=\u0000]+$/), portable(z.string(), ["noNul"], "Environment contains NUL"))
       .optional(),
     timeout: z.number().finite().min(1).max(120).default(30),
   })
@@ -511,10 +524,11 @@ export const fileReadSchema = z
 export const fileWriteSchema = z
   .object({
     path: filePathSchema,
-    content: z
-      .string()
-      .refine((value) => value.isWellFormed(), "Content must be well-formed Unicode")
-      .refine((value) => new TextEncoder().encode(value).length <= 1048576, "Content exceeds one MiB"),
+    content: portable(
+      z.string(),
+      ["and", ["unicode"], ["utf8Max", 1048576]],
+      "Content must be well-formed Unicode within one MiB",
+    ),
     overwrite: z.boolean().default(false),
   })
   .strict();
