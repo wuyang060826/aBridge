@@ -1,4 +1,5 @@
 import { LayoutDashboard, Monitor, Link2, ListFilter, ShieldCheck } from "lucide-preact";
+import { VERSION } from "@abridge/protocol";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, objectResultSchema } from "../lib/api.js";
 import { Authentication, ExternalLogin } from "../features/auth/page.js";
@@ -141,6 +142,7 @@ function ManagementApp() {
             <span class="server-host" title={location.host}>
               {location.host}
             </span>
+            <span class="small muted">v{VERSION}</span>
           </div>
         </aside>
         <div class="workspace">
