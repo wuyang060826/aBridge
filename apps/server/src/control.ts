@@ -9,19 +9,17 @@ import {
   operationFrameSchema,
   parseDeviceToolRequest,
   operationIdPattern,
-  operationErrorSchema,
   deviceErrorSchema,
   type OperationError,
   type DeviceView,
   type ConnectionPreview,
   type SessionInfo,
   type ConnectionLoss,
-  type BrowserStepFailure,
   type Capability,
   type DeviceKind,
   type DeviceTool,
 } from "@abridge/protocol";
-import { BrowserRuntime, BrowserRuntimeError, BrowserStepError } from "./browser-runtime.js";
+import { BrowserExecutions } from "./browser-execution.js";
 import { deviceAccess, agentConnectionExpired, sessionDeadline } from "./policy.js";
 import { Store } from "./store.js";
 import {
@@ -57,8 +55,6 @@ interface Pending {
   output: { stdout: string; stderr: string };
   starts: { stdout: number; stderr: number };
   parentId?: string;
-  abort?: AbortController;
-  browserProgress?: () => JsonObject;
 }
 interface Cached {
   response: OperationResponse;
@@ -83,8 +79,7 @@ function sortedJson(value: unknown): string {
 
 /** The only owner of connection/session/operation transitions and result publication. */
 export class ControlService {
-  private readonly browserRuntime = new BrowserRuntime();
-  private readonly browserExecutions = new Map<string, string>();
+  private readonly browserExecutions = new BrowserExecutions();
   private readonly deviceConnections = new Map<string, DeviceConnection>();
   private readonly pending = new Map<string, Pending>();
   private readonly lastDisconnect = new Map<string, ConnectionLoss>();
@@ -357,7 +352,7 @@ export class ControlService {
     reason: string,
     status: SessionState = "stopped",
   ): Promise<void> {
-    this.browserRuntime.close(session.id);
+    this.browserExecutions.closeSession(session.id);
     this.store.closeSession(session.id, status);
     await this.cancelMatching(session.device_id, reason, { sessionId: session.id });
     const connection = this.deviceConnections.get(session.device_id);
@@ -488,7 +483,7 @@ export class ControlService {
       [...this.pending.values()].some((pending) => pending.operation.session_id === sessionId)
     )
       throw new BridgeError("session_busy", "Session already has an operation in progress", 409);
-    const activeCode = this.browserExecutions.get(sessionId);
+    const activeCode = this.browserExecutions.owner(sessionId);
     if (activeCode && activeCode !== parentId)
       throw new BridgeError("session_busy", "Browser code owns this session until it finishes", 409);
     if (parentId && (!this.pending.has(parentId) || activeCode !== parentId))
@@ -530,128 +525,14 @@ export class ControlService {
     });
     this.renewSession(current, sessionId);
     if (tool === "browser_exec") {
-      this.browserExecutions.set(sessionId, id);
-      const abort = new AbortController();
-      this.pending.get(id)!.abort = abort;
-      let stepIndex = 0;
-      let completedSteps = 0;
-      let inFlightStep: { operation_id: string; method: string } | undefined;
-      this.pending.get(id)!.browserProgress = () => {
-        const receipt = inFlightStep ? this.cache.get(inFlightStep.operation_id)?.response : undefined;
-        // A receipt can arrive just before the awaiting runtime resumes. Count
-        // it once and do not label an already confirmed step as unknown.
-        return {
-          steps_completed: completedSteps + (receipt?.status === "executed" ? 1 : 0),
-          ...(inFlightStep && receipt?.status !== "executed"
-            ? {
-                failed_step: {
-                  ...inFlightStep,
-                  status:
-                    receipt && ["refused", "failed", "cancelled"].includes(receipt.status)
-                      ? receipt.status
-                      : "outcome_unknown",
-                  error: receipt?.error ?? {
-                    code: "step_receipt_unconfirmed",
-                    message: "Execution ended before this step had a confirmed terminal receipt",
-                  },
-                },
-              }
-            : {}),
-        };
-      };
-      const timeout = setTimeout(
-        () => abort.abort(new Error("Browser execution timed out")),
-        Number(args.timeout_ms),
-      );
-      void this.browserRuntime
-        .run(
-          sessionId,
-          String(args.code),
-          async (method, callArgs) => {
-            if (abort.signal.aborted || !this.pending.has(id)) throw new Error("Browser execution cancelled");
-            const allowed = ["open", "observe", "read", "wait", "evaluate", "locate_act"] as const;
-            if (!allowed.some((name) => name === method)) throw new Error("Unknown browser runtime method");
-            const stepKey = `step_${id}_${++stepIndex}`;
-            const step = this.executionId(current, sessionId, stepKey);
-            let response: OperationResponse;
-            inFlightStep = { operation_id: step, method };
-            try {
-              response = await this.execute(
-                current,
-                sessionId,
-                `browser_${method}` as DeviceTool,
-                callArgs,
-                stepKey,
-                true,
-                id,
-              );
-            } catch (caught) {
-              // execute only creates an operation after entry validation/authorization.
-              // If an operation exists, delivery or the receipt may already be in flight.
-              const dispatched = this.store.operation(step);
-              throw new BrowserStepError({
-                operation_id: step,
-                method,
-                status: dispatched ? "outcome_unknown" : "refused",
-                error: {
-                  code: (caught instanceof BridgeError ? caught.code : "invalid_browser_step").slice(0, 100),
-                  message: (caught instanceof Error ? caught.message : String(caught)).slice(0, 2000),
-                },
-              });
-            }
-            inFlightStep = undefined;
-            if (response.status !== "executed")
-              throw new BrowserStepError({
-                operation_id: step,
-                method,
-                status: ["refused", "failed", "cancelled"].includes(response.status)
-                  ? (response.status as "refused" | "failed" | "cancelled")
-                  : "outcome_unknown",
-                error: response.error ?? {
-                  code: "browser_step_failed",
-                  message: "Browser step did not complete",
-                },
-              });
-            completedSteps++;
-            return response.result;
-          },
-          abort.signal,
-          (): BrowserStepFailure | undefined =>
-            inFlightStep
-              ? {
-                  ...inFlightStep,
-                  status: "outcome_unknown",
-                  error: {
-                    code: "step_receipt_unconfirmed",
-                    message:
-                      "Parent execution ended before this step had a confirmed terminal receipt; query its operation_id before continuing",
-                  },
-                }
-              : undefined,
-        )
-        .then(
-          (result) => this.finish(id, "executed", result),
-          (error: unknown) =>
-            this.finish(
-              id,
-              error instanceof BrowserRuntimeError ? error.status : "outcome_unknown",
-              error instanceof BrowserRuntimeError ? error.result : undefined,
-              {
-                ...(error instanceof BrowserRuntimeError && object(error.result.failed_step)
-                  ? operationErrorSchema.parse(error.result.failed_step.error)
-                  : {}),
-                code: error instanceof BrowserRuntimeError ? error.code : "browser_execution_failed",
-                message:
-                  error instanceof Error
-                    ? error.message
-                    : "Browser execution failed; inspect the page before continuing",
-              },
-            ),
-        )
-        .finally(() => {
-          clearTimeout(timeout);
-          if (this.browserExecutions.get(sessionId) === id) this.browserExecutions.delete(sessionId);
-        });
+      this.browserExecutions.start(id, sessionId, args, {
+        identifyStep: (key) => this.executionId(current, sessionId, key),
+        executeStep: (stepTool, stepArgs, key) =>
+          this.execute(current, sessionId, stepTool, stepArgs, key, true, id),
+        exists: (stepId) => this.store.operation(stepId) !== undefined,
+        receipt: (stepId) => this.cache.get(stepId)?.response,
+        complete: (status, result, error) => this.finish(id, status, result, error),
+      });
       if (!wait) return this.operationStatus(current, id);
       return this.waitOperation(current, id, 15);
     }
@@ -716,7 +597,7 @@ export class ControlService {
       if (pending.parentId && parents.has(pending.parentId) && !ids.includes(pending.operation.id))
         ids.push(pending.operation.id);
     }
-    for (const id of ids) this.pending.get(id)?.abort?.abort(new Error(reason));
+    for (const id of ids) this.browserExecutions.cancel(id, reason);
     const connection = this.deviceConnections.get(deviceId);
     if (ids.length && connection)
       await this.safeSend(connection, {
@@ -734,7 +615,7 @@ export class ControlService {
     this.stopping.set(deviceId, (this.stopping.get(deviceId) ?? 0) + 1);
     try {
       for (const session of this.store.sessions(deviceId)) {
-        this.browserRuntime.close(session.id);
+        this.browserExecutions.closeSession(session.id);
         this.store.closeSession(session.id, status);
       }
       const connection = this.deviceConnections.get(deviceId);
@@ -963,7 +844,7 @@ export class ControlService {
         });
     if (current)
       for (const session of this.store.sessions(ticket.deviceId)) {
-        this.browserRuntime.close(session.id);
+        this.browserExecutions.closeSession(session.id);
         this.store.closeSession(
           session.id,
           reason === "server_restarted"
@@ -1027,7 +908,7 @@ export class ControlService {
     if (!pending || pending.operation.device_id !== device.id || pending.operation.epoch !== ticket.epoch)
       return;
     // browser_exec is owned and completed by the server runtime, never by a device receipt.
-    if (pending.abort) return;
+    if (pending.operation.tool === "browser_exec") return;
     if (message.type === "output") {
       if ((message.stream === "stdout" || message.stream === "stderr") && typeof message.data === "string") {
         const stream = message.stream,
@@ -1058,15 +939,13 @@ export class ControlService {
   private finish(id: string, status: OperationState, result?: unknown, error?: OperationError): void {
     const pending = this.pending.get(id);
     if (!pending) return;
-    if (result === undefined && pending.browserProgress) result = pending.browserProgress();
-    pending.abort?.abort(new Error("Browser execution ended"));
-    if (pending.abort) {
-      for (const child of this.pending.values())
-        if (child.parentId === id)
-          void this.cancelMatching(child.operation.device_id, "Parent browser execution ended", {
-            operationId: child.operation.id,
-          });
-    }
+    const scriptProgress = this.browserExecutions.end(id);
+    if (result === undefined && scriptProgress !== undefined) result = scriptProgress;
+    for (const child of this.pending.values())
+      if (child.parentId === id)
+        void this.cancelMatching(child.operation.device_id, "Parent browser execution ended", {
+          operationId: child.operation.id,
+        });
     const agentConnection = this.store.agentConnection(pending.operation.agent_connection_id);
     if (agentConnection) this.renewSession(agentConnection, pending.operation.session_id);
     this.store.finishOperation(id, status);
@@ -1149,7 +1028,7 @@ export class ControlService {
   }
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-    this.browserRuntime.closeAll();
+    this.browserExecutions.closeAll();
     if (this.monitor) clearInterval(this.monitor);
     this.monitor = undefined;
     const tickets = [...this.deviceConnections.values()];

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { WebSocket as NodeWebSocket } from "ws";
 import { VERSION } from "@abridge/protocol";
 import type { JsonObject } from "../../src/types.js";
+import { BrowserDeviceClient } from "../../../browser/src/client.js";
 
 export const EXTENSION_ID = "a".repeat(32);
 export const SCREENSHOT =
@@ -239,10 +240,10 @@ export function browserWorkerFixture(
       },
     },
   };
-  const originalSocket = globalThis.WebSocket;
-  const originalChrome = (globalThis as unknown as { chrome?: unknown }).chrome;
-  globalThis.WebSocket = BrowserSocket as unknown as typeof WebSocket;
-  (globalThis as unknown as { chrome: unknown }).chrome = chrome;
+  const client = new BrowserDeviceClient({
+    chrome: chrome as unknown as typeof globalThis.chrome,
+    WebSocket: BrowserSocket as unknown as typeof WebSocket,
+  });
   const options = (message: JsonObject) =>
     new Promise<JsonObject>((resolve, reject) => {
       const listener = chrome.runtime.onMessage.listeners[0];
@@ -265,12 +266,10 @@ export function browserWorkerFixture(
     sockets,
     options,
     async load() {
-      await import("../../../browser/src/worker.js");
+      await client.start();
     },
     async dispose() {
-      let locallyRevoked = false;
-      if (chrome.runtime.onMessage.listeners.length)
-        locallyRevoked = (await options({ type: "unbind" })).ok === true;
+      await client.close();
       await Promise.all(
         sockets.map(
           (socket) =>
@@ -280,19 +279,11 @@ export function browserWorkerFixture(
                 return;
               }
               socket.peer.once("close", () => resolve());
-              // Only a failed/offline setup needs this local cleanup fallback.
-              if (!locallyRevoked)
-                socket.dispatchEvent(
-                  new MessageEvent("message", { data: JSON.stringify({ type: "revoke" }) }),
-                );
               socket.peer.terminate();
             }),
         ),
       );
       await new Promise((resolve) => setImmediate(resolve));
-      globalThis.WebSocket = originalSocket;
-      if (originalChrome === undefined) delete (globalThis as unknown as { chrome?: unknown }).chrome;
-      else (globalThis as unknown as { chrome: unknown }).chrome = originalChrome;
     },
   };
 }

@@ -166,6 +166,30 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       ),
       false,
     );
+    const timedOut = await run(
+      "await page.locator('#hold').click(); await page.locator('#after-timeout').click();",
+      "code-timeout",
+      100,
+    );
+    assert.equal(timedOut.status, "outcome_unknown", JSON.stringify(timedOut));
+    const timedOutStep = (timedOut.result as JsonObject).failed_step as JsonObject;
+    assert.equal(timedOutStep.method, "locate_act");
+    assert.equal(timedOutStep.status, "outcome_unknown");
+    await server.control.waitOperation(agentConnection.agentConnection, String(timedOutStep.operation_id), 1);
+    assert.ok(
+      messages.some(
+        (message) =>
+          message.type === "cancel" &&
+          (message.operation_ids as string[]).includes(String(timedOutStep.operation_id)),
+      ),
+    );
+    assert.equal(
+      messages.some(
+        (message) =>
+          message.type === "dispatch" && (message.arguments as JsonObject).selector === "#after-timeout",
+      ),
+      false,
+    );
     const held = await server.control.execute(
       agentConnection.agentConnection,
       session.id,

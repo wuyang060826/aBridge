@@ -27,6 +27,19 @@ npm run check
 
 应用内部使用相对导入；共享包只通过 `@abridge/protocol`、`@abridge/shared/paths` 导入，不直接遍历其他应用源码。`npm run architecture:check` 校验生产导入图、声明依赖与 workspace 接口；应用测试放在各自 `tests/` 中。
 
+## 接手阅读顺序
+
+先读 [README](../README.md) 的工作方式，再看[执行链与状态归属](../docs/architecture.md#执行链与状态归属)。按要修改的行为选择一条链路阅读：
+
+| 行为                   | 代码路径                                                                         | 重点回归入口                                                      |
+| ---------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 普通工具调用           | 协议参数 → `server/mcp.ts` → `control.ts` → 设备客户端 → 执行器                  | Server `server.test.ts`、`session-recovery.test.ts`               |
+| 浏览器脚本与页面输入   | `browser-execution.ts` → `browser-runtime.ts` → 普通工具链 → `browser/bridge.ts` | Server `browser-code.test.ts`、Browser `bridge.test.js`           |
+| 浏览器连接、停止与重连 | `browser/worker.ts` → `client.ts` → `task-tabs.ts`                               | Browser `worker.test.js`、Server `browser-worker.test.ts`         |
+| 桌面观察与输入         | `desktop/client.ts` → `executor.ts` → `computer.ts` → `native.ts`                | Desktop `desktop-focus.test.ts`、`admission-cancellation.test.ts` |
+
+表中路径位于对应 `apps/*/src/`，测试位于 `apps/*/tests/`。阅读异步流程时先确认状态所有者、资源失效条件和副作用开始位置，再跟踪正常结果与取消回执；设备连接、控制会话、任务标签和单次操作有不同的生命周期。
+
 ## 修改与验证
 
 修改职责前读 [架构](../docs/architecture.md)。共享契约在协议包中维护；外部输入用运行时 schema 校验，再交给持有明确类型的实现。保持授权交集、操作去重和未知副作用不重放的语义。

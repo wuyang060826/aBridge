@@ -39,11 +39,11 @@ const {BrowserRuntime}=await import(${JSON.stringify(join(temporary, "runtime.mj
 const assert=(await import('node:assert/strict')).default;
 const task=await taskSpace('aBridge browser execution acceptance');
 console.log(JSON.stringify({taskSpaceId:task.spaceId}));
-const pages=new Map();let next=1;
+const pages=new Map();let next=1;let initialPage=(await task.pages())[0];
 const event=()=>({listeners:[],addListener(f){this.listeners.push(f)},removeListener(f){this.listeners=this.listeners.filter(x=>x!==f)},emit(...a){for(const f of this.listeners)f(...a)}});
 const updates=event(),removed=event(),cdpEvents=event();
 const chrome={tabs:{onUpdated:updates,onRemoved:removed,
-async create({url}){const id=next++,p=await task.newPage();pages.set(id,p);await p.goto(url);return {id,url,status:'complete'}},
+async create({url}){const id=next++,p=initialPage??await task.newPage();initialPage=undefined;pages.set(id,p);await p.goto(url);return {id,url,status:'complete'}},
 async get(id){const p=pages.get(id);if(!p)throw Error('Missing tab');return {id,url:await p.url(),title:await p.title(),status:'complete'}},
 async update(id,{url}){updates.emit(id,{status:'loading',url});await pages.get(id).goto(url);return this.get(id)},
 async remove(id){await pages.get(id).close();pages.delete(id);removed.emit(id)}},

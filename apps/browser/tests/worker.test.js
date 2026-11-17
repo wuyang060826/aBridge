@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { BrowserDeviceClient } from "../src/client.js";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 const event = () => ({
@@ -15,16 +16,16 @@ const event = () => ({
 });
 const storage = (data) => ({
   async get() {
-    return { ...data };
+    return structuredClone(data);
   },
   async set(values) {
-    Object.assign(data, values);
+    Object.assign(data, structuredClone(values));
   },
   async remove(keys) {
     for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key];
   },
 });
-function harness(local = {}, session = {}, settings = {}) {
+function harness(t, local = {}, session = {}, settings = {}) {
   if (local.device?.key) local.device.instance_id = "test-instance";
   const resultWaiters = new Set();
   const nextResult = (operationId) =>
@@ -141,15 +142,54 @@ function harness(local = {}, session = {}, settings = {}) {
     },
     debugger: { onDetach: event() },
   };
-  globalThis.chrome = chrome;
-  globalThis.WebSocket = Socket;
+  const timeouts = new Set(),
+    intervals = new Set();
+  const environment = {
+    fetch: globalThis.fetch,
+    now: Date.now,
+    crypto: {
+      subtle: { digest: crypto.subtle.digest.bind(crypto.subtle) },
+      randomUUID: crypto.randomUUID.bind(crypto),
+    },
+    timers: {
+      setTimeout(callback, ms) {
+        const timer = setTimeout(() => {
+          timeouts.delete(timer);
+          callback();
+        }, ms);
+        timeouts.add(timer);
+        return timer;
+      },
+      clearTimeout(timer) {
+        timeouts.delete(timer);
+        clearTimeout(timer);
+      },
+      setInterval(callback, ms) {
+        const timer = setInterval(callback, ms);
+        intervals.add(timer);
+        return timer;
+      },
+      clearInterval(timer) {
+        intervals.delete(timer);
+        clearInterval(timer);
+      },
+    },
+  };
+  const client = new BrowserDeviceClient({
+    chrome,
+    WebSocket: Socket,
+    fetch: (...args) => environment.fetch(...args),
+    crypto: environment.crypto,
+    timers: environment.timers,
+    now: () => environment.now(),
+  });
+  t.after(() => client.close());
   const fromPage = (message, page = "popup.html") =>
     new Promise((resolve) =>
-      chrome.runtime.onMessage.listeners[0](
-        message,
-        { id: "extension", url: chrome.runtime.getURL(page) },
-        resolve,
-      ),
+      (
+        chrome.runtime.onMessage.listeners[0] ??
+        ((_message, _sender, respond) => respond({ ok: false, error: { code: "client_closed" } }))
+      )(message, { id: "extension", url: chrome.runtime.getURL(page) }, resolve),
     );
   const popup = (message) => fromPage(message);
   const dispatch = (id, sequence = 1, extra = {}) => ({
@@ -168,6 +208,11 @@ function harness(local = {}, session = {}, settings = {}) {
     ...extra,
   });
   return {
+    client,
+    environment,
+    timeouts,
+    intervals,
+    start: () => client.start().catch(() => {}),
     sockets,
     messages,
     removed,
@@ -182,23 +227,10 @@ function harness(local = {}, session = {}, settings = {}) {
   };
 }
 test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
-  const originalDigest = crypto.subtle.digest;
-  let firstDigest = true;
-  crypto.subtle.digest = async function (...args) {
-    if (firstDigest) {
-      firstDigest = false;
-      // The OS crypto pool can complete after a fixed 10 ms sleep on busy CI runners.
-      await delay(30);
-    }
-    return originalDigest.apply(this, args);
-  };
-  t.after(() => {
-    crypto.subtle.digest = originalDigest;
-  });
   let authorizationRequest;
   const local = {},
     session = { owned_task_tabs: [9] },
-    h = harness(local, session, {
+    h = harness(t, local, session, {
       authorize: async (url) => {
         assert.equal(new URL(url).origin, "https://abridge.example");
         return (
@@ -210,8 +242,21 @@ test("standalone extension registers once, authenticates directly, isolates brow
         );
       },
     });
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+  let firstDigest = true;
+  h.environment.crypto.subtle.digest = async function (...args) {
+    if (firstDigest) {
+      firstDigest = false;
+      // The OS crypto pool can complete after a fixed 10 ms sleep on busy CI runners.
+      await delay(30);
+    }
+    return originalDigest.apply(this, args);
+  };
+  t.after(() => {
+    h.environment.crypto.subtle.digest = originalDigest;
+  });
   let requests = 0;
-  globalThis.fetch = async (url, request) => {
+  h.environment.fetch = async (url, request) => {
     requests++;
     if (url.endsWith("/api/device-authorizations")) {
       authorizationRequest = JSON.parse(request.body);
@@ -247,7 +292,7 @@ test("standalone extension registers once, authenticates directly, isolates brow
       },
     };
   };
-  await import("../src/worker.ts?standalone");
+  await h.start();
   await delay(10);
   assert.equal(h.sockets.length, 0);
   assert.deepEqual(h.removed, [9]);
@@ -325,45 +370,43 @@ test("standalone extension registers once, authenticates directly, isolates brow
     h.messages.some((m) => m.type === "unbind"),
     true,
   );
-  delete globalThis.fetch;
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
-test("startup retains failed cleanup IDs and refuses connection", async () => {
+test("startup retains failed cleanup IDs and refuses connection", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
     session = { owned_task_tabs: [9] },
-    h = harness(local, session);
+    h = harness(t, local, session);
+  const remove = h.chrome.tabs.remove;
   h.chrome.tabs.remove = async () => {
     throw Error("remove failed");
   };
   h.chrome.tabs.get = async (id) => ({ id });
-  await import("../src/worker.ts?startup-cleanup");
-  await delay(10);
-  assert.equal(h.sockets.length, 0);
-  assert.deepEqual(session.owned_task_tabs, [9]);
-  const status = await h.popup({ type: "status" });
-  assert.equal(status.error.code, "cleanup_failed");
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
+  try {
+    await h.start();
+    await delay(10);
+    assert.equal(h.sockets.length, 0);
+    assert.deepEqual(session.owned_task_tabs, [9]);
+    const status = await h.popup({ type: "status" });
+    assert.equal(status.error.code, "cleanup_failed");
+  } finally {
+    h.chrome.tabs.remove = remove;
+  }
 });
 
-test("worker recovery marks persisted executing intent unknown without replay", async () => {
+test("worker recovery marks persisted executing intent unknown without replay", async (t) => {
   const local = { operation_journal: { pending: { status: "executing", request_hash: "opaque-hash" } } },
-    h = harness(local, {});
-  await import("../src/worker.ts?recover-intent");
+    h = harness(t, local, {});
+  await h.start();
   await delay(10);
   assert.equal(local.operation_journal.pending.status, "outcome_unknown");
   assert.equal(h.sockets.length, 0);
   assert.equal(h.tabs.size, 1);
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
-test("cancel during digest or intent persistence prevents late page effects", async () => {
+test("cancel during digest or intent persistence prevents late page effects", async (t) => {
   for (const phase of ["digest", "journal"]) {
     const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
-      h = harness(local, {});
-    await import(`../src/worker.ts?cancel-${phase}`);
+      h = harness(t, local, {});
+    await h.start();
     await delay(10);
     let release, entered;
     const reached = new Promise((resolve) => {
@@ -372,10 +415,10 @@ test("cancel during digest or intent persistence prevents late page effects", as
     const gate = new Promise((resolve) => {
       release = resolve;
     });
-    const originalDigest = crypto.subtle.digest;
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
     const originalSet = h.chrome.storage.local.set;
     if (phase === "digest")
-      crypto.subtle.digest = async function (...args) {
+      h.environment.crypto.subtle.digest = async function (...args) {
         entered();
         await gate;
         return originalDigest.apply(this, args);
@@ -397,12 +440,10 @@ test("cancel during digest or intent persistence prevents late page effects", as
     assert.equal(h.messages.at(-1).operation_id, "cancelled");
     assert.notEqual(h.messages.at(-1).status, "executed");
     assert.equal(local.operation_journal.cancelled.status, "outcome_unknown");
-    crypto.subtle.digest = originalDigest;
+    h.environment.crypto.subtle.digest = originalDigest;
     h.chrome.storage.local.set = originalSet;
     await h.popup({ type: "unbind" });
     await delay(5);
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   }
 });
 
@@ -410,22 +451,22 @@ test("recovery alarm restores connection when worker-local reconnect timer is lo
   const local = {
       device: { server: "https://abridge.example", key: "key", device_id: "browser-device", paused: true },
     },
-    h = harness(local, {});
+    h = harness(t, local, {});
   t.after(() => {
     local.device.revoked = true;
     for (const s of h.sockets) s.close();
   });
-  await import("../src/worker.ts?lost-local-timer");
+  await h.start();
   await delay(10);
   assert.equal(h.sockets.length, 1);
   const recovery = [...h.alarms.values()][0];
   assert.ok(recovery, "authorized worker must install a browser-managed wake-up alarm");
-  const originalSetTimeout = globalThis.setTimeout;
+  const originalSetTimeout = h.environment.timers.setTimeout;
   // Worker termination loses its JS timer. A browser-managed alarm still wakes it.
-  globalThis.setTimeout = () => 0;
+  h.environment.timers.setTimeout = () => 0;
   h.sockets[0].close();
   await delay(10);
-  globalThis.setTimeout = originalSetTimeout;
+  h.environment.timers.setTimeout = originalSetTimeout;
   assert.equal(h.sockets.length, 1);
   h.chrome.alarms.onAlarm.emit(recovery);
   await delay(20);
@@ -440,18 +481,16 @@ test("recovery alarm restores connection when worker-local reconnect timer is lo
   h.chrome.alarms.onAlarm.emit(recovery);
   await delay(10);
   assert.equal(h.sockets.length, 2, "revoked credentials never reconnect");
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
 test("recovery alarm replaces a stale apparently-open socket only after async task cleanup", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
-    h = harness(local, {}, { asyncClose: true });
+    h = harness(t, local, {}, { asyncClose: true });
   t.after(() => {
     local.device.revoked = true;
     for (const s of h.sockets) s.close();
   });
-  await import("../src/worker.ts?stale-socket-alarm");
+  await h.start();
   await delay(10);
   const recovery = [...h.alarms.values()][0];
   h.chrome.alarms.onAlarm.emit(recovery);
@@ -461,7 +500,7 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
   await delay(10);
   assert.equal(h.tabs.size, 2);
   const now = Date.now;
-  Date.now = () => now() + 60000;
+  h.environment.now = () => now() + 60000;
   try {
     assert.equal(
       (await h.popup({ type: "status" })).connected,
@@ -471,7 +510,7 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
     h.chrome.alarms.onAlarm.emit(recovery);
     await delay(20);
   } finally {
-    Date.now = now;
+    h.environment.now = now;
   }
   assert.equal(h.sockets.length, 2, "missed heartbeat lease replaces an apparently-open socket");
   assert.equal(h.sockets[0].readyState, 3);
@@ -479,13 +518,11 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
   assert.equal((await h.popup({ type: "status" })).connected, true);
   await h.popup({ type: "unbind" });
   await delay(5);
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
 test("alarm reconnect during CLOSING completes old task cleanup before replacing the socket", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
-    h = harness(local, {}, { deferredClose: true });
+    h = harness(t, local, {}, { deferredClose: true });
   t.after(() => {
     local.device.revoked = true;
     for (const s of h.sockets) {
@@ -493,7 +530,7 @@ test("alarm reconnect during CLOSING completes old task cleanup before replacing
       s.finishClose?.();
     }
   });
-  await import("../src/worker.ts?closing-socket-alarm");
+  await h.start();
   await delay(10);
   h.sockets[0].receive(h.dispatch("before-closing"));
   await delay(10);
@@ -516,14 +553,12 @@ test("alarm reconnect during CLOSING completes old task cleanup before replacing
   await h.popup({ type: "unbind" });
   h.sockets[1].finishClose();
   await delay(5);
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
-test("only the exact popup page controls the worker; stopping tasks preserves connection and authorization", async () => {
+test("only the exact popup page controls the worker; stopping tasks preserves connection and authorization", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
-    h = harness(local, {});
-  await import("../src/worker.ts?popup-controls");
+    h = harness(t, local, {});
+  await h.start();
   await delay(10);
   for (const page of ["untrusted.html", "options.html", "popup.html?spoof=1", "popup.html#spoof"]) {
     assert.equal(
@@ -553,20 +588,16 @@ test("only the exact popup page controls the worker; stopping tasks preserves co
   assert.equal(local.device.paused, false);
   await h.popup({ type: "unbind" });
   await delay(5);
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
 test("closing another session does not cancel a dispatch waiting on durable intent", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
-    h = harness(local, {});
+    h = harness(t, local, {});
   t.after(() => {
     local.device.revoked = true;
     for (const socket of h.sockets) socket.close();
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?cross-session-close");
+  await h.start();
   await delay(10);
   let release, entered;
   const reached = new Promise((resolve) => {
@@ -594,19 +625,17 @@ test("closing another session does not cancel a dispatch waiting on durable inte
   assert.deepEqual(h.tabsAtConnect[0], [1]);
   await h.popup({ type: "unbind" });
   await delay(10);
-  delete globalThis.chrome;
-  delete globalThis.WebSocket;
 });
 
 test("an open popup is notified when remote work starts, completes and closes its task session", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
-  const h = harness(local, {});
+  const h = harness(t, local, {});
   t.after(async () => {
     await h.popup({ type: "unbind" });
     local.device.revoked = true;
     for (const socket of h.sockets) socket.close();
   });
-  await import("../src/worker.ts?task-status-notifications");
+  await h.start();
   await h.popup({ type: "status" });
   // Wait for authentication rather than assuming the first status read is online.
   while (!(await h.popup({ type: "status" })).connected) await delay(1);
@@ -644,15 +673,13 @@ test("an open popup is notified when remote work starts, completes and closes it
 test("independent: cancelling digest-waiting A keeps executing B and the control session usable", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
   const session = {},
-    h = harness(local, session);
-  const originalDigest = crypto.subtle.digest;
+    h = harness(t, local, session);
+  const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
   t.after(async () => {
-    crypto.subtle.digest = originalDigest;
+    h.environment.crypto.subtle.digest = originalDigest;
     await h.popup({ type: "unbind" });
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?independent-cancel-scope");
+  await h.start();
   await delay(10);
   let releaseA,
     enteredA,
@@ -663,7 +690,7 @@ test("independent: cancelling digest-waiting A keeps executing B and the control
   const aGate = new Promise((resolve) => (releaseA = resolve));
   const bReady = new Promise((resolve) => (enteredB = resolve));
   const bGate = new Promise((resolve) => (releaseB = resolve));
-  crypto.subtle.digest = async function (...args) {
+  h.environment.crypto.subtle.digest = async function (...args) {
     if (first) {
       first = false;
       enteredA();
@@ -701,13 +728,11 @@ test("independent: cancelling digest-waiting A keeps executing B and the control
 test("independent: cancelling after navigation completion preserves its receipt and permits session recovery", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
   const session = {},
-    h = harness(local, session);
+    h = harness(t, local, session);
   t.after(async () => {
     await h.popup({ type: "unbind" });
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?independent-cancel-late");
+  await h.start();
   await delay(10);
   let release,
     entered,
@@ -744,21 +769,19 @@ test("independent: cancelling after navigation completion preserves its receipt 
 for (const fence of ["revoke", "deadline"])
   test(`independent: ${fence} during digest blocks later page effects`, async (t) => {
     const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
-    const h = harness(local, {}, { deferredClose: true });
-    const originalDigest = crypto.subtle.digest;
+    const h = harness(t, local, {}, { deferredClose: true });
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
     t.after(async () => {
-      crypto.subtle.digest = originalDigest;
+      h.environment.crypto.subtle.digest = originalDigest;
       await h.popup({ type: "unbind" });
       for (const socket of h.sockets) socket.finishClose?.();
-      delete globalThis.chrome;
-      delete globalThis.WebSocket;
     });
-    await import(`../src/worker.ts?independent-fence-${fence}`);
+    await h.start();
     await delay(10);
     let release, entered;
     const reached = new Promise((resolve) => (entered = resolve));
     const gate = new Promise((resolve) => (release = resolve));
-    crypto.subtle.digest = async function (...args) {
+    h.environment.crypto.subtle.digest = async function (...args) {
       entered();
       await gate;
       return originalDigest.apply(this, args);
@@ -780,25 +803,23 @@ for (const fence of ["revoke", "deadline"])
 
 test("independent: an expired device lease blocks dispatch even before the heartbeat timer runs", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
-  const h = harness(local, {}, { leaseSeconds: 1 });
+  const h = harness(t, local, {}, { leaseSeconds: 1 });
   const originalNow = Date.now;
   t.after(async () => {
-    Date.now = originalNow;
+    h.environment.now = originalNow;
     await h.popup({ type: "unbind" });
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?independent-lease-expired");
+  await h.start();
   await delay(10);
   const frame = h.dispatch("lease-expired", 1);
-  Date.now = () => originalNow() + 2000;
+  h.environment.now = () => originalNow() + 2000;
   h.sockets[0].receive(frame);
   await delay(25);
   assert.equal(h.tabs.size, 1, "An expired connection lease cannot admit browser page work");
   assert.notEqual(h.messages.find((m) => m.operation_id === "lease-expired")?.status, "executed");
 });
 
-test("browser consent completes without an open popup and a reopened popup restores pending details", async () => {
+test("browser consent completes without an open popup and a reopened popup restores pending details", async (t) => {
   let finishBrowser;
   let started;
   let tokenRequests = 0;
@@ -806,6 +827,7 @@ test("browser consent completes without an open popup and a reopened popup resto
     device: { server: "https://old.example", label: "Old profile", paused: true, revoked: true },
   };
   const h = harness(
+    t,
     local,
     {},
     {
@@ -815,8 +837,8 @@ test("browser consent completes without an open popup and a reopened popup resto
         }),
     },
   );
-  const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
+
+  h.environment.fetch = async (url, init) => {
     if (url.endsWith("/token")) {
       tokenRequests++;
       return Response.json({
@@ -835,7 +857,7 @@ test("browser consent completes without an open popup and a reopened popup resto
     });
   };
   try {
-    await import("../src/worker.ts?popup-consent-lifetime");
+    await h.start();
     assert.equal(
       (await h.popup({ type: "authorize", server: "https://abridge.example", label: "Work" })).ok,
       true,
@@ -868,26 +890,23 @@ test("browser consent completes without an open popup and a reopened popup resto
     assert.equal((await h.fromPage({ type: "status" })).authorizing, false);
     await h.popup({ type: "unbind" });
   } finally {
-    globalThis.fetch = previousFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   }
 });
 
-test("browser consent waits outside control queue and a cancelled late approval cannot bind", async () => {
+test("browser consent waits outside control queue and a cancelled late approval cannot bind", async (t) => {
   let finishBrowser;
   let started;
   let tokenRequests = 0;
   const local = { device: { paused: true } },
     session = {};
-  const h = harness(local, session, {
+  const h = harness(t, local, session, {
     authorize: () =>
       new Promise((resolve) => {
         finishBrowser = resolve;
       }),
   });
-  const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
+
+  h.environment.fetch = async (url, init) => {
     if (init.method === "DELETE") return Response.json({ ok: true });
     if (url.endsWith("/token")) {
       tokenRequests++;
@@ -901,7 +920,7 @@ test("browser consent waits outside control queue and a cancelled late approval 
     });
   };
   try {
-    await import("../src/worker.ts?browser-consent-cancel");
+    await h.start();
     assert.equal(
       (await h.popup({ type: "authorize", server: "https://abridge.example", label: "Work" })).ok,
       true,
@@ -927,18 +946,14 @@ test("browser consent waits outside control queue and a cancelled late approval 
     assert.equal(local.device.key, undefined);
     assert.equal(local.device.paused, true);
   } finally {
-    globalThis.fetch = previousFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   }
 });
 
 test("browser names synchronize from Server and rename without blocking pause or exposing its key", async (t) => {
-  const originalFetch = globalThis.fetch;
   const local = {
     device: { server: "https://abridge.example", key: "key", device_id: "browser-device", label: "Old name" },
   };
-  const h = harness(local, {}, { deviceName: "Server name" });
+  const h = harness(t, local, {}, { deviceName: "Server name" });
   let release;
   const pending = new Promise((resolve) => {
     release = resolve;
@@ -946,18 +961,15 @@ test("browser names synchronize from Server and rename without blocking pause or
   t.after(async () => {
     release();
     await h.popup({ type: "unbind" });
-    globalThis.fetch = originalFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?rename-sync");
+  await h.start();
   await delay(10);
   assert.equal((await h.popup({ type: "status" })).label, "Server name");
   let entered;
   const requested = new Promise((resolve) => {
     entered = resolve;
   });
-  globalThis.fetch = async (url, options) => {
+  h.environment.fetch = async (url, options) => {
     assert.equal(url, "https://abridge.example/api/device");
     assert.equal(options.method, "PATCH");
     assert.equal(options.credentials, "omit");
@@ -990,7 +1002,6 @@ test("browser names synchronize from Server and rename without blocking pause or
 });
 
 test("failed or invalid browser renames preserve the saved device name", async (t) => {
-  const originalFetch = globalThis.fetch;
   const local = {
     device: {
       server: "https://abridge.example",
@@ -999,20 +1010,18 @@ test("failed or invalid browser renames preserve the saved device name", async (
       label: "Keep name",
     },
   };
-  const h = harness(local, {});
+  const h = harness(t, local, {});
   t.after(async () => {
     await h.popup({ type: "unbind" });
-    globalThis.fetch = originalFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?rename-refusal");
+  await h.start();
   await delay(10);
-  globalThis.fetch = async () => Response.json({ error: { message: "Server unavailable" } }, { status: 503 });
+  h.environment.fetch = async () =>
+    Response.json({ error: { message: "Server unavailable" } }, { status: 503 });
   assert.equal((await h.popup({ type: "rename", name: "Draft" })).ok, false);
   assert.equal((await h.popup({ type: "status" })).label, "Keep name");
   assert.equal(local.device.label, "Keep name");
-  globalThis.fetch = async () => Response.json({ id: "other-device", name: "Wrong device" });
+  h.environment.fetch = async () => Response.json({ id: "other-device", name: "Wrong device" });
   assert.equal((await h.popup({ type: "rename", name: "Draft" })).ok, false);
   assert.equal((await h.popup({ type: "rename", name: " " })).ok, false);
   assert.equal((await h.popup({ type: "rename", name: "x".repeat(121) })).ok, false);
@@ -1020,7 +1029,6 @@ test("failed or invalid browser renames preserve the saved device name", async (
 });
 
 test("manual browser Token validates identity before replacing a binding and requires exact HTTP consent", async (t) => {
-  const previousFetch = globalThis.fetch;
   const local = {
     device: {
       server: "https://abridge.example",
@@ -1030,12 +1038,12 @@ test("manual browser Token validates identity before replacing a binding and req
       paused: true,
     },
   };
-  const h = harness(local, {}, { socketUrl: "ws://192.0.2.1:8765/ws/browser" });
+  const h = harness(t, local, {}, { socketUrl: "ws://192.0.2.1:8765/ws/browser" });
   // Keep the old binding paused and invalid so no old socket is created in this fixture.
   local.device.revoked = true;
   let requests = 0,
     kind = "computer";
-  globalThis.fetch = async (url, init) => {
+  h.environment.fetch = async (url, init) => {
     requests++;
     assert.equal(url, "http://192.0.2.1:8765/api/device");
     assert.equal(init.headers.Authorization, "Bearer abr_device_new");
@@ -1051,11 +1059,8 @@ test("manual browser Token validates identity before replacing a binding and req
     }
     await h.popup({ type: "unbind" });
     await delay(10);
-    globalThis.fetch = previousFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?manual-token");
+  await h.start();
   await delay(10);
   const message = { type: "bind_token", server: "http://192.0.2.1:8765", device_key: "abr_device_new" };
   assert.equal((await h.popup(message)).ok, false);
@@ -1085,14 +1090,13 @@ test("manual browser Token validates identity before replacing a binding and req
 });
 
 test("cancelling in-flight Token verification cannot commit a late reply", async (t) => {
-  const oldFetch = globalThis.fetch;
   const local = {};
-  const h = harness(local);
+  const h = harness(t, local);
   let release, entered;
   const started = new Promise((resolve) => {
     entered = resolve;
   });
-  globalThis.fetch = async () => {
+  h.environment.fetch = async () => {
     entered();
     return new Promise((resolve) => {
       release = () =>
@@ -1103,11 +1107,8 @@ test("cancelling in-flight Token verification cannot commit a late reply", async
   };
   t.after(() => {
     release?.();
-    globalThis.fetch = oldFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?manual-token-cancel");
+  await h.start();
   await delay(10);
   assert.equal(
     (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_new" }))
@@ -1122,7 +1123,6 @@ test("cancelling in-flight Token verification cannot commit a late reply", async
 });
 
 test("late close and revoke from a replaced browser binding cannot revoke the new Token", async (t) => {
-  const oldFetch = globalThis.fetch;
   const local = {
     device: {
       server: "https://abridge.example",
@@ -1131,18 +1131,15 @@ test("late close and revoke from a replaced browser binding cannot revoke the ne
       label: "Old",
     },
   };
-  const h = harness(local, {}, { deferredClose: true });
-  globalThis.fetch = async () =>
+  const h = harness(t, local, {}, { deferredClose: true });
+  h.environment.fetch = async () =>
     Response.json({ id: "browser-device", name: "New", kind: "browser", capabilities: ["browser"] });
   t.after(async () => {
     await h.popup({ type: "unbind" });
     for (const s of h.sockets) s.finishClose?.();
     await delay(10);
-    globalThis.fetch = oldFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?replace-active-token");
+  await h.start();
   for (let i = 0; i < 50; i++) {
     if ((await h.popup({ type: "status" })).connected) break;
     await delay(5);
@@ -1167,7 +1164,6 @@ test("late close and revoke from a replaced browser binding cannot revoke the ne
 });
 
 test("manual binding during reconnect cleanup cannot create another old-Token connection", async (t) => {
-  const oldFetch = globalThis.fetch;
   const local = {
     device: {
       server: "https://abridge.example",
@@ -1176,7 +1172,7 @@ test("manual binding during reconnect cleanup cannot create another old-Token co
       label: "Old",
     },
   };
-  const h = harness(local, {}, { deferredClose: true });
+  const h = harness(t, local, {}, { deferredClose: true });
   let releaseCleanup;
   t.after(async () => {
     releaseCleanup?.();
@@ -1184,11 +1180,8 @@ test("manual binding during reconnect cleanup cannot create another old-Token co
     await h.popup({ type: "unbind" });
     for (const socket of h.sockets) socket.finishClose?.();
     await delay(10);
-    globalThis.fetch = oldFetch;
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
   });
-  await import("../src/worker.ts?replace-during-reconnect-cleanup");
+  await h.start();
   for (let i = 0; i < 50; i++) {
     if ((await h.popup({ type: "status" })).connected) break;
     await delay(5);
@@ -1216,7 +1209,7 @@ test("manual binding during reconnect cleanup cannot create another old-Token co
   old.readyState = 2;
   h.chrome.alarms.onAlarm.emit({ name: "abridge-connection-recovery" });
   await cleaning;
-  globalThis.fetch = async () =>
+  h.environment.fetch = async () =>
     Response.json({ id: "browser-device", name: "New", kind: "browser", capabilities: ["browser"] });
   assert.equal(
     (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_new" }))
@@ -1244,13 +1237,13 @@ test("manual binding during reconnect cleanup cannot create another old-Token co
   assert.equal((await h.popup({ type: "status" })).connected, true);
 });
 
-test("worker browser_open enforces the shared contract before task tab side effects", async () => {
+test("worker browser_open enforces the shared contract before task tab side effects", async (t) => {
   const local = {
     device: { server: "https://abridge.example", key: "key", device_id: "browser-device" },
   };
-  const h = harness(local, {});
+  const h = harness(t, local, {});
   try {
-    await import("../src/worker.ts?open-argument-contract");
+    await h.start();
     await delay(10);
     let sequence = 0;
     for (const args of [
@@ -1270,7 +1263,284 @@ test("worker browser_open enforces the shared contract before task tab side effe
   } finally {
     await h.popup({ type: "unbind" });
     await delay(5);
-    delete globalThis.chrome;
-    delete globalThis.WebSocket;
+  }
+});
+
+function assertClientReleased(h) {
+  for (const source of [
+    h.chrome.runtime.onMessage,
+    h.chrome.runtime.onStartup,
+    h.chrome.alarms.onAlarm,
+    h.chrome.tabs.onUpdated,
+    h.chrome.tabs.onRemoved,
+    h.chrome.debugger.onDetach,
+  ])
+    assert.equal(source.listeners.length, 0);
+  assert.equal(h.timeouts.size, 0);
+  assert.equal(h.intervals.size, 0);
+}
+
+test("independent client instances keep bindings, sockets and lifecycle cleanup isolated", async (t) => {
+  const first = {
+    device: { server: "https://abridge.example", key: "first-key", device_id: "browser-device" },
+  };
+  const second = {
+    device: { server: "https://abridge.example", key: "second-key", device_id: "browser-device" },
+  };
+  const a = harness(t, first),
+    b = harness(t, second);
+  await Promise.all([a.start(), b.start()]);
+  await delay(10);
+  assert.equal(a.messages.find((message) => message.type === "hello").device_key, "first-key");
+  assert.equal(b.messages.find((message) => message.type === "hello").device_key, "second-key");
+  assert.notEqual(a.sockets[0], b.sockets[0]);
+  const socket = a.sockets[0];
+  await a.client.close();
+  assertClientReleased(a);
+  socket.receive({ type: "revoke" });
+  socket.dispatchEvent(Object.assign(new Event("close"), { code: 4403 }));
+  a.chrome.alarms.onAlarm.emit({ name: "abridge-connection-recovery" });
+  a.chrome.runtime.onStartup.emit();
+  await delay(10);
+  assert.equal(first.device.key, "first-key");
+  assert.equal(first.device.revoked, undefined);
+  assert.equal(a.sockets.length, 1);
+  assert.equal((await b.popup({ type: "status" })).connected, true);
+  assert.equal((await b.popup({ type: "pause", paused: true })).ok, true);
+  assert.equal(second.device.paused, true);
+  assert.equal(first.device.paused, undefined);
+  await assert.rejects(a.client.start(), { code: "client_closed" });
+});
+
+test("close during storage initialization retires startup before resources or credentials can change", async (t) => {
+  const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
+  const h = harness(t, local, { owned_task_tabs: [9] });
+  let release;
+  h.chrome.storage.local.get = () =>
+    new Promise((resolve) => {
+      release = () => resolve(local);
+    });
+  const initial = structuredClone(local);
+  const starting = h.client.start();
+  // MV3 wake listeners are present before the first storage read resolves.
+  assert.equal(h.chrome.runtime.onMessage.listeners.length, 1);
+  assert.equal(h.chrome.alarms.onAlarm.listeners.length, 1);
+  const closing = h.client.close();
+  const rejected = assert.rejects(starting, { code: "client_closed" });
+  release();
+  await Promise.all([closing, rejected]);
+  assertClientReleased(h);
+  assert.deepEqual(local, initial);
+  assert.equal(h.sockets.length, 0);
+  assert.deepEqual(h.removed, []);
+});
+
+test("close aborts pending credential verification and ignores an uncooperative late reply", async (t) => {
+  const local = {},
+    h = harness(t, local);
+  let release, requestSignal, entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  h.environment.fetch = async (_url, request) => {
+    requestSignal = request.signal;
+    entered();
+    return new Promise((resolve) => {
+      release = () =>
+        resolve(
+          Response.json({ id: "browser-device", name: "Late", kind: "browser", capabilities: ["browser"] }),
+        );
+    });
+  };
+  await h.start();
+  assert.equal(
+    (await h.popup({ type: "bind_token", server: "https://abridge.example", device_key: "abr_device_late" }))
+      .ok,
+    true,
+  );
+  await started;
+  await h.client.close();
+  assert.equal(requestSignal.aborted, true);
+  assertClientReleased(h);
+  const closed = structuredClone(local);
+  release();
+  await delay(10);
+  assert.deepEqual(local, closed);
+  assert.equal(local.device?.key, undefined);
+  assert.equal(h.sockets.length, 0);
+});
+
+test("terminal journal failure preserves the confirmed result without replay and restart remains conservative", async (t) => {
+  const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
+  const h = harness(t, local);
+  await h.start();
+  await delay(10);
+  const set = h.chrome.storage.local.set;
+  h.chrome.storage.local.set = async (values) => {
+    if (values.operation_journal?.confirmed?.status === "executed")
+      throw Error("terminal journal unavailable");
+    return set(values);
+  };
+  const receipt = h.nextResult("confirmed");
+  h.sockets[0].receive(h.dispatch("confirmed"));
+  const response = await receipt;
+  assert.equal(response.status, "executed");
+  assert.equal(response.result.executed, true);
+  assert.equal(response.result.url, "https://example.com/");
+  assert.equal(response.error.code, "journal_persistence_failed");
+  assert.equal(local.operation_journal.confirmed.status, "executing");
+  const repeated = h.nextResult("confirmed");
+  h.sockets[0].receive(h.dispatch("confirmed", 2));
+  assert.equal((await repeated).result.deduplicated, true);
+  assert.equal(h.tabs.size, 2);
+  await h.client.close();
+  const restarted = harness(t, local);
+  await restarted.start();
+  await delay(10);
+  assert.equal(local.operation_journal.confirmed.status, "outcome_unknown");
+  const recovered = restarted.nextResult("confirmed");
+  restarted.sockets[0].receive(restarted.dispatch("confirmed"));
+  assert.equal((await recovered).status, "outcome_unknown");
+  assert.equal(restarted.tabs.size, 1, "Restart must not repeat the navigation");
+});
+
+test("terminal persistence warnings remain visible alongside a maximum-length execution error", async (t) => {
+  const h = harness(t, {
+    device: { server: "https://abridge.example", key: "key", device_id: "browser-device" },
+  });
+  await h.start();
+  await delay(10);
+  h.chrome.tabs.create = async () => {
+    throw Error("x".repeat(2500));
+  };
+  const set = h.chrome.storage.local.set;
+  h.chrome.storage.local.set = async (values) => {
+    if (values.operation_journal?.failed?.status === "failed") throw Error("terminal journal unavailable");
+    return set(values);
+  };
+  const receipt = h.nextResult("failed");
+  h.sockets[0].receive(h.dispatch("failed"));
+  const response = await receipt;
+  assert.equal(response.status, "failed");
+  assert.equal(response.error.code, "browser_error");
+  assert.match(response.error.message, /操作终态日志保存失败/);
+  assert.match(response.error.message, /x{100}/);
+  assert.ok(response.error.message.length <= 2000);
+});
+
+test("stop and session close retire task pages before delayed or failed tombstone persistence", async (t) => {
+  for (const control of ["stop", "session_close"]) {
+    const h = harness(t, {
+      device: { server: "https://abridge.example", key: "key", device_id: "browser-device" },
+    });
+    await h.start();
+    await delay(10);
+    const opened = h.nextResult("opened");
+    h.sockets[0].receive(h.dispatch("opened"));
+    await opened;
+    const set = h.chrome.storage.session.set;
+    let release, entered;
+    const reached = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise((_, reject) => {
+      release = () => reject(Error("tombstone persistence failed"));
+    });
+    h.chrome.storage.session.set = async (values) => {
+      if (values.closed_sessions) {
+        entered();
+        return blocked;
+      }
+      return set(values);
+    };
+    let stopping;
+    try {
+      if (control === "stop") stopping = h.popup({ type: "stop" });
+      else h.sockets[0].receive({ type: "session_close", connection_epoch: 1, session_id: "task" });
+      await reached;
+      await delay(10);
+      assert.deepEqual([...h.tabs.keys()], [1], `${control}: cleanup must not wait for storage`);
+      assert.ok(h.removed.includes(2));
+      release();
+      if (stopping) assert.equal((await stopping).ok, false);
+      await delay(10);
+      assert.deepEqual([...h.tabs.keys()], [1]);
+    } finally {
+      release?.();
+      h.chrome.storage.session.set = set;
+      await stopping;
+    }
+  }
+});
+
+test("pause still clears task pages and refuses new work when saving the paused profile fails", async (t) => {
+  const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
+  const h = harness(t, local);
+  await h.start();
+  await delay(10);
+  const opened = h.nextResult("opened");
+  h.sockets[0].receive(h.dispatch("opened"));
+  await opened;
+  const set = h.chrome.storage.local.set;
+  h.chrome.storage.local.set = async (values) => {
+    if (values.device) throw Error("profile persistence failed");
+    return set(values);
+  };
+  const paused = await h.popup({ type: "pause" });
+  assert.equal(paused.ok, false);
+  assert.deepEqual([...h.tabs.keys()], [1]);
+  assert.equal((await h.popup({ type: "status" })).paused, true);
+  assert.notEqual(local.device.paused, true, "Failed writes must not mutate durable storage by reference");
+  const refused = h.nextResult("after-pause");
+  h.sockets[0].receive(h.dispatch("after-pause", 2, { session_id: "another-task" }));
+  assert.equal((await refused).status, "refused");
+  assert.equal(h.tabs.size, 1);
+  const resumed = await h.popup({ type: "resume" });
+  assert.equal(resumed.ok, false);
+  assert.equal(
+    (await h.popup({ type: "status" })).paused,
+    true,
+    "Failed resume must retain the in-memory pause",
+  );
+  assert.equal(
+    h.messages.some((message) => message.type === "heartbeat" && message.paused === false),
+    false,
+  );
+  h.chrome.storage.local.set = set;
+});
+
+test("startup preserves uncertain orphan ownership but clears a confirmed missing tab", async (t) => {
+  for (const missing of [false, true]) {
+    const session = { owned_task_tabs: [9] };
+    const h = harness(
+      t,
+      { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
+      session,
+    );
+    if (!missing) h.tabs.set(9, { id: 9, url: "https://example.com/old-task" });
+    const remove = h.chrome.tabs.remove,
+      get = h.chrome.tabs.get;
+    h.chrome.tabs.remove = async () => {
+      throw Error("temporary removal failure");
+    };
+    h.chrome.tabs.get = async () => {
+      throw Error(missing ? "No tab with id: 9." : "temporary lookup failure");
+    };
+    try {
+      if (missing) {
+        await h.client.start();
+        await delay(10);
+        assert.deepEqual(session.owned_task_tabs, []);
+        assert.equal(h.sockets.length, 1);
+      } else {
+        await assert.rejects(h.client.start(), { code: "cleanup_failed" });
+        assert.deepEqual(session.owned_task_tabs, [9]);
+        assert.equal(h.tabs.has(9), true);
+        assert.equal(h.sockets.length, 0);
+      }
+    } finally {
+      h.chrome.tabs.remove = remove;
+      h.chrome.tabs.get = get;
+    }
   }
 });

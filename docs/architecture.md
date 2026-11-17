@@ -18,26 +18,30 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 
 可运行产品位于 `apps/`；`packages/` 只包含共享代码。各应用拥有自己的依赖声明、源码与测试，根目录的 npm scripts 协调构建。跨应用共享代码通过 workspace 的具名 exports 引用，生产构建将内部包内联，分发不要求消费者执行 TypeScript 或安装 workspace。
 
-| 模块                                | 职责                                  |
-| ----------------------------------- | ------------------------------------- |
-| `apps/server/src/cli.ts`            | Server 唯一命令入口                   |
-| `apps/server/src/server.ts`         | HTTP、管理认证、MCP 与 WebSocket 组合 |
-| `apps/server/src/control.ts`        | 连接、会话和操作状态的唯一所有者      |
-| `apps/server/src/store.ts`          | SQLite schema、事务与操作元信息       |
-| `apps/server/src/mcp.ts`            | 工具与原生内容编码                    |
-| `apps/server/src/transport.ts`      | 有界 WebSocket 发送与关闭             |
-| `apps/desktop/src/cli.ts`           | Desktop 唯一命令入口                  |
-| `apps/desktop/src/runtime.ts`       | 配置绑定、离线状态与进程生命周期      |
-| `apps/desktop/src/local-control.ts` | 本机 Socket、JSON framing 与资源清理  |
-| `apps/desktop/src/client.ts`        | 设备连接、执行调度与授权状态          |
-| `apps/desktop/src/computer.ts`      | 观察引用及桌面动作契约                |
-| `apps/desktop/src/native.ts`        | 官方 SDK 按需同进程适配               |
-| `apps/desktop/src/executor.ts`      | 桌面、Shell 和文件执行                |
-| `apps/desktop/native/`              | Swift 壳、权限 UI 与原生资源          |
-| `apps/browser/`                     | 浏览器设备连接、任务页与 DOM 操作     |
-| `apps/web/`                         | Preact 管理台                         |
-| `packages/protocol/`                | 共享 schema、能力与协议常量           |
-| `packages/shared/`                  | Node 数据目录约定                     |
+| 模块                                   | 职责                                  |
+| -------------------------------------- | ------------------------------------- |
+| `apps/server/src/cli.ts`               | Server 唯一命令入口                   |
+| `apps/server/src/server.ts`            | HTTP、管理认证、MCP 与 WebSocket 组合 |
+| `apps/server/src/control.ts`           | 连接、会话和操作状态的唯一所有者      |
+| `apps/server/src/store.ts`             | SQLite schema、事务与操作元信息       |
+| `apps/server/src/browser-execution.ts` | 浏览器脚本独占、步骤进度与取消协调    |
+| `apps/server/src/mcp.ts`               | 工具与原生内容编码                    |
+| `apps/server/src/transport.ts`         | 有界 WebSocket 发送与关闭             |
+| `apps/desktop/src/cli.ts`              | Desktop 唯一命令入口                  |
+| `apps/desktop/src/runtime.ts`          | 配置绑定、离线状态与进程生命周期      |
+| `apps/desktop/src/local-control.ts`    | 本机 Socket、JSON framing 与资源清理  |
+| `apps/desktop/src/client.ts`           | 设备连接、执行调度与授权状态          |
+| `apps/desktop/src/computer.ts`         | 观察引用及桌面动作契约                |
+| `apps/desktop/src/native.ts`           | 官方 SDK 按需同进程适配               |
+| `apps/desktop/src/executor.ts`         | 桌面、Shell 和文件执行                |
+| `apps/desktop/native/`                 | Swift 壳、权限 UI 与原生资源          |
+| `apps/browser/src/worker.ts`           | 扩展入口，创建并启动设备客户端        |
+| `apps/browser/src/client.ts`           | 设备绑定、连接、操作日志与本机控制    |
+| `apps/browser/src/task-tabs.ts`        | 自有任务标签、调试器与资源清理        |
+| `apps/browser/src/bridge.ts`           | 浏览器工具编排、观察、读取与输入      |
+| `apps/web/`                            | Preact 管理台                         |
+| `packages/protocol/`                   | 共享 schema、能力与协议常量           |
+| `packages/shared/`                     | Node 数据目录约定                     |
 
 源码中的领域名统一为 `AgentConnection`（Agent 的持久授权连接）、`DeviceConnection`（设备当前传输连接）、`ControlSession`（控制会话）和 `Operation`（一次操作）。管理接口使用 `/api/agent-connections`，列表字段为 `connections`，操作及会话通过 `agent_connection_id` 引用授权连接；设备派发中的 `device_credential_version` 表示 Device Key 版本，不表示 Agent 连接策略版本。`operation_status` 与 `operation_cancel` 面向所有操作，包括 Shell 和浏览器代码。
 
@@ -52,6 +56,27 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
 持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 5，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+
+## 执行链与状态归属
+
+普通工具经过 `mcp.ts → ControlService.execute → 设备 WebSocket → 客户端 dispatch → 执行器`，设备回执由 `ControlService.receive` 校验归属，再由 `finish` 发布终态。SQLite 保存操作元信息和去重身份，返回内容留在有界内存缓存中。
+
+`browser_exec` 的外层操作由 Server 执行。`BrowserExecutions` 调用 QuickJS，每个页面步骤回到 `ControlService.execute`，重新经过授权、去重及设备派发。协调模块拥有脚本的步骤编号、在途步骤、进度和取消控制器；`ControlService` 仍是操作终态、结果缓存和持久化的唯一所有者。父操作结束时先取得包含已确认步骤回执的进度，再停止脚本和请求取消在途子操作；脚本结束前保留会话独占，迟到结果不能再次发布终态。
+
+| 状态                              | 所有者                                          | 失效与清理                                              |
+| --------------------------------- | ----------------------------------------------- | ------------------------------------------------------- |
+| 设备绑定与持久暂停                | 设备客户端及本机存储                            | 重新连接不会解除暂停；换绑须先退役旧连接                |
+| 设备当前连接                      | Server `ControlService`、设备客户端各自维护本端 | 连接代次变化后，旧回调不能覆盖新状态                    |
+| 控制会话与操作终态                | Server `ControlService`                         | 断连、撤销、过期和停止终止相应会话；未知操作不重放      |
+| 浏览器脚本及 JSON state           | Server `BrowserExecutions` / `BrowserRuntime`   | 会话结束清除；每步仍受当前授权约束                      |
+| 任务标签、debugger、frame context | 扩展 `TaskTabs`                                 | 创建、attach 与关闭均核对资源归属；重复关闭等待同次清理 |
+| 观察引用与读取快照                | `BrowserBridge` 的任务状态                      | 观察随导航或动作失效；快照仅供读取，不授予输入权限      |
+
+`BrowserDeviceClient.start()` 启动实例，`close()` 结束实例生命周期并释放监听器、定时器和任务资源；本机“停止任务”只清理任务，不关闭设备连接或撤销绑定。worker 入口只负责装配，测试直接创建独立客户端实例。
+
+停止和暂停先使任务资源失效，再等待清理与状态保存；存储失败不能跳过清理，恢复暂停须保存成功后才生效。启动遗留标签由 `TaskTabs` 使用同一清理规则处理，无法确认标签已删除时保留所有权并阻止连接。操作执行结果与日志持久化分开处理：终态保存失败附带诊断，但不把已确认执行改成拒绝；重启后未保存终态的操作仍按结果未知处理，不重放。
+
+引用动作先验证观察引用，locator 动作先解析唯一 DOM 目标；二者共享输入执行函数，均核对任务页、文档版本和目标可用性。locator 不创建临时观察，也不通过替换观察状态来获得输入权限。输入准备可能滚动或聚焦，因此准备开始后的失败仍需按未知副作用处理。
 
 ## 身份与授权
 
