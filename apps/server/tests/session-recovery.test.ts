@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -235,6 +236,7 @@ test("request keys are session scoped while returned operation IDs survive resta
     const b = await f.control.execute(f.grant, second.id, "computer_apps", {}, "apps", false);
     const c = await f.control.execute(f.otherGrant, other.id, "computer_apps", {}, "apps", false);
     assert.equal(new Set([a.operation_id, b.operation_id, c.operation_id]).size, 3);
+    for (const result of [a, b, c]) assert.match(result.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
     assert.notEqual(a.operation_id, "apps");
     await assert.rejects(f.control.execute(f.grant, second.id, "computer_apps", {}, a.operation_id, false), {
       code: "operation_conflict",
@@ -348,6 +350,85 @@ test("diagnostics preserve desktop causes and heartbeat expiry; session metadata
     assert.equal(
       (f.control.devices(f.grant)[0].last_disconnect as { reason: string }).reason,
       "heartbeat_expired",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("short operation IDs preserve distinct keys through collisions and restart", async () => {
+  const f = await fixture();
+  try {
+    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const keyHash = createHash("sha256")
+      .update(JSON.stringify([f.grant.id, session.id, "retry-key"]))
+      .digest("base64url");
+    const occupied = "op_" + keyHash.slice(0, 8);
+    const requestHash = createHash("sha256")
+      .update(JSON.stringify({ arguments: {}, session_id: session.id, tool: "computer_apps" }))
+      .digest("hex");
+    // Force the short candidate to belong to a different key with the SAME payload.
+    // Payload checks alone must never mistake this collision for a retry.
+    f.store.createOperation({
+      id: occupied,
+      owner_id: f.grant.owner_id,
+      grant_id: f.grant.id,
+      device_id: f.device.id,
+      session_id: session.id,
+      tool: "computer_apps",
+      request_hash: requestHash,
+      key_hash: createHash("sha256").update("another-scoped-key").digest("base64url"),
+      epoch: f.ticket.epoch,
+    });
+    const result = await f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false);
+    assert.match(result.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
+    assert.notEqual(result.operation_id, occupied);
+    assert.equal(f.store.operationForKey(keyHash)?.id, result.operation_id);
+    assert.equal(f.store.operation(result.operation_id)?.request_hash, requestHash);
+    const dispatches = () => f.frames.filter((frame) => frame.type === "dispatch").length;
+    const before = dispatches();
+    assert.equal(
+      (await f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false)).operation_id,
+      result.operation_id,
+    );
+    assert.equal(
+      (await f.control.execute(f.grant, session.id, "computer_apps", {}, result.operation_id, false))
+        .operation_id,
+      result.operation_id,
+    );
+    await assert.rejects(
+      f.control.execute(f.grant, session.id, "computer_apps", { query: "changed" }, "retry-key", false),
+      { code: "operation_conflict" },
+    );
+    assert.equal(dispatches(), before);
+    await f.restart();
+    assert.equal(f.store.operationForKey(keyHash)?.id, result.operation_id);
+    assert.equal(f.control.operationStatus(f.grant, result.operation_id).status, "outcome_unknown");
+    await assert.rejects(f.control.execute(f.grant, session.id, "computer_apps", {}, "retry-key", false), {
+      code: "session_server_restarted",
+    });
+    assert.equal(dispatches(), before, "restart never replays the unknown write");
+  } finally {
+    await f.close();
+  }
+});
+
+test("generated operation IDs stay short and unknown returned-ID syntax cannot start work", async () => {
+  const f = await fixture();
+  try {
+    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const generated = await f.control.execute(f.grant, session.id, "computer_apps", {}, undefined, false);
+    assert.match(generated.operation_id, /^op_[A-Za-z0-9_-]{8}$/);
+    assert.equal(f.store.operation(generated.operation_id)?.key_hash, null);
+    const before = f.frames.filter((frame) => frame.type === "dispatch").length;
+    await assert.rejects(f.control.execute(f.grant, session.id, "computer_apps", {}, "op_unknown_", false), {
+      code: "invalid_operation_id",
+    });
+    assert.equal(f.frames.filter((frame) => frame.type === "dispatch").length, before);
+    assert.equal(
+      (await f.control.execute(f.grant, session.id, "computer_apps", {}, generated.operation_id, false))
+        .operation_id,
+      generated.operation_id,
     );
   } finally {
     await f.close();

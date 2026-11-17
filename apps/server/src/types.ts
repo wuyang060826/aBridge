@@ -1,5 +1,5 @@
 import type { BrowserError, SessionInfo, SessionErrorDetails, SessionState } from "@abridge/protocol";
-import type { Capability, DeviceKind, ConnectionPolicy } from "@abridge/protocol";
+import type { Capability, DeviceKind, DeviceMetadata, ConnectionPolicy } from "@abridge/protocol";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -7,7 +7,7 @@ export interface User {
   id: string;
   username: string;
 }
-export interface Device {
+export interface Device extends DeviceMetadata {
   id: string;
   owner_id: string;
   name: string;
@@ -51,6 +51,7 @@ export interface Operation {
   session_id: string;
   tool: string;
   request_hash: string;
+  key_hash: string | null;
   status: OperationState;
   epoch: number;
   created_at: number;
@@ -77,8 +78,6 @@ export interface AttachedDevice {
   kind: DeviceKind;
   capabilities: Partial<Record<Capability, boolean>>;
   paused: boolean;
-  platform: string;
-  version: string;
   heartbeatAt: number;
   sequence: number;
   transport: DeviceTransport;

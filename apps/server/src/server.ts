@@ -444,7 +444,7 @@ export async function createServer(config: ServerConfig) {
       .strict()
       .parse(request.query);
     return {
-      operations: store.operations(user.id, filters),
+      operations: store.operations(user.id, filters).map(({ key_hash: _keyHash, ...operation }) => operation),
       total: store.operationCount(user.id, filters),
       tools: store.operationTools(user.id, filters.device_id),
       events: store.auditEvents(user.id),

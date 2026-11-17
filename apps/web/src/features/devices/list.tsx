@@ -114,13 +114,7 @@ export function DevicesPage({
                 <a class="device-card-link" href={`#devices/${encodeURIComponent(device.id)}`}>
                   {device.name}
                 </a>
-                <span class="small muted">
-                  {device.platform
-                    ? platformName(device.platform)
-                    : device.kind === "browser"
-                      ? "浏览器"
-                      : "电脑"}
-                </span>
+                <span class="small muted">{platformName(device.platform)}</span>
               </div>
               <div class="device-card-footer">
                 <DeviceCapabilities device={device} />

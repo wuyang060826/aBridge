@@ -40,6 +40,7 @@ test("activity filters query all history, combine dimensions, paginate, and isol
         session_id: session.id,
         tool,
         request_hash: "fixture",
+        key_hash: null,
         epoch: 0,
       });
       server.store.finishOperation(id, "executed");
@@ -73,6 +74,10 @@ test("activity filters query all history, combine dimensions, paginate, and isol
     const all = await activity();
     assert.equal(all.total, 113);
     assert.equal(all.operations.length, 50);
+    assert.equal(
+      all.operations.some((operation) => "key_hash" in operation),
+      false,
+    );
     assert.deepEqual(all.tools, ["browser_observe", "command_execute", "file_read"]);
     const page2 = await activity("?offset=50");
     assert.equal(page2.operations.length, 50);

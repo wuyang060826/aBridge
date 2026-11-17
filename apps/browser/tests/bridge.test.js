@@ -75,7 +75,7 @@ function fixture() {
       },
     },
   };
-  const bridge = new BrowserBridge(chrome, { now: () => now, uuid: () => `observation-${++sequence}` });
+  const bridge = new BrowserBridge(chrome, { now: () => now });
   const request = (method, session_id = "s1", params = {}) =>
     bridge.dispatch({
       id: `request-${++sequence}`,
@@ -141,9 +141,22 @@ test("cross-session, expired and navigation-invalidated references never write",
   await f.request("open", "s2", { url: "https://example.com/" });
   const one = (await f.request("observe")).result;
   const two = (await f.request("observe", "s2")).result;
+  assert.match(one.observation_id, /^obs_[A-Za-z0-9_-]{8}$/);
+  assert.notEqual(one.observation_id, two.observation_id);
   assert.equal(
     (
       await f.request("act", "s2", {
+        observation_id: one.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).error.code,
+    "stale_observation",
+  );
+  const replacement = (await f.request("observe")).result;
+  assert.notEqual(replacement.observation_id, one.observation_id);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
         observation_id: one.observation_id,
         action: { type: "click", element_ref: "e1" },
       })
@@ -154,7 +167,7 @@ test("cross-session, expired and navigation-invalidated references never write",
   assert.equal(
     (
       await f.request("act", "s1", {
-        observation_id: one.observation_id,
+        observation_id: replacement.observation_id,
         action: { type: "click", element_ref: "e1" },
       })
     ).error.code,
@@ -1005,6 +1018,7 @@ test("saved text snapshots page without recapturing changed content and isolate 
     return send(target, method, params);
   };
   const first = (await f.request("read", "s1", { mode: "text", limit: 4 })).result;
+  assert.match(first.snapshot_id, /^snap_[A-Za-z0-9_-]{8}$/);
   assert.equal(first.text, "0123");
   assert.equal(first.next_offset, 4);
   const next = (
@@ -1015,8 +1029,16 @@ test("saved text snapshots page without recapturing changed content and isolate 
   assert.equal(next.cached, true);
   assert.equal(reads, 1);
   await f.request("open", "s2", { url: "https://example.com/" });
+  const other = (await f.request("read", "s2")).result;
+  assert.notEqual(other.snapshot_id, first.snapshot_id);
   assert.equal(
     (await f.request("read", "s2", { snapshot_id: first.snapshot_id })).error.code,
+    "snapshot_missing",
+  );
+  const replacement = (await f.request("read", "s1")).result;
+  assert.notEqual(replacement.snapshot_id, first.snapshot_id);
+  assert.equal(
+    (await f.request("read", "s1", { snapshot_id: first.snapshot_id })).error.code,
     "snapshot_missing",
   );
 });

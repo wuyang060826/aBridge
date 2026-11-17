@@ -14,6 +14,7 @@ import {
   browserWaitSchema,
   browserExecSchema,
   actWaitAfterSchema,
+  observationIdSchema,
   type DeviceTool,
 } from "@abridge/protocol";
 import { ControlService } from "./control.js";
@@ -26,7 +27,7 @@ const base = {
   operation_id: id
     .optional()
     .describe(
-      "Usually omit for a new operation. For retrying the same request in the same session, reuse the original key or returned operation_id. Keys are scoped to the session; query/cancel with the returned operation_id. Never replay an unknown side effect in a new session.",
+      "Usually omit for a new operation. Returned IDs are op_ plus 8 Base64URL characters; reserve this format for server IDs. For retrying the same request in the same session, reuse the original key or returned operation_id. Keys are scoped to the session; query/cancel with the returned operation_id. Never replay an unknown side effect in a new session.",
     ),
 };
 const path = z
@@ -208,7 +209,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
     "Act once on a current desktop observation. Whole-desktop actions require focus_status=confirmed and recheck current focus before input: unavailable focus returns focus_unavailable and changed focus returns focus_changed. Observe again or select a window via computer_windows. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
     {
       ...base,
-      observation_id: z.string().regex(/^obs_[a-f0-9]{32}$/),
+      observation_id: observationIdSchema,
       action: computerActionSchema,
       ...after,
     },
@@ -233,7 +234,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   register(
     "browser_act",
     "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native actions already scroll and check the target. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
-    { ...base, observation_id: id, action: browserActionSchema, ...after },
+    { ...base, observation_id: observationIdSchema, action: browserActionSchema, ...after },
     (a) => {
       if (a.screenshot && !a.observe_after)
         throw new BridgeError("invalid_arguments", "Screenshot requires observe_after=true", 422);

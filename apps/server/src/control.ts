@@ -1,11 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   CAPABILITIES,
   PROTOCOL_VERSION,
   SESSION_IDLE_SECONDS,
   deviceCapabilities,
+  deviceMetadataSchema,
   requiredCapabilities,
   operationFrameSchema,
+  operationIdPattern,
   browserExecSchema,
   browserQuerySchema,
   browserErrorSchema,
@@ -24,7 +26,7 @@ import {
 } from "@abridge/protocol";
 import { BrowserRuntime, BrowserRuntimeError, BrowserStepError } from "./browser-runtime.js";
 import { deviceAccess, grantExpired, sessionDeadline } from "./policy.js";
-import { Store, identifier } from "./store.js";
+import { Store } from "./store.js";
 import {
   BridgeError,
   monotonicSeconds,
@@ -155,8 +157,8 @@ export class ControlService {
       available: Object.fromEntries(
         capabilities.map((cap) => [cap, !!(online && connection?.capabilities[cap] && !connection.paused)]),
       ),
-      platform: connection?.platform ?? (device.kind === "browser" ? "Browser" : "macOS"),
-      version: connection?.version ?? null,
+      platform: device.platform,
+      version: device.version,
       last_seen: device.last_seen,
       created_at: device.created_at,
       ...(current ? { sessions: this.activeSessions(current, device.id) } : {}),
@@ -268,13 +270,28 @@ export class ControlService {
     const session = this.store.session(operation.session_id)!;
     return { ...response, session: this.sessionInfo(session) };
   }
+  private operationKey(grant: Grant, sessionId: string, requested: string): string {
+    return createHash("sha256")
+      .update(JSON.stringify([grant.id, sessionId, requested]))
+      .digest("base64url");
+  }
   private executionId(grant: Grant, sessionId: string, requested?: string): string {
-    if (requested === undefined) return identifier("op");
+    if (requested === undefined) {
+      let id: string;
+      do id = "op_" + randomBytes(6).toString("base64url");
+      while (this.store.operation(id));
+      return id;
+    }
     if (!safeId.test(requested))
       throw new BridgeError("invalid_operation_id", "Invalid operation identifier", 422);
-    const previous = this.store.operation(requested);
-    if (previous) {
-      this.authorizedOperation(grant, requested);
+    if (operationIdPattern.test(requested)) {
+      if (!this.store.operation(requested))
+        throw new BridgeError(
+          "invalid_operation_id",
+          "Unknown operation_id; this format is reserved for returned IDs and cannot start or replay work",
+          422,
+        );
+      const previous = this.authorizedOperation(grant, requested);
       if (previous.session_id !== sessionId)
         throw new BridgeError(
           "operation_conflict",
@@ -282,12 +299,18 @@ export class ControlService {
         );
       return requested;
     }
-    return (
-      "op_" +
-      createHash("sha256")
-        .update(JSON.stringify([grant.id, sessionId, requested]))
-        .digest("base64url")
-    );
+    // Keep public IDs short. The full scoped key remains durable, so truncation
+    // collisions cannot merge distinct writes or change an established retry ID.
+    const keyHash = this.operationKey(grant, sessionId, requested);
+    const previous = this.store.operationForKey(keyHash);
+    if (previous) return previous.id;
+    let candidate = keyHash;
+    let probe = 0;
+    while (this.store.operation("op_" + candidate.slice(0, 8)))
+      candidate = createHash("sha256")
+        .update(keyHash + ":" + ++probe)
+        .digest("base64url");
+    return "op_" + candidate.slice(0, 8);
   }
   private authorizedSession(grant: Grant, id: string): ControlSession {
     this.currentGrant(grant);
@@ -472,6 +495,10 @@ export class ControlService {
       session_id: sessionId,
       tool,
       request_hash: requestHash,
+      key_hash:
+        operationId !== undefined && !operationIdPattern.test(operationId)
+          ? this.operationKey(current, sessionId, operationId)
+          : null,
       epoch: connection.epoch,
     });
     let resolve!: (value: OperationResponse) => void;
@@ -530,9 +557,7 @@ export class ControlService {
             if (abort.signal.aborted || !this.pending.has(id)) throw new Error("Browser execution cancelled");
             const allowed = ["open", "observe", "read", "wait", "evaluate", "locate_act"] as const;
             if (!allowed.some((name) => name === method)) throw new Error("Unknown browser runtime method");
-            const stepKey = `step_${createHash("sha256")
-              .update(id + ":" + String(++stepIndex))
-              .digest("hex")}`;
+            const stepKey = `step_${id}_${++stepIndex}`;
             const step = this.executionId(current, sessionId, stepKey);
             let response: OperationResponse;
             inFlightStep = { operation_id: step, method };
@@ -822,11 +847,12 @@ export class ControlService {
     const initial = this.store.authenticateDevice(key);
     if (!initial || initial.kind !== kind)
       throw new BridgeError("unauthorized", "Device key is invalid or has the wrong kind", 401);
+    const metadata = deviceMetadataSchema.parse(hello);
     const previous = this.attachQueues.get(initial.id) ?? Promise.resolve();
     const attaching = previous
       .catch(() => {})
       .then(async () => {
-        const device = this.store.authenticateDevice(key);
+        let device = this.store.authenticateDevice(key);
         if (!device || device.kind !== kind)
           throw new BridgeError("unauthorized", "Device key was revoked", 401);
         const old = this.connections.get(device.id);
@@ -834,6 +860,9 @@ export class ControlService {
           await this.stopDevice(device.id, "Device connection replaced", "connection_replaced");
           await old.transport.close(4409, "Connection replaced").catch(() => {});
           this.dropConnection(old, "connection_replaced");
+          device = this.store.authenticateDevice(key);
+          if (!device || device.kind !== kind)
+            throw new BridgeError("unauthorized", "Device key was revoked", 401);
         }
         const capabilities = object(hello.capabilities) ? hello.capabilities : {};
         const ticket: AttachedDevice = {
@@ -848,11 +877,6 @@ export class ControlService {
             ]),
           ),
           paused: hello.paused === true,
-          platform: String(hello.platform ?? (kind === "browser" ? "Browser extension" : "macOS")).slice(
-            0,
-            80,
-          ),
-          version: String(hello.version ?? "unknown").slice(0, 30),
           heartbeatAt: this.mono(),
           sequence: 0,
           transport,
@@ -871,6 +895,8 @@ export class ControlService {
             heartbeat_interval: 10,
             lease_seconds: 30,
           });
+          if (this.connections.get(device.id) === ticket)
+            this.store.updateDeviceMetadata(device.id, ticket.credentialVersion, ticket.epoch, metadata);
         } catch (error) {
           this.dropConnection(ticket);
           throw error;

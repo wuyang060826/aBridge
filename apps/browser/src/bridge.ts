@@ -9,6 +9,7 @@ import {
   actWaitAfterSchema,
   browserQuerySchema,
   browserErrorSchema,
+  referenceId,
   type BrowserError,
   type BrowserStepFailure,
 } from "@abridge/protocol";
@@ -238,7 +239,6 @@ export function webURL(value: unknown) {
 export class BrowserBridge {
   readonly chrome: typeof chrome;
   readonly now: () => number;
-  readonly uuid: () => string;
   readonly navigationTimeout: number;
   readonly sessions = new Map<string, Session>();
   readonly seen = new Set<string>();
@@ -249,13 +249,9 @@ export class BrowserBridge {
   readonly pendingOpens = new Map<string, { cancelled: boolean }>();
   readonly removingTabs = new Map<number, Promise<void>>();
   readonly frameContexts = new Map<number, Map<string, number>>();
-  constructor(
-    chrome: typeof globalThis.chrome,
-    { now = () => Date.now(), uuid = () => crypto.randomUUID(), navigationTimeout = 15000 } = {},
-  ) {
+  constructor(chrome: typeof globalThis.chrome, { now = () => Date.now(), navigationTimeout = 15000 } = {}) {
     this.chrome = chrome;
     this.now = now;
-    this.uuid = uuid;
     this.navigationTimeout = navigationTimeout;
     chrome.tabs.onUpdated.addListener((id, change) => {
       for (const session of this.sessions.values())
@@ -871,7 +867,7 @@ export class BrowserBridge {
     const tab = await this.valid(session, deadline);
     const selectedText = excerpt(page.text.slice(0, MAX_PAGE_SCAN), terms);
     const result: Result & { elements: ElementResult[] } = {
-      observation_id: this.uuid(),
+      observation_id: referenceId("obs"),
       expires_in: OBSERVATION_SECONDS,
       url: tab.url,
       title: (tab.title || "").slice(0, 200),
@@ -1016,7 +1012,7 @@ export class BrowserBridge {
       backendNodeId = node?.backendNodeId;
     }
     if (!backendNodeId) throw fail("target_missing", "目标元素不存在");
-    const id = this.uuid();
+    const id = referenceId("obs");
     session.observation = {
       id,
       refs: new Map([["target", backendNodeId]]),
@@ -1214,7 +1210,7 @@ export class BrowserBridge {
         saved = rows;
       }
       session.snapshot = {
-        id: this.uuid(),
+        id: referenceId("snap"),
         format: mode,
         value: saved,
         url: sourceURL!,

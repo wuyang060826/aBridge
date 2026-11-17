@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { capabilitySchema, connectionPolicySchema } from "@abridge/protocol";
+import { capabilitySchema, connectionPolicySchema, deviceMetadataSchema } from "@abridge/protocol";
 export const userSchema = z.object({ id: z.string(), username: z.string() });
 export const deviceSchema = z.object({
   id: z.string(),
@@ -8,7 +8,7 @@ export const deviceSchema = z.object({
   capabilities: z.array(capabilitySchema),
   status: z.string(),
   paused: z.boolean().optional(),
-  platform: z.string().default(""),
+  platform: deviceMetadataSchema.shape.platform,
   available: z.record(z.string(), z.boolean()).optional(),
   active_operations: z.array(z.string()).default([]),
 });

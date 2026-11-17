@@ -1,6 +1,14 @@
 /** Shared wire contract. Product implementations consume these definitions. */
 import { z } from "zod";
 import packageInfo from "../../../package.json" with { type: "json" };
+import { snapshotIdSchema } from "./reference-id.js";
+export {
+  observationIdSchema,
+  snapshotIdSchema,
+  createReferenceIdGenerator,
+  referenceId,
+  operationIdPattern,
+} from "./reference-id.js";
 
 export const VERSION = packageInfo.version;
 export const deviceRenameSchema = z.object({ name: z.string().trim().min(1).max(120) }).strict();
@@ -426,7 +434,7 @@ export const browserReadSchema = z
   .object({
     frame_selector: z.string().min(1).max(2000).optional(),
     mode: z.enum(["text", "tables"]).default("text"),
-    snapshot_id: z.string().min(1).max(100).optional(),
+    snapshot_id: snapshotIdSchema.optional(),
     offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
     limit: z.number().int().min(1).max(24000).default(12000),
     selector: z.string().min(1).max(2000).optional(),
@@ -493,14 +501,29 @@ export const OPERATION_START_GRACE_SECONDS = 5;
 export const OPERATION_JOURNAL_LIMIT = 10000;
 export const BROWSER_MAX_ELEMENTS = 200;
 export const BROWSER_MAX_TEXT = 60000;
+/** Last successfully reported client metadata; unknown values never imply an operating system. */
+export const deviceMetadataSchema = z.object({
+  platform: z
+    .string()
+    .trim()
+    .max(80)
+    .nullish()
+    .transform((value) => value || null),
+  version: z
+    .string()
+    .trim()
+    .max(30)
+    .nullish()
+    .transform((value) => value || null),
+});
+export type DeviceMetadata = z.infer<typeof deviceMetadataSchema>;
 export const deviceHelloSchema = z
   .object({
     type: z.literal("hello"),
     protocol: z.literal(PROTOCOL_VERSION),
     capabilities: z.record(z.string(), z.boolean()),
     paused: z.boolean(),
-    platform: z.string(),
-    version: z.string(),
+    ...deviceMetadataSchema.shape,
   })
   .passthrough();
 export const browserHelloSchema = deviceHelloSchema.extend({

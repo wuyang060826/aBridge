@@ -7,9 +7,9 @@ import {
   computerActionSchema,
   computerPidSchema,
   computerWindowIdSchema,
+  referenceId,
   type DesktopFocusStatus,
 } from "@abridge/protocol";
-import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { DesktopError, checkAbort, integer, invalid } from "./errors.js";
 import type { NativeDriver, Target, NativeAction, NativeObservation } from "./native.js";
@@ -264,7 +264,7 @@ export class Computer {
     this.assertOpen(session);
     const focus = before === after ? before : undefined;
     const observation: Observation = {
-      id: `obs_${randomUUID().replaceAll("-", "")}`,
+      id: referenceId("obs"),
       created: this.now(),
       target,
       refs: new Map(),

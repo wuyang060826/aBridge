@@ -258,6 +258,8 @@ test("observation TTL, session boundaries and close scopes are enforced", async 
     computer = new Computer(native, () => now);
   const a = await computer.observe("a", { pid: 10, window_id: 20 });
   const b = await computer.observe("b", { pid: 10, window_id: 20 });
+  assert.match(a.observation_id as string, /^obs_[A-Za-z0-9_-]{8}$/);
+  assert.notEqual(a.observation_id, b.observation_id);
   await assert.rejects(
     computer.act("b", {
       observation_id: a.observation_id,
@@ -266,6 +268,17 @@ test("observation TTL, session boundaries and close scopes are enforced", async 
     }),
     { code: "stale_observation" },
   );
+  const replacement = await computer.observe("a", { pid: 10, window_id: 20 });
+  assert.notEqual(replacement.observation_id, a.observation_id);
+  await assert.rejects(
+    computer.act("a", {
+      observation_id: a.observation_id,
+      action: { type: "key", key: "Enter" },
+      observe_after: false,
+    }),
+    { code: "stale_observation" },
+  );
+  assert.equal(native.actions.length, 0);
   await computer.closeSession("a");
   await computer.act("b", {
     observation_id: b.observation_id,

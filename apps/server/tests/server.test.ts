@@ -220,7 +220,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
           ? { stdout: "hello 😀\n", stderr: "", exit_code: 0 }
           : frame.tool === "computer_observe"
             ? {
-                observation_id: "obs_" + "a".repeat(32),
+                observation_id: "obs_Ab12_-xy",
                 image_base64: "aGk=",
                 mime_type: "image/png",
               }
@@ -404,7 +404,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
     }
     const action = await rpc(f.url, grant.key, "computer_act", {
       session_id: opened.value.id,
-      observation_id: "obs_" + "a".repeat(32),
+      observation_id: "obs_Ab12_-xy",
       action: { type: "key", key: "Enter" },
     });
     assert.equal(action.value.status, "executed");
@@ -458,6 +458,13 @@ test("session_open includes the same device details as device_get and devices_li
         assert.deepEqual(stableDevice(opened.value.device), stableDevice(detail.value));
         assert.deepEqual(listed.value.devices.map(stableDevice), [stableDevice(opened.value.device)]);
         await rpc(f.url, grant.key, "session_close", { session_id: opened.value.id });
+        const closed = once(socket, "close");
+        socket.close();
+        await closed;
+        const offline = await rpc(f.url, grant.key, "device_get", { device_id: device.id });
+        assert.equal(offline.value.status, "offline");
+        assert.equal(offline.value.platform, platform);
+        assert.equal(offline.value.version, opened.value.device.version);
       } finally {
         socket.close();
       }

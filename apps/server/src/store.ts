@@ -8,6 +8,7 @@ import {
   CAPABILITIES,
   type Capability,
   type DeviceKind,
+  type DeviceMetadata,
   type ConnectionPolicy,
 } from "@abridge/protocol";
 import { validatePolicy } from "./policy.js";
@@ -34,12 +35,12 @@ const SCHEMA = [
   "CREATE TABLE external_identities(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(issuer,subject));",
   "CREATE TABLE platform_grants(issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,grant_id TEXT NOT NULL REFERENCES client_grants(id),PRIMARY KEY(issuer,subject,client_id),FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject));",
   "CREATE TABLE logins(digest TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at REAL NOT NULL);",
-  "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')));",
+  "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')),platform TEXT,version TEXT);",
   "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
   "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
+  "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,key_hash TEXT UNIQUE,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
   "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,grant_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=3;",
+  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=4;",
 ].join("\n");
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -54,7 +55,7 @@ export class Store {
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
     if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 3) {
+    else if (version !== 4) {
       this.db.close();
       throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
     }
@@ -273,7 +274,7 @@ export class Store {
     const key = secretKey("device");
     this.transaction(() => {
       this.run(
-        "INSERT INTO devices VALUES(?,?,?,?,?,1,0,NULL,?,NULL,?)",
+        "INSERT INTO devices VALUES(?,?,?,?,?,1,0,NULL,?,NULL,?,NULL,NULL)",
         id,
         owner,
         name,
@@ -316,6 +317,16 @@ export class Store {
   nextEpoch(id: string): number {
     this.run("UPDATE devices SET epoch=epoch+1,last_seen=? WHERE id=?", nowSeconds(), id);
     return this.device(id)!.epoch;
+  }
+  updateDeviceMetadata(id: string, credentialVersion: number, epoch: number, metadata: DeviceMetadata): void {
+    this.run(
+      "UPDATE devices SET platform=?,version=? WHERE id=? AND credential_version=? AND epoch=? AND revoked_at IS NULL",
+      metadata.platform,
+      metadata.version,
+      id,
+      credentialVersion,
+      epoch,
+    );
   }
   touchDevice(id: string): void {
     this.run("UPDATE devices SET last_seen=? WHERE id=?", nowSeconds(), id);
@@ -438,6 +449,9 @@ export class Store {
   operation(id: string): Operation | undefined {
     return this.one("SELECT * FROM operations WHERE id=?", id);
   }
+  operationForKey(keyHash: string): Operation | undefined {
+    return this.one("SELECT * FROM operations WHERE key_hash=?", keyHash);
+  }
   operations(
     owner: string,
     filters: { device_id?: string; grant_id?: string; tool?: string; offset?: number } = {},
@@ -476,7 +490,7 @@ export class Store {
     const o = operation;
     this.transaction(() => {
       this.run(
-        "INSERT INTO operations VALUES(?,?,?,?,?,?,?,'dispatched',?,?,NULL)",
+        "INSERT INTO operations VALUES(?,?,?,?,?,?,?,?,'dispatched',?,?,NULL)",
         o.id,
         o.owner_id,
         o.grant_id,
@@ -484,6 +498,7 @@ export class Store {
         o.session_id,
         o.tool,
         o.request_hash,
+        o.key_hash,
         o.epoch,
         nowSeconds(),
       );
