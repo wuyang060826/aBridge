@@ -26,7 +26,7 @@ pub struct Config {
     pub device_id: Option<String>,
 }
 
-pub fn private_dir(path: &Path) -> Result<()> {
+pub fn owned_directory(path: &Path) -> Result<File> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -35,11 +35,15 @@ pub fn private_dir(path: &Path) -> Result<()> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
-        .context("Local state must be a real directory")?;
+        .context("Expected a real directory")?;
     if directory.metadata()?.uid() != unsafe { libc::geteuid() } {
-        bail!("Local state must belong to the current user");
+        bail!("Directory must belong to the current user");
     }
-    directory.set_permissions(fs::Permissions::from_mode(0o700))?;
+    Ok(directory)
+}
+
+pub fn private_dir(path: &Path) -> Result<()> {
+    owned_directory(path)?.set_permissions(fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 

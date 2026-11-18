@@ -105,7 +105,7 @@ fn existing_unit(path: &Path) -> Result<Option<Vec<u8>>> {
 
 fn atomic_install(path: &Path, source: &mut dyn Read, mode: u32) -> Result<()> {
     let directory = path.parent().context("Install path needs a parent")?;
-    crate::storage::private_dir(directory)?;
+    let directory_handle = crate::storage::owned_directory(directory)?;
     match fs::symlink_metadata(path) {
         Ok(metadata)
             if !metadata.is_file()
@@ -131,7 +131,7 @@ fn atomic_install(path: &Path, source: &mut dyn Read, mode: u32) -> Result<()> {
         file.set_permissions(fs::Permissions::from_mode(mode))?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
-        File::open(directory)?.sync_all()?;
+        directory_handle.sync_all()?;
         Ok(())
     })();
     let _ = fs::remove_file(temporary);
@@ -163,6 +163,9 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
                 command("loginctl", &["enable-linger"])?;
             }
             let source = std::env::current_exe()?;
+            crate::storage::private_dir(
+                binary.parent().context("Executable path needs a parent")?,
+            )?;
             atomic_install(&binary, &mut File::open(source)?, 0o700)?;
             atomic_install(&unit, &mut contents.as_bytes(), 0o600)?;
             command("systemctl", &["--user", "daemon-reload"])?;
@@ -198,6 +201,20 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installation_preserves_the_shared_unit_directory_mode() {
+        let directory =
+            std::env::temp_dir().join(format!("abridge-unit-test-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = directory.join(UNIT);
+        atomic_install(&path, &mut MARKER.as_bytes(), 0o600).unwrap();
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn unit_escapes_systemd_expansion_and_paths() {
