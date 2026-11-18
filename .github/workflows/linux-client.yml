@@ -1,0 +1,128 @@
+name: Linux client
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux-client:
+    name: Rust / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install Rust tooling
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.100.0
+          rustup target add "${{ matrix.target }}"
+          sudo apt-get update -qq
+          sudo apt-get install -y musl-tools
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run linux:check
+      - run: npm run linux:build
+      - run: npm run package:linux -- --target "${{ matrix.target }}"
+      - name: Check packaged executable
+        shell: bash
+        run: |
+          cd dist/releases
+          sha256sum -c ./*.tar.gz.sha256
+          mkdir extracted
+          tar -xzf ./*.tar.gz -C extracted
+          ./extracted/abridge-client --version
+          if readelf -l ./extracted/abridge-client | grep -q INTERP; then exit 1; fi
+          if readelf -d ./extracted/abridge-client | grep -q NEEDED; then exit 1; fi
+      - name: Packaged client wire integration
+        run: ABRIDGE_LINUX_CLIENT_BINARY="$PWD/dist/releases/extracted/abridge-client" node --import tsx --test apps/linux-client/tests/*.test.ts
+      - name: Check actual user service lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_dir=$(mktemp -d)
+          state_dir="$fixture_dir/state with % and \$"
+          client="$PWD/dist/releases/extracted/abridge-client"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          cleanup() {
+            "$client" service uninstall --state-dir "$state_dir" || true
+            kill "${fixture_pid:-}" 2>/dev/null || true
+            rm -rf "$fixture_dir"
+          }
+          trap cleanup EXIT
+          cat > "$fixture_dir/server.mjs" <<'JS'
+          import http from 'node:http';
+          import fs from 'node:fs';
+          const server = http.createServer((req, res) => {
+            if (req.url === '/api/device' && req.headers.authorization === 'Bearer abr_device_linux_ci_fixture') {
+              res.writeHead(200, {'content-type': 'application/json'});
+              res.end(JSON.stringify({id:'linux_ci', name:'Linux CI', kind:'computer', capabilities:['shell','files']}));
+            } else { res.writeHead(404); res.end(); }
+          });
+          server.listen(0, '127.0.0.1', () => fs.writeFileSync(process.argv[2], String(server.address().port)));
+          JS
+          node "$fixture_dir/server.mjs" "$fixture_dir/port" &
+          fixture_pid=$!
+          for attempt in {1..100}; do test -f "$fixture_dir/port" && break; sleep 0.1; done
+          port=$(cat "$fixture_dir/port")
+          printf '{"url":"http://127.0.0.1:%s","device_key":"abr_device_linux_ci_fixture"}' "$port" |
+            "$client" setup --stdin --state-dir "$state_dir"
+          await_service() {
+            local paused="$1"
+            for attempt in {1..100}; do
+              if "$client" status --state-dir "$state_dir" > "$fixture_dir/status.json" 2>/dev/null &&
+                node -e '
+                  const state = JSON.parse(require("fs").readFileSync(process.argv[1]));
+                  const paused = process.argv[2] === "true";
+                  if (state.platform !== "linux" || state.journal_ready !== true || state.paused !== paused)
+                    process.exit(1);
+                ' "$fixture_dir/status.json" "$paused" &&
+                systemctl --user is-active --quiet abridge-client.service; then
+                return 0
+              fi
+              sleep 0.1
+            done
+            echo "Expected a live Linux client with paused=$paused" >&2
+            return 1
+          }
+          "$client" service install --linger --state-dir "$state_dir"
+          await_service false
+          "$client" pause --state-dir "$state_dir" > /dev/null
+          systemctl --user restart abridge-client.service
+          await_service true
+          systemctl --user stop abridge-client.service
+          if systemctl --user is-active --quiet abridge-client.service; then exit 1; fi
+          "$client" service uninstall --state-dir "$state_dir"
+          test ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/abridge-client.service"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-client-${{ matrix.os }}
+          path: |
+            dist/releases/abridge-client-*.tar.gz
+            dist/releases/abridge-client-*.sha256
+            dist/releases/abridge-client-*.size.json
+          if-no-files-found: error
+          retention-days: 7

@@ -25,3 +25,5 @@ coverage/
 *.pem
 .DS_Store
 ._*
+
+apps/linux-client/target/

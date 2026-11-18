@@ -2,7 +2,7 @@
 
 ## 组成与职责
 
-Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信。Server 和两种客户端分别部署：App 提供桌面、Shell 和文件，扩展提供浏览器，两者不互为运行前提。
+Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信。Linux CLI 使用 Rust。Server 与各客户端分别部署：App 提供桌面、Shell 和文件，Linux CLI 提供 Shell 和文件，扩展提供浏览器，各客户端不互为运行前提。
 
 ```text
 MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
@@ -12,6 +12,7 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
                                        │                ├ 官方 Cua SDK：screen / input
                                        │                ├ Shell
                                        │                └ UTF-8 文件
+                                       ├─ /ws/device ─ Rust Linux CLI：Shell / UTF-8 文件
                                        └─ /ws/browser ─ TypeScript 浏览器扩展
                                                         └ Profile 自有任务标签
 ```
@@ -56,6 +57,18 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
 持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 5，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+
+## Linux CLI 客户端
+
+`apps/linux-client/` 使用 Rust 实现独立的 `abridge-client`，仅提供 `shell` 和 `files`，以 `computer` / `linux` 身份直接连接 `/ws/device`。它不依赖 Node、图形环境或桌面 SDK。CLI 和后台服务使用同一个二进制，后台生命周期由用户级 systemd 管理；非 systemd 环境可以使用前台 `run`。
+
+`main.rs` 负责命令解析和 Device Token 绑定，`runtime.rs` 是连接代次、操作调度及本机策略的唯一所有者，`executor.rs` 执行 Shell/文件，`storage.rs` 维护私有绑定与操作日志，`service.rs` 管理用户服务。运行时先取得独占锁再读取绑定，配置与凭据作为同一份 0600 文件原子提交；本机控制通过同用户私有 Socket 进行。新绑定须先验证 Server 的设备身份，并要求停止原运行时。
+
+Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量、JSON Schema 和 portable 约束；版本也由该契约从根 `package.json` 生成。Rust 解释器应用共享默认值、字段范围、未知字段策略和跨字段约束，对不支持的新规则拒绝启动并使契约检查失败。跨语言测试对照 Zod 的解析结果，避免独立维护第二套参数规则。
+
+执行前同步保存并刷盘操作 ID、请求哈希和执行意图，完成后保存终态；不记录命令、文件正文、输出或凭据。重启时执行中的记录转为结果未知，日志压缩保留所有操作身份而不自动过期。终态落盘失败仍报告已确认的执行回执，并阻止新操作直到修复存储并重启。暂停、能力关闭和撤销先停止接收相关操作并发出取消，再等待进程清理；连接代次隔离迟到输出，重连不恢复旧会话或解除暂停。Shell 采用独立进程组，结束、超时和取消时清理组内进程；文件权限及 UTF-8 行为与现有协议一致。该客户端不提供隔离沙箱。
+
+`npm run linux:check` 执行 Rust 格式、测试、Clippy 及真实 Server 联调，Linux CI 另验收用户 systemd 安装/停止/重启/卸载。`npm run package:linux` 仅打包 Linux ELF，生成校验和、第三方许可及体积记录；可执行文件和压缩包预算分别为 15 MiB、5 MiB。安装、能力控制和后台运行见[部署说明](deployment.md#linux-cli)。
 
 ## 执行链与状态归属
 

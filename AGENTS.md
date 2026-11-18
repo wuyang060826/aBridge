@@ -10,12 +10,12 @@
 
 ## 实现
 
-- Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 6 原生运行时与 AppKit UI，通过版本化 C ABI 调用 Cua 原生 SDK。运行、构建和开发命令以根 `package.json` 为准。
+- Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 6 原生运行时与 AppKit UI，通过版本化 C ABI 调用 Cua 原生 SDK；Linux CLI 使用 Rust 并消费协议包生成的契约。运行、构建和开发命令以根 `package.json` 为准。
 - 修改模块职责或执行流程前读 [架构](docs/architecture.md)；安装与打包改动读 [部署](docs/deployment.md)，浏览器改动读 [浏览器客户端](docs/browser-profile-design.md)。
 - 根目录保留项目入口与工具约定配置；协作说明归 `.github/`，文档及品牌源归 `docs/`，测试目标和工具配置归 `tools/`。
 - 可运行产品归 `apps/`，共享包归 `packages/`；运行依赖归所属应用，根目录只声明开发工具。跨 workspace 使用具名 exports，执行 `npm run architecture:check` 核对依赖职责。
 - 共享能力、消息和工具契约只维护在 `packages/protocol/src/`。外部输入在入口解析，使用明确类型，不用 `any` 掩盖不匹配。
-- App 提供 screen/input/shell/files；扩展仅提供 browser，并直接连接 Server。两者独立安装、注册和授权，App 不转发浏览器请求。
+- App 提供 screen/input/shell/files，Linux CLI 仅提供 shell/files；扩展仅提供 browser。各客户端直接连接 Server，独立安装、注册和授权，App 不转发浏览器请求。
 - 操作按 operation_id 去重；未知写操作不重放。暂停、撤销和能力关闭优先，自动重连不解除它们；会话资源分别清理。
 - Server 只依赖服务端运行环境。桌面 SDK 在设备端显式按需加载，以同进程模式运行；设备凭据保持私有权限、原子写入和服务地址绑定，日志不含秘密。
 - 版本单源为根 `package.json`；构建时生成各分发产物与扩展版本，保持生成文件可再现。

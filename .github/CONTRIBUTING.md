@@ -14,18 +14,21 @@ npm run check
 
 源码按 npm workspaces 管理，运行依赖归应用声明，根目录只声明开发工具：
 
-| 目录                           | 职责                                          |
-| ------------------------------ | --------------------------------------------- |
-| `apps/server/`                 | Server、唯一 Server CLI、MCP、授权和持久化    |
-| `apps/desktop/`                | 原生桌面客户端、AppKit UI 与更新器            |
-| `apps/browser/`                | 独立扩展；`src/` 为逻辑，`public/` 为静态资源 |
-| `apps/web/`                    | 随 Server 分发的管理台                        |
-| `packages/protocol/`           | 跨进程共享契约                                |
-| `packages/shared/`             | Node 应用共享的路径约定                       |
-| [`tools/`](../tools/README.md) | 构建、安装与分发检查                          |
-| `tools/fixtures/`              | 自有桌面窗口和浏览器表单                      |
+| 目录                           | 职责                                               |
+| ------------------------------ | -------------------------------------------------- |
+| `apps/server/`                 | Server、唯一 Server CLI、MCP、授权和持久化         |
+| `apps/desktop/`                | 原生桌面客户端、AppKit UI 与更新器                 |
+| `apps/linux-client/`           | Rust Linux CLI、Shell/File 执行与 systemd 用户服务 |
+| `apps/browser/`                | 独立扩展；`src/` 为逻辑，`public/` 为静态资源      |
+| `apps/web/`                    | 随 Server 分发的管理台                             |
+| `packages/protocol/`           | 跨进程共享契约                                     |
+| `packages/shared/`             | Node 应用共享的路径约定                            |
+| [`tools/`](../tools/README.md) | 构建、安装与分发检查                               |
+| `tools/fixtures/`              | 自有桌面窗口和浏览器表单                           |
 
 应用内部使用相对导入；共享包只通过 `@abridge/protocol`、`@abridge/shared/paths` 导入，不直接遍历其他应用源码。`npm run architecture:check` 校验生产导入图、声明依赖与 workspace 接口；应用测试放在各自 `tests/` 中。
+
+Linux CLI 开发另需 Rust（含 rustfmt、Clippy）；版本及安装命令见 [Linux 客户端说明](../apps/linux-client/README.md)。`npm run linux:build` 从共享协议生成原生契约并构建，`npm run linux:check` 运行 Rust 检查及真实 Server 联调，`npm run package:linux` 在 Linux 生成分发包。Linux CI 在 amd64/arm64 上执行这些检查并验证真实用户级 systemd。普通 `npm run check` 仍负责 Node/协议与现有分发；Linux 改动必须同时通过 `linux:check`。
 
 ## 接手阅读顺序
 
