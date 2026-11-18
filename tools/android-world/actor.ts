@@ -30,8 +30,10 @@ const instruction = [
   "Complete the AndroidWorld task in the currently open Android app using only aBridge computer_observe and computer_act.",
   "Start with computer_observe(desktop=true,screenshot=true). Use the UI tree and the screenshot together.",
   "Prefer the latest observation’s element_ref for click and long_press. Each action returns the updated UI elements by default. Reuse that observation and request a screenshot only when the UI tree is insufficient.",
-  "Click is a tap. Use long_press with element_ref for a contextual action. Scroll works with the latest UI observation. For typing, use the editable element_ref or click to focus first. type replaces the field. key supports back, home, enter, search and done.",
-  "Check action results before sending more input. Complete the requested task and stop.",
+  "Click is a tap. Long press is most reliable on elements reporting long_clickable=true. Some Android lists ignore accessibility touch long presses. If selection does not change after one attempt, switch to a visible selection control. Narrow long lists with the app’s built-in search or filter before selecting items.",
+  "For local UI actions start with wait_after_ms=500, increasing it when the app is visibly loading. Scroll works with the latest UI observation.",
+  "For typing, use the editable element_ref or click to focus first. type replaces the field. key supports back, home, enter, search and done.",
+  "Check the returned state before sending another action. Once the UI confirms completion, stop and give a concise final report.",
 ].join(" ");
 
 let removeReverse: (() => void) | undefined;

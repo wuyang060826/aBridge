@@ -114,6 +114,17 @@ def run_suite(args, env, output):
                 actor.wait()
 
 
+
+def verify_emulator(args):
+    serial = f"emulator-{args.port}"
+    def adb(*command):
+        return subprocess.check_output([args.adb, "-s", serial, *command], text=True, timeout=15).strip()
+    if ("AndroidWorldAvd" not in adb("emu", "avd", "name").splitlines()
+        or adb("shell", "getprop", "ro.build.version.sdk") != str(SUITE["emulator"]["api"])
+        or adb("shell", "getprop", "ro.product.cpu.abi") != SUITE["emulator"]["arch"]):
+        raise RuntimeError("The disposable AndroidWorldAvd API 33 ARM64 emulator is required")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", required=True, type=lambda value: str(Path(value).expanduser().resolve()))
@@ -128,6 +139,7 @@ def main():
     upstream = Path(registry.__file__).resolve().parent.parent
     if git(upstream, "rev-parse", "HEAD") != SUITE["upstream"] or git(upstream, "status", "--porcelain", "--untracked-files=no"):
         raise RuntimeError("Use the clean pinned AndroidWorld checkout from suite.json")
+    verify_emulator(args)
     os.umask(0o077)
     args.out.mkdir(parents=True, exist_ok=False)
     # The public task initializer sets the task-specific time for each episode.
