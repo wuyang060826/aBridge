@@ -7,7 +7,6 @@ private func systemDetails() -> JSONObject {
     var fields = [
         "os": "macos",
         "os_version": "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
-        "hostname": info.hostName,
         "runtime_user": NSUserName(),
     ]
     #if arch(arm64)
@@ -15,6 +14,11 @@ private func systemDetails() -> JSONObject {
     #elseif arch(x86_64)
     fields["architecture"] = "x86_64"
     #endif
+    // Read the kernel hostname without resolving it during the handshake.
+    var hostname = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+    if gethostname(&hostname, hostname.count) == 0, hostname.last == 0 {
+        fields["hostname"] = hostname.withUnsafeBufferPointer { String(validatingCString: $0.baseAddress!) }
+    }
     var model = [CChar](repeating: 0, count: 129)
     var size = model.count
     if sysctlbyname("hw.model", &model, &size, nil, 0) == 0, size > 0, size <= model.count, model[size - 1] == 0 {

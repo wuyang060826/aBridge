@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -18,7 +18,7 @@ const native = process.platform === "darwin" && process.arch === "arm64";
 type Frame = Record<string, unknown>;
 async function until<T>(
   check: () => T | Promise<T>,
-  message = "Expected state",
+  message: string | (() => string) = "Expected state",
   timeout = 8000,
 ): Promise<NonNullable<T>> {
   const deadline = Date.now() + timeout;
@@ -27,7 +27,7 @@ async function until<T>(
     if (value) return value;
     await delay(20);
   }
-  throw Error(message);
+  throw Error(typeof message === "function" ? message() : message);
 }
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "abridge-native-client-"));
@@ -137,11 +137,17 @@ async function fixture() {
     child.stdout!.on("data", (data) => {
       stderr += String(data);
     });
-    await until(async () => {
-      assert.equal(binaryFrames, 0, "Native client must send JSON text WebSocket frames");
-      const status = await cli("status");
-      return status.connection === "online" && status;
-    }, `Native client failed: ${stderr}`);
+    let connection: unknown;
+    await until(
+      async () => {
+        assert.equal(binaryFrames, 0, "Native client must send JSON text WebSocket frames");
+        const status = await cli("status");
+        connection = status.connection;
+        return connection === "online" && status;
+      },
+      () =>
+        `Native client failed to connect (status=${connection}, socket connections=${epoch}, hello frames=${frames.filter((frame) => frame.type === "hello").length}, exit=${child?.exitCode}, signal=${child?.signalCode}): ${stderr.trim()}`,
+    );
   }
   function dispatch(id: string, tool: string, args: Frame, extra: Frame = {}) {
     peer!.send(
@@ -244,6 +250,7 @@ test(
       assert.equal(details.os, "macos");
       assert.equal(details.architecture, "arm64");
       assert.match(details.os_version ?? "", /^\d+\.\d+\.\d+$/);
+      assert.equal(details.hostname, hostname());
       assert.deepEqual(hello.capabilities, {
         browser: false,
         files: true,
