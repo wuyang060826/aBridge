@@ -507,17 +507,32 @@ export const browserActSchema = z
   })
   .strict()
   .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
-const filePathSchema = portable(z.string().min(1).max(4096), ["noNul"], "Path contains NUL");
+const filePathSchema = portable(
+  z.string().min(1).max(4096),
+  ["and", ["noNul"], ["unicode"]],
+  "Path must be well-formed Unicode without NUL",
+);
 export const commandExecuteSchema = z
   .object({
     command: portable(
       z.string().min(1).max(65536),
-      ["and", ["noNul"], ["nonblank"]],
-      "Command must be nonblank and NUL-free",
+      ["and", ["noNul"], ["nonblank"], ["unicode"]],
+      "Command must be nonblank, well-formed Unicode without NUL",
     ),
     cwd: filePathSchema.optional(),
     env: z
-      .record(z.string().regex(/^[^=\u0000]+$/), portable(z.string(), ["noNul"], "Environment contains NUL"))
+      .record(
+        portable(
+          z.string().regex(/^[^=\u0000]+$/),
+          ["unicode"],
+          "Environment names must be well-formed Unicode",
+        ),
+        portable(
+          z.string(),
+          ["and", ["noNul"], ["unicode"]],
+          "Environment values must be well-formed Unicode without NUL",
+        ),
+      )
       .optional(),
     timeout: z.number().finite().min(1).max(120).default(30),
   })

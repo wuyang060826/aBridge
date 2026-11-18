@@ -278,7 +278,16 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
         capabilities: ["shell", "files", "screen"],
       }),
       session = opened.value.id;
-    for (const env of [{ "BAD=KEY": "value" }, { ["BAD\0KEY"]: "value" }, { VALID: "bad\0value" }]) {
+    for (const [tool, args] of [
+      ["command_execute", { command: "echo hello", env: { "BAD=KEY": "value" } }],
+      ["command_execute", { command: "echo hello", env: { ["BAD\0KEY"]: "value" } }],
+      ["command_execute", { command: "echo hello", env: { VALID: "bad\0value" } }],
+      ["command_execute", { command: "echo \uD800" }],
+      ["command_execute", { command: "echo hello", cwd: "/tmp/\uD800" }],
+      ["command_execute", { command: "echo hello", env: { "\uD800": "value" } }],
+      ["command_execute", { command: "echo hello", env: { VALID: "\uD800" } }],
+      ["file_read", { path: "/tmp/\uD800" }],
+    ] as const) {
       const rejected = await fetch(f.url + "/mcp", {
         method: "POST",
         headers: {
@@ -290,12 +299,12 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
           jsonrpc: "2.0",
           id: 3,
           method: "tools/call",
-          params: { name: "command_execute", arguments: { session_id: session, command: "echo hello", env } },
+          params: { name: tool, arguments: { session_id: session, ...args } },
         }),
       });
       assert.equal(rejected.status, 200);
       assert.equal(((await rejected.json()) as { result: { isError?: boolean } }).result.isError, true);
-      assert.equal(dispatches, 0, "Invalid environment names/values must never reach the device");
+      assert.equal(dispatches, 0, "Invalid command and file arguments must never reach the device");
     }
     const command = await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,

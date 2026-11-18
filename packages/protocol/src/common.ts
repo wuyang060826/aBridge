@@ -91,6 +91,7 @@ const reportedText = z
   .min(1)
   .max(128)
   .regex(/^[^\p{Cc}]+$/u)
+  .refine((value) => value.isWellFormed())
   .optional();
 export const deviceSummaryDetailsSchema = z.object({
   os: z.enum(["macos", "linux", "windows", "chromeos", "android", "openbsd", "fuchsia"]).optional(),
