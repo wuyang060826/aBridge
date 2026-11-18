@@ -103,7 +103,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             val result = JSONObject().put("observation_id", id).put("elements", rows)
                 .put("focus_status", if (confirmed) "confirmed" else "unconfirmed")
                 .put("pixel_actions", pixels).put("platform", "android")
-                .put("supported_actions", JSONArray(listOf("click", "long_press", "drag", "scroll", "type", "key")))
+                .put("supported_actions", JSONArray(listOf("click", "long_press", "click_refs", "drag", "scroll", "type", "key")))
                 .put("supported_keys", JSONArray(listOf("back", "home", "enter", "search", "done")))
             if (image != null) {
                 val data = ByteArrayOutputStream()
@@ -135,10 +135,14 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 val bounds = Rect().also(node::getBoundsInScreen)
                 val ref = "e${rows.length() + 1}"
                 targets[ref] = Target(path, bounds, node.viewIdResourceName, node.className?.toString(), node.uniqueId, label)
+                val clickable = actionableAncestor(node, long = false)
                 rows.put(JSONObject().put("element_ref", ref).put("text", label)
                     .put("role", node.className?.toString()?.substringAfterLast('.') ?: "View")
                     .put("editable", node.isEditable).put("enabled", node.isEnabled)
-                    .put("clickable", actionableAncestor(node, long = false) != null)
+                    .put("clickable", clickable != null)
+                    .put("selected", node.isSelected || clickable?.isSelected == true)
+                    .put("checkable", node.isCheckable)
+                    .put("checked", node.isCheckable && node.isChecked)
                     .put("long_clickable", actionableAncestor(node, long = true) != null)
                     .put("scrollable", node.isScrollable)
                     .put("bounds", JSONObject().put("x", bounds.left).put("y", bounds.top)
@@ -151,9 +155,8 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         }
     }
 
-    private fun target(root: AccessibilityNodeInfo, observation: Observation, action: JSONObject): AccessibilityNodeInfo? {
-        if (!action.has("element_ref")) return null
-        val stored = observation.targets[action.getString("element_ref")]
+    private fun target(root: AccessibilityNodeInfo, observation: Observation, ref: String): AccessibilityNodeInfo {
+        val stored = observation.targets[ref]
             ?: throw Refusal("invalid_action", "Element was not in this observation")
         var node = root
         for (index in stored.path) node = node.getChild(index)
@@ -229,7 +232,8 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         val action = args.getJSONObject("action")
         if ((action.optJSONArray("modifiers")?.length() ?: 0) != 0)
             throw Refusal("unsupported_action", "Android does not support keyboard modifiers")
-        val element = target(root, observation, action)
+        val element = (action.opt("element_ref") as? String)?.let { target(root, observation, it) }
+        val result = JSONObject().put("executed", true)
         val consume: () -> Unit = {
             check()
             observations.remove(session)
@@ -251,6 +255,10 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                     consume()
                     gesture(point, point, if (long) 700 else 65)
                 }
+            }
+            "click_refs" -> {
+                val refs = action.getJSONArray("element_refs").values().filterIsInstance<String>()
+                result.put("steps", clickRefs(session, observation, refs, check))
             }
             "drag" -> {
                 val start = points(observation, action.getDouble("x"), action.getDouble("y"))
@@ -284,7 +292,6 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             else -> throw Refusal("unsupported_action", "This action is unavailable on Android")
         }
 
-        val result = JSONObject().put("executed", true)
         if (args.optBoolean("observe_after", true)) {
             delay(args.optLong("wait_after_ms", 2000))
             try {
@@ -295,6 +302,49 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             }
         }
         return result
+    }
+
+    /**
+     * Native clicks for independent controls in one window. Every step resolves the original
+     * reference against the current tree. A changed target ends the batch before the next click.
+     */
+    private suspend fun clickRefs(
+        session: String, observation: Observation, refs: List<String>, check: () -> Unit,
+    ): JSONObject {
+        fun resolve(ref: String): AccessibilityNodeInfo {
+            val root = service.rootInActiveWindow
+            if (root == null || focus(root) != observation.focus)
+                throw Refusal("focus_changed", "The active window changed")
+            return actionableAncestor(target(root, observation, ref), long = false)
+                ?: throw Refusal("invalid_action", "Every batch target must support native click")
+        }
+        // Validate the entire initial selection before the first effect. Never batch the same control twice.
+        val initial = refs.map(::resolve)
+        if (initial.toSet().size != refs.size)
+            throw Refusal("invalid_action", "Batch references resolve to the same control")
+        check()
+        observations.remove(session)
+        val applied = JSONArray()
+        var failure: JSONObject? = null
+        for ((index, ref) in refs.withIndex()) {
+            try {
+                check()
+                val control = resolve(ref)
+                if (control != initial[index])
+                    throw Refusal("stale_observation", "The target control changed")
+                if (!control.performAction(AccessibilityNodeInfo.ACTION_CLICK))
+                    throw Refusal("invalid_action", "The current control did not accept a native click")
+                applied.put(ref)
+                if (applied.length() < refs.size) delay(120)
+            } catch (e: Refusal) {
+                if (applied.length() == 0) throw e
+                failure = JSONObject().put("code", e.code).put("message", e.message).put("element_ref", ref)
+                break
+            }
+        }
+        return JSONObject().put("applied_refs", applied).apply {
+            if (failure != null) put("step_error", failure)
+        }
     }
 
     private fun key(key: String, consume: () -> Unit) {

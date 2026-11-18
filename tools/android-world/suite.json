@@ -7,5 +7,6 @@
   "reasoning": "medium",
   "episodeLimitMs": 360000,
   "maxToolCalls": 45,
+  "batchBudget": "charge each click against the same tool budget",
   "retries": 0
 }
