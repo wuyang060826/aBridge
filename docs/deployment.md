@@ -111,6 +111,8 @@ node --import tsx tools/build-native.ts \
 
 使用 `--signing-identity` 或 `ABRIDGE_SIGNING_IDENTITY` 指定本机已有证书；默认 ad hoc 签名。原生代码或签名变化后，macOS 可能要求重新授予屏幕录制或辅助功能权限。应用内更新使用 GitHub Latest 正式 Release；候选构建成功不能代表真实安装和系统权限验收已通过。
 
+从 0.4.15 及更早版本升级时，旧更新器要求 Node 运行时，不能安装原生包。请退出旧版 App，解压 Release ZIP 后替换原位置的 `aBridge.app`，保留 `~/Library/Application Support/aBridge` 中的绑定、设备身份和暂停设置。原生版本后续可继续使用应用内更新。
+
 ### 绑定与控制
 
 1. 在 App 填写 Server 地址，点击“在浏览器授权”。

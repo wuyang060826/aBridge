@@ -68,11 +68,18 @@ async function fixture() {
     child: ChildProcess | undefined;
   let stderr = "";
   const frames: Frame[] = [];
+  let binaryFrames = 0;
   server.on("connection", (socket) => {
     peer = socket;
     epoch++;
     sequence = 0;
-    socket.on("message", (bytes) => {
+    socket.on("message", (bytes, isBinary) => {
+      // The production device endpoint accepts JSON text frames only.
+      if (isBinary) {
+        binaryFrames++;
+        socket.close(4400, "JSON text is required");
+        return;
+      }
       const frame = JSON.parse(bytes.toString()) as Frame;
       frames.push(frame);
       if (frame.type === "hello")
@@ -131,6 +138,7 @@ async function fixture() {
       stderr += String(data);
     });
     await until(async () => {
+      assert.equal(binaryFrames, 0, "Native client must send JSON text WebSocket frames");
       const status = await cli("status");
       return status.connection === "online" && status;
     }, `Native client failed: ${stderr}`);
