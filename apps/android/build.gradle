@@ -1,0 +1,36 @@
+plugins {
+    id 'com.android.application' version '9.2.1'
+}
+
+def contractFile = file('../../dist/desktop/desktop-contract.json')
+def contract = new groovy.json.JsonSlurper().parse(contractFile)
+def upstreamVersion = contract.version
+def versionParts = upstreamVersion.tokenize('.').collect { it.toInteger() }
+
+android {
+    namespace 'dev.abridge.android'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'dev.abridge.android'
+        minSdk 33
+        targetSdk 36
+        versionCode versionParts[0] * 1000000 + versionParts[1] * 1000 + versionParts[2]
+        versionName upstreamVersion
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/contract').get().asFile)
+}
+
+def syncContract = tasks.register('syncDeviceContract', Copy) {
+    from contractFile
+    into layout.buildDirectory.dir('generated/contract')
+}
+tasks.named('preBuild') { dependsOn syncContract }
+
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+}
