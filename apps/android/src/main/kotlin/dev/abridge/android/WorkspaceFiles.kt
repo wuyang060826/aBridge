@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
+import android.webkit.MimeTypeMap
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -128,7 +129,9 @@ internal class WorkspaceFiles(private val context: Context) {
                 val bytes = ByteArray(encoded.remaining()).also { encoded.get(it) }
                 check()
                 val document = DocumentsContract.buildDocumentUriUsingTree(tree, id)
-                val uri = if (exists) document else DocumentsContract.createDocument(resolver, document, "text/plain", parts.last())
+                val extension = parts.last().substringAfterLast('.', "").lowercase()
+                val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension) ?: "application/octet-stream"
+                val uri = if (exists) document else DocumentsContract.createDocument(resolver, document, mime, parts.last())
                     ?: error("Document creation could not be confirmed")
                 // Providers may append an extension or pick a unique name. Never report a different path as success.
                 if (!exists) {

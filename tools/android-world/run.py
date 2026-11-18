@@ -130,7 +130,7 @@ def main():
         raise RuntimeError("Use the clean pinned AndroidWorld checkout from suite.json")
     os.umask(0o077)
     args.out.mkdir(parents=True, exist_ok=False)
-    # These tasks are not clock based. Preserve real time for signed operation expiry.
+    # The public task initializer sets the task-specific time for each episode.
     env = env_launcher.load_and_setup_env(console_port=args.port, grpc_port=args.grpc,
                                            adb_path=args.adb, freeze_datetime=False)
     try:

@@ -633,6 +633,7 @@ export const deviceWelcomeSchema = z
     owner_name: z.string(),
     lease_seconds: z.number().positive(),
     heartbeat_interval: z.number().positive(),
+    server_time: z.number().positive().optional(),
   })
   .passthrough();
 

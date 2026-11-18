@@ -43,6 +43,7 @@ class DeviceService : AccessibilityService() {
     private var deviceId = ""
     private var lease = 0L
     private var lastAck = 0L
+    private var serverEpoch = 0.0
     private var grant = emptySet<String>()
     private var retries = 0
     private val closedSessions = mutableSetOf<String>()
@@ -181,7 +182,7 @@ class DeviceService : AccessibilityService() {
             deviceId = frame.getString("device_id")
             grant = frame.getJSONArray("capabilities").values().filterIsInstance<String>().toSet()
             lease = (minOf(frame.getDouble("lease_seconds"), contract.limits.getDouble("leaseSeconds")) * 1000).toLong()
-            lastAck = SystemClock.elapsedRealtime()
+            updateClock(frame)
             retries = 0
             setState("online")
             maintenance?.cancel()
@@ -197,7 +198,7 @@ class DeviceService : AccessibilityService() {
         }
         if (frame.optLong("connection_epoch") != epoch) return
         when (frame.optString("type")) {
-            "heartbeat_ack" -> lastAck = SystemClock.elapsedRealtime()
+            "heartbeat_ack" -> updateClock(frame)
             "dispatch" -> dispatch(frame)
             "stop" -> {
                 prefs.edit().putBoolean("paused", true).commit()
@@ -220,6 +221,13 @@ class DeviceService : AccessibilityService() {
         }
     }
 
+    private fun updateClock(frame: JSONObject) {
+        val seconds = frame.get("server_time") as? Number ?: error("Missing server time")
+        require(seconds.toDouble().isFinite() && seconds.toDouble() > 0)
+        serverEpoch = seconds.toDouble()
+        lastAck = SystemClock.elapsedRealtime()
+    }
+
     private fun receipt(id: String, status: String, result: JSONObject = JSONObject(), error: Refusal? = null) {
         val payload = JSONObject().put("type", "result").put("connection_epoch", epoch)
             .put("operation_id", id).put("status", status).put("result", result)
@@ -236,7 +244,7 @@ class DeviceService : AccessibilityService() {
         val session = frame.getString("session_id")
         if (!identity.matches(session)) return refuse("invalid_dispatch", "Invalid session ID")
         val expiry = frame.getDouble("expires_at")
-        val now = System.currentTimeMillis() / 1000.0
+        val now = serverEpoch + (SystemClock.elapsedRealtime() - lastAck) / 1000.0
         if (expiry <= now || expiry > now + contract.limits.getInt("operationStartSeconds") + contract.limits.getInt("operationGraceSeconds"))
             return refuse("dispatch_expired", "Operation start deadline expired")
         if (journal.contains(id)) return refuse("duplicate_operation", "This operation was already admitted")
