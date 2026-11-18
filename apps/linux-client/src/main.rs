@@ -58,8 +58,6 @@ fn bounded_stdin(max: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 async fn hidden_token() -> Result<String> {
-    eprint!("Device Token: ");
-    io::stderr().flush()?;
     if !io::stdin().is_terminal() {
         let bytes = bounded_stdin(4097)?;
         return Ok(String::from_utf8(bytes)?.trim().to_owned());
@@ -89,20 +87,36 @@ async fn hidden_token() -> Result<String> {
     let old = unsafe { old.assume_init() };
     let _restore = Echo(fd, old);
     let mut settings = old;
-    settings.c_lflag &= !libc::ECHO;
+    settings.c_lflag &= !(libc::ECHO | libc::ECHONL);
     ensure!(
         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &settings) } == 0,
         "Cannot disable terminal echo"
     );
+    eprint!("Device Token: ");
+    io::stderr().flush()?;
     let mut value = [0; 4098];
-    let length = loop {
+    let mut length = 0;
+    while length < value.len() {
         let mut ready = terminal.readable().await?;
-        if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut value)) {
-            break result?;
+        if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut value[length..])) {
+            let end = length + result?;
+            let chunk = &value[length..end];
+            if chunk.contains(&3) {
+                eprintln!();
+                bail!("Setup cancelled");
+            }
+            if let Some(newline) = chunk.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
+                length += newline;
+                break;
+            }
+            if end == length {
+                break;
+            }
+            length = end;
         }
-    };
+    }
     eprintln!();
-    ensure!(length <= 4097, "Device Token too long");
+    ensure!(length <= 4096, "Device Token too long");
     Ok(std::str::from_utf8(&value[..length])?.trim().to_owned())
 }
 fn parse_server(value: &str) -> Result<url::Url> {
