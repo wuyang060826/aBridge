@@ -8,6 +8,7 @@ import random
 import subprocess
 import sys
 import traceback
+from unittest.mock import patch
 
 from android_world import registry
 from android_world.env import adb_utils, env_launcher
@@ -149,6 +150,29 @@ def verify_emulator(args):
     return adb("shell", "getprop", "ro.build.fingerprint")
 
 
+def setup_public_apps(env, task_names):
+    required = [apps.AndroidWorldApp]
+    tasks = registry.TaskRegistry()
+    public = tasks.get_registry(tasks.ANDROID_WORLD_FAMILY)
+    for name in task_names:
+        for app_name in public[name].app_names:
+            app_class = setup.get_app_mapping(app_name)
+            if app_class is None:
+                raise RuntimeError(f"Unknown AndroidWorld setup for {app_name}")
+            if app_class not in required:
+                required.append(app_class)
+    generic_request = adb_utils.issue_generic_request
+
+    def launch_on_headless_android(command, *args, **kwargs):
+        if isinstance(command, list) and command[:2] == ["shell", "monkey"] and command[-1] == "1":
+            # A one-event launcher startup must not request physical system keys on the headless AVD.
+            command = [*command[:-1], "--pct-syskeys", "0", "1"]
+        return generic_request(command, *args, **kwargs)
+
+    with patch.object(adb_utils, "issue_generic_request", launch_on_headless_android):
+        setup.setup_apps(env, tuple(required))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", required=True, type=lambda value: str(Path(value).expanduser().resolve()))
@@ -174,17 +198,7 @@ def main():
                                            adb_path=args.adb, freeze_datetime=False)
     try:
         if args.setup:
-            required = [apps.AndroidWorldApp]
-            tasks = registry.TaskRegistry()
-            public = tasks.get_registry(tasks.ANDROID_WORLD_FAMILY)
-            for name in GROUPS[args.group]:
-                for app_name in public[name].app_names:
-                    app_class = setup.get_app_mapping(app_name)
-                    if app_class is None:
-                        raise RuntimeError(f"Unknown AndroidWorld setup for {app_name}")
-                    if app_class not in required:
-                        required.append(app_class)
-            setup.setup_apps(env, tuple(required))
+            setup_public_apps(env, GROUPS[args.group])
             print("Public task apps installed and initialized", flush=True)
             return 0
         return run_suite(args, env, args.out.resolve(), suite, suite_name)

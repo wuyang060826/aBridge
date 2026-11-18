@@ -77,7 +77,7 @@ The mean of the upstream complexity values is **5.08** for these ten tasks and *
 
 The challenge uses the same model and two-tool boundary. Every episode gets **600 seconds and 75 action units**, fixed before the run. The longer budget accommodates multi-app and multi-record tasks. This makes the challenge score and the regression score separate measurements. Each group runs seed 3 across all five assigned tasks, then seeds 4 and 5. The controller opens the first declared app and lets the Agent switch apps through the launcher when needed.
 
-Use the same two AVDs and model catalog as the regression run. Run each setup command first to install and initialize the public apps for its group. Start the two scoring commands only after setup has finished on both emulators.
+Use the same two AVDs and model catalog as the regression run. Run each setup command first to install and initialize the public apps for its group. Start the two scoring commands only after setup has finished on both emulators. On the headless AVD, provisioning disables physical system-key events for AndroidWorld’s one-event Monkey app launches. This keeps the VLC initialization usable on the same image.
 
 ```sh
 python tools/android-world/run.py --setup --group challenge-a \
