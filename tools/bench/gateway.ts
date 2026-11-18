@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 
-const allowedTools = new Set(["browser_observe", "browser_read", "browser_act", "browser_wait"]);
+const browserTools = new Set(["browser_observe", "browser_read", "browser_act", "browser_wait"]);
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,9 +58,11 @@ export async function createAgentGateway(options: {
   sessionId: string;
   maxToolCalls: number;
   onBudgetExceeded?: () => void;
+  tools?: readonly string[];
 }) {
   if (!Number.isSafeInteger(options.maxToolCalls) || options.maxToolCalls < 0)
     throw Error("Invalid tool budget");
+  const allowedTools = options.tools ? new Set(options.tools) : browserTools;
   const target = new URL(options.targetUrl);
   if (target.pathname === "/") target.pathname = "/mcp";
   const token = randomBytes(32).toString("hex");
