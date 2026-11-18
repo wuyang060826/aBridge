@@ -33,7 +33,8 @@ for (const inherited of [false, true]) {
   const started = performance.now();
   try {
     const result = await executor.execute("startup-probe", "command_execute", {
-      command: "[Console]::Write('fixture-ready')",
+      command: "[Console]::Write('fixture-ready 中文 😀'); [Console]::Write($env:ABRIDGE_TEST_VALUE)",
+      env: { ABRIDGE_TEST_VALUE: "中文 😀" },
       timeout: 75,
     });
     console.log(JSON.stringify({ inherited, elapsed_ms: performance.now() - started, result }));

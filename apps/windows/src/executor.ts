@@ -159,20 +159,9 @@ export class LocalExecutor {
       "LANG",
       "TMPDIR",
       ...(process.platform === "win32"
-        ? // PowerShell/.NET module discovery needs these Windows installation paths.
-          // Keep an explicit OS allowlist; application credentials remain excluded.
-          [
+        ? [
             "SystemRoot",
-            "SystemDrive",
             "WINDIR",
-            "ProgramFiles",
-            "ProgramFiles(x86)",
-            "ProgramW6432",
-            "CommonProgramFiles",
-            "CommonProgramFiles(x86)",
-            "CommonProgramW6432",
-            "PROCESSOR_ARCHITECTURE",
-            "PSModulePath",
             "TEMP",
             "TMP",
             "USERPROFILE",
@@ -194,9 +183,10 @@ export class LocalExecutor {
         env,
         detached: process.platform !== "win32",
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"],
       },
     );
+    child.stdin?.end();
     this.processes.set(id, child);
     const capture = async (stream: NodeJS.ReadableStream, name: "stdout" | "stderr") => {
       const chunks: Buffer[] = [];

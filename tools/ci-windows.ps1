@@ -2,7 +2,7 @@
 # Administrators group. Use the actual user's SID for files created by this
 # verification process and its children, as in a normal desktop login.
 # This changes only our process token, never machine policy or existing files.
-param([ValidateSet('check', 'package:windows', 'package:windows:check')][string]$Task = 'check')
+param([ValidateSet('check', 'package:windows', 'package:windows:check', 'diagnose')][string]$Task = 'check')
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -29,5 +29,9 @@ public static class VerificationTokenOwner {
 }
 '@
 [VerificationTokenOwner]::SetUser()
-& npm.cmd run $Task
+if ($Task -eq 'diagnose') {
+  & node --import tsx --test tools/fixtures/windows-command-startup.ts
+} else {
+  & npm.cmd run $Task
+}
 exit $LASTEXITCODE
