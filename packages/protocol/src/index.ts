@@ -246,6 +246,22 @@ const clickSchema = portable(
   ],
   "Use element_ref or both screenshot coordinates",
 );
+const longPressSchema = portable(
+  z
+    .object({
+      type: z.literal("long_press"),
+      element_ref: elementRefSchema.optional(),
+      x: coordinateSchema.optional(),
+      y: coordinateSchema.optional(),
+    })
+    .strict(),
+  [
+    "or",
+    ["and", ["exists", "element_ref"], ["not", ["exists", "x"]], ["not", ["exists", "y"]]],
+    ["and", ["not", ["exists", "element_ref"]], ["exists", "x"], ["exists", "y"]],
+  ],
+  "Use element_ref or both screenshot coordinates",
+);
 const typeSchema = z
   .object({
     type: z.literal("type"),
@@ -287,6 +303,7 @@ const scrollSchema = portable(
 );
 export const computerActionSchema = z.discriminatedUnion("type", [
   clickSchema,
+  longPressSchema,
   typeSchema,
   keySchema,
   moveSchema,

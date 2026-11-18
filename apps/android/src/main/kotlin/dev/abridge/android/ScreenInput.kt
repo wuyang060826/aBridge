@@ -48,7 +48,11 @@ internal class ScreenInput(private val service: AccessibilityService, private va
     fun invalidate() { revision++; observations.clear() }
     fun closeSession(session: String) { observations.remove(session) }
 
-    private fun rotation(): Int = service.getSystemService(WindowManager::class.java).defaultDisplay.rotation
+    private val windowManager get() = service.getSystemService(WindowManager::class.java)
+    private fun rotation(): Int = service.getSystemService(android.hardware.display.DisplayManager::class.java)
+        .getDisplay(Display.DEFAULT_DISPLAY).rotation
+
+    private fun displayBounds(): Rect = windowManager.maximumWindowMetrics.bounds
     private fun focus(root: AccessibilityNodeInfo?) =
         root?.packageName?.toString()?.let { Focus(it, root.windowId, rotation()) }
 
@@ -78,7 +82,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
     }
 
     suspend fun observe(session: String, args: JSONObject, check: () -> Unit): JSONObject {
-        if (args.has("pid") || args.has("window_id") || !args.optBoolean("desktop", observations.containsKey(session)))
+        if (args.has("pid") || args.has("window_id"))
             throw Refusal("unsupported_target", "Android observation uses desktop=true")
         check()
         val sequence = revision
@@ -99,7 +103,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             val result = JSONObject().put("observation_id", id).put("elements", rows)
                 .put("focus_status", if (confirmed) "confirmed" else "unconfirmed")
                 .put("pixel_actions", pixels).put("platform", "android")
-                .put("supported_actions", JSONArray(listOf("click", "drag", "scroll", "type", "key")))
+                .put("supported_actions", JSONArray(listOf("click", "long_press", "drag", "scroll", "type", "key")))
                 .put("supported_keys", JSONArray(listOf("back", "home", "enter", "search", "done")))
             if (image != null) {
                 val data = ByteArrayOutputStream()
@@ -126,7 +130,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         while (pending.isNotEmpty() && scanned++ < 1200 && rows.length() < 120) {
             val (node, path) = pending.removeFirst()
             val label = label(node)
-            if (node.isVisibleToUser && (label.isNotEmpty() || node.isClickable || node.isEditable || node.isScrollable)
+            if (node.isVisibleToUser && (label.isNotEmpty() || node.isClickable || node.isLongClickable || node.isEditable || node.isScrollable)
                 && (query.isEmpty() || label.contains(query, ignoreCase = true))) {
                 val bounds = Rect().also(node::getBoundsInScreen)
                 val ref = "e${rows.length() + 1}"
@@ -134,7 +138,9 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 rows.put(JSONObject().put("element_ref", ref).put("text", label)
                     .put("role", node.className?.toString()?.substringAfterLast('.') ?: "View")
                     .put("editable", node.isEditable).put("enabled", node.isEnabled)
-                    .put("clickable", node.isClickable).put("scrollable", node.isScrollable)
+                    .put("clickable", actionableAncestor(node, long = false) != null)
+                    .put("long_clickable", actionableAncestor(node, long = true) != null)
+                    .put("scrollable", node.isScrollable)
                     .put("bounds", JSONObject().put("x", bounds.left).put("y", bounds.top)
                         .put("width", bounds.width()).put("height", bounds.height())))
             }
@@ -157,6 +163,29 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             || node.uniqueId != stored.uniqueId || label(node) != stored.text || !node.isVisibleToUser || !node.isEnabled)
             throw Refusal("stale_observation", "The element changed. Observe the screen again")
         return node
+    }
+
+    private fun actionableAncestor(node: AccessibilityNodeInfo, long: Boolean): AccessibilityNodeInfo? {
+        val initial = Rect().also(node::getBoundsInScreen)
+        if (initial.isEmpty) return null
+        var candidate = node
+        repeat(5) {
+            if (!candidate.isVisibleToUser || !candidate.isEnabled || candidate.windowId != node.windowId)
+                return null
+            val bounds = Rect().also(candidate::getBoundsInScreen)
+            if (!bounds.contains(initial.centerX(), initial.centerY()) || candidate.isScrollable)
+                return null
+            if (if (long) candidate.isLongClickable else candidate.isClickable) return candidate
+            candidate = candidate.parent ?: return null
+        }
+        return null
+    }
+
+    private fun elementPoint(node: AccessibilityNodeInfo): Pair<Float, Float> {
+        val bounds = Rect().also(node::getBoundsInScreen)
+        if (!bounds.intersect(displayBounds()) || bounds.isEmpty)
+            throw Refusal("invalid_action", "The element is outside the display")
+        return bounds.exactCenterX() to bounds.exactCenterY()
     }
 
     private fun points(obs: Observation, x: Double, y: Double): Pair<Float, Float> {
@@ -201,34 +230,44 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         if ((action.optJSONArray("modifiers")?.length() ?: 0) != 0)
             throw Refusal("unsupported_action", "Android does not support keyboard modifiers")
         val element = target(root, observation, action)
-        check()
-        observations.remove(session)
-        when (action.getString("type")) {
-            "click" -> {
+        val consume: () -> Unit = {
+            check()
+            observations.remove(session)
+        }
+        when (val kind = action.getString("type")) {
+            "click", "long_press" -> {
                 if (action.optString("button", "left") != "left")
                     throw Refusal("unsupported_action", "Android click is a primary touch")
-                if (element != null && element.isClickable) {
-                    if (!element.performAction(AccessibilityNodeInfo.ACTION_CLICK))
-                        throw Refusal("invalid_action", "The element did not accept a click")
+                val long = kind == "long_press"
+                val actionable = element?.let { actionableAncestor(it, long) }
+                if (actionable != null) {
+                    val nativeAction = if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
+                    consume()
+                    if (!actionable.performAction(nativeAction))
+                        throw Refusal("invalid_action", "The element did not accept this action")
                 } else {
                     val point = if (element == null) points(observation, action.getDouble("x"), action.getDouble("y"))
-                    else Rect().also(element::getBoundsInScreen).let { points(observation, it.exactCenterX().toDouble(), it.exactCenterY().toDouble()) }
-                    gesture(point, point, 65)
+                    else elementPoint(element)
+                    consume()
+                    gesture(point, point, if (long) 700 else 65)
                 }
             }
             "drag" -> {
                 val start = points(observation, action.getDouble("x"), action.getDouble("y"))
                 val end = points(observation, action.getDouble("to_x"), action.getDouble("to_y"))
+                consume()
                 gesture(start, end, if (start == end) 700 else 420)
             }
             "scroll" -> {
-                val width = observation.width ?: throw Refusal("screenshot_required", "Request a screenshot before scrolling")
-                val height = observation.height ?: throw Refusal("screenshot_required", "Request a screenshot before scrolling")
-                val x = width / 2.0
-                val y = height / 2.0
-                val dx = action.optDouble("delta_x", 0.0).coerceIn(-width * .36, width * .36)
-                val dy = action.getDouble("delta_y").coerceIn(-height * .36, height * .36)
-                gesture(points(observation, x, y), points(observation, x - dx, y - dy), 380)
+                val bounds = Rect().also(root::getBoundsInScreen)
+                if (!bounds.intersect(displayBounds()) || bounds.width() < 2 || bounds.height() < 2)
+                    throw Refusal("focus_unavailable", "The active window has no usable scroll area")
+                val x = bounds.exactCenterX()
+                val y = bounds.exactCenterY()
+                val dx = action.optDouble("delta_x", 0.0).coerceIn(-bounds.width() * .36, bounds.width() * .36).toFloat()
+                val dy = action.getDouble("delta_y").coerceIn(-bounds.height() * .36, bounds.height() * .36).toFloat()
+                consume()
+                gesture(x to y, (x - dx) to (y - dy), 380)
             }
             "type" -> {
                 val node = element ?: root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -237,10 +276,11 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                     throw Refusal("invalid_action", "This field does not accept accessible text input")
                 val text = action.getString("text")
                 val params = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
+                consume()
                 if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, params))
                     throw Refusal("invalid_action", "This editor did not accept text replacement")
             }
-            "key" -> key(action.getString("key"))
+            "key" -> key(action.getString("key"), consume)
             else -> throw Refusal("unsupported_action", "This action is unavailable on Android")
         }
 
@@ -257,13 +297,14 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         return result
     }
 
-    private fun key(key: String) {
+    private fun key(key: String, consume: () -> Unit) {
         val global = when (key.lowercase()) {
             "back" -> AccessibilityService.GLOBAL_ACTION_BACK
             "home" -> AccessibilityService.GLOBAL_ACTION_HOME
             else -> null
         }
         if (global != null) {
+            consume()
             if (!service.performGlobalAction(global)) throw Refusal("invalid_action", "Android declined the system key")
             return
         }
@@ -275,6 +316,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         }
         val editor = service.inputMethod?.currentInputConnection
             ?: throw Refusal("input_unavailable", "No compatible editor is active")
+        consume()
         if (action == EditorInfo.IME_ACTION_NONE) {
             editor.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
             editor.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))

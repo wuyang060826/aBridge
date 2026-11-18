@@ -29,9 +29,9 @@ const tools = ["computer_observe", "computer_act"];
 const instruction = [
   "Complete the AndroidWorld task in the currently open Android app using only aBridge computer_observe and computer_act.",
   "Start with computer_observe(desktop=true,screenshot=true). Use the UI tree and the screenshot together.",
-  "Only use references from the latest observation. Use desktop=true again when a new screenshot is needed.",
-  "Primary click is touch. drag with the same start and end coordinates is long press. For typing, click to focus first. type replaces the editable field. key supports back, home, enter, search and done.",
-  "Request a fresh screenshot after dismissing dialogs or changing screens. Complete the requested task and stop.",
+  "Prefer the latest observation’s element_ref for click and long_press. Each action returns the updated UI elements by default. Reuse that observation and request a screenshot only when the UI tree is insufficient.",
+  "Click is a tap. Use long_press with element_ref for a contextual action. Scroll works with the latest UI observation. For typing, use the editable element_ref or click to focus first. type replaces the field. key supports back, home, enter, search and done.",
+  "Check action results before sending more input. Complete the requested task and stop.",
 ].join(" ");
 
 let removeReverse: (() => void) | undefined;
