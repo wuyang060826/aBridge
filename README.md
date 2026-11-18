@@ -2,7 +2,7 @@
 
 **通过 MCP，让 Agent 操作你授权的电脑、Android 手机和浏览器。**
 
-[快速开始](#快速开始) · [客户端](#3-连接设备) · [GitHub Releases](https://github.com/xerrors/aBridge/releases/latest) · [Agent Benchmark](#agent-benchmark) · [Yuxi 集成](#与-yuxi-一起使用) · [文档](#文档)
+[快速开始](#快速开始) · [客户端](#3-连接设备) · [GitHub Releases](https://github.com/xerrors/aBridge/releases/latest) · [评测与验证](#agent-benchmark) · [Yuxi 集成](#与-yuxi-一起使用) · [文档](#文档)
 
 ## 解决什么问题
 
@@ -110,6 +110,22 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 
 ## Agent Benchmark
 
+评测结果按客户端和任务集记录。各套件使用自己的任务、种子和预算，完整数据与测量版本见报告。
+
+<!-- benchmark:coverage:start -->
+
+| 客户端           | 公开 Agent 任务                                            | 已验证的范围                                            | 证据                                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chrome 扩展**  | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                          | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
+| **Android 预览** | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务       | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
+| **macOS App**    | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                       | [原生验证](tools/README.md)                                                                                                                                          |
+| **Linux CLI**    | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
+
+<!-- benchmark:coverage:end -->
+
+<details>
+<summary>Chrome MiniWoB++ 逐题结果、耗时与复现</summary>
+
 <!-- benchmark:miniwob:start -->
 
 真实 **gpt-6.1-sol（medium）Agent** 通过 aBridge 完成公开 MiniWoB++ 任务：**12/12（100.0%）**。任务、种子和预算在跑分前冻结，无重试，全部结果保留。
@@ -145,22 +161,11 @@ npm run benchmark:miniwob
 
 <!-- benchmark:miniwob:end -->
 
+</details>
+
 ### AndroidWorld
 
-**15/15（100%）**，在两台 Pixel 6 / Android 13 模拟器上实测。Agent 的截图和输入经 aBridge 客户端执行，AndroidWorld 负责生成数据与判分。
-
-| 公开任务             |  严格成功 |
-| -------------------- | --------: |
-| 移动文件             |       3/3 |
-| 删除文件             |       3/3 |
-| 创建笔记             |       3/3 |
-| 编辑笔记             |       3/3 |
-| 添加笔记标题并重命名 |       3/3 |
-| **合计**             | **15/15** |
-
-固定 gpt-6.1-sol / medium、seed 0–2 和每例 360 秒 / 45 个操作预算单位。完整运行零剔除、无逐例重试。279 次 MCP 调用，Agent 耗时中位数 146.7 秒。独立的直接文件 API 验收 **3/3**。[方法、限制与历史失败](docs/benchmarks/android-world.md) · [逐例数据](docs/benchmarks/android-world-results.json)
-
-挑战集覆盖 7 个应用、10 类任务，**15/30（50%）**。其中 9 例未达目标、6 例超时，低于 80% 目标。挑战集采用独立的 600 秒 / 75 个操作预算单位。[挑战集逐例数据](docs/benchmarks/android-world-challenge-results.json)
+两台 Pixel 6 / Android 13 模拟器负责运行公开任务。Agent 通过 Android 客户端观察和操作，AndroidWorld 生成数据并独立判分。回归集覆盖文件管理与笔记编辑，挑战集增加了跨应用录入和长流程任务。独立的直接文件接口验收 **3/3**，单列于 [AndroidWorld 报告](docs/benchmarks/android-world.md)。
 
 ## 授权与安全边界
 
