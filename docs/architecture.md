@@ -130,7 +130,9 @@ Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 �
 
 只有显式 `desktop=true` 才选择整屏，并且不能与窗口目标同时指定。整屏观察不以焦点确认为截图前提：观察前后均确认恰好一个前台普通应用，且其唯一可判定的屏幕内普通前窗保持一致时，返回 `focus_status=confirmed`；焦点无法确认、查询失败或期间切换时，仍返回观察及请求的截图，标记 `focus_status=unconfirmed`、`pixel_actions=false`。截图自身的错误、取消与会话关闭仍正常返回失败。
 
-观察包含有界控件/文本列表、`observation_id` 和可选原生图片，支持 `query` 聚焦。桌面引用最长有效 120 秒，动作后失效。AX 动作固定使用观察中的元素引用；像素动作还需要该观察的有效截图与坐标。整屏动作（包括像素动作及键盘输入）必须基于已确认焦点的观察，并在输入前再次核对前台：观察焦点未确认或当前无法确认时返回 `focus_unavailable`，前窗变化时返回 `focus_changed`，均不发送输入。焦点恢复后须重新观察整屏，或调用 `computer_windows(pid=...)` 后使用返回的 `pid` 与 `window_id` 观察窗口，不传 `desktop=true`。未确认焦点的旧观察不会因焦点恢复而获得动作权限；显式窗口观察沿用窗口目标契约。
+观察优先返回 `observation_id`、`available_actions` 和适用的恢复提示，其后是目标窗口、截图几何与有界控件列表。桌面引用最长有效 120 秒，动作后失效。元素点击使用观察中的元素引用；坐标点击必须使用同一观察的可操作截图和截图像素坐标。窗口坐标点击默认 `action.delivery_mode=background`，由驱动按指定窗口投递。
+
+整屏和带修饰键的点击须显式指定 `action.delivery_mode=foreground` 并使用截图坐标。前台窗口点击要求截取时目标窗口焦点已确认，调用驱动前再次核对焦点、窗口位置与点击点遮挡，并为截图缩放保留边缘余量。驱动随后再次确认窗口焦点，通过系统鼠标投递。预检和系统投递之间桌面仍可能变化，动作后须核对目标窗口的实际结果。整屏动作（含键盘输入）要求观察时及执行前焦点一致。焦点无从确认时返回 `focus_unavailable`，前窗变化时返回 `focus_changed`。窗口位置变化或点击点被遮挡时分别返回 `window_frame_changed` 或 `window_point_occluded`。恢复后刷新观察并使用新的引用和坐标。
 
 `computer_act` 默认附带 `result.observation`，可直接继续操作。动作执行完成后，先等待 `wait_after_ms` 再进行后续观察或截图：默认 `2000` 毫秒，接受 `0–10000` 的整数，`0` 表示不等待；`observe_after=false` 仅执行动作且不等待。复合观察需要同时具备 `input` 与 `screen`。动作已执行而后观察失败时分别返回动作结果与 `observation_error`，只补观察，不重放动作。
 

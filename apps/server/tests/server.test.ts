@@ -596,6 +596,38 @@ test("pagination uses Unicode code points and native images never duplicate base
   assert.ok(!text.text.includes("aGk="));
 });
 
+test("desktop MCP response puts action context before the element list", () => {
+  const observation = {
+    elements: [{ label: "A".repeat(7000) }],
+    observation_id: "obs_Fixture1",
+    available_actions: ["element_click"],
+    hint: "Refresh this window",
+    image_base64: "aGk=",
+  };
+  for (const result of [observation, { observation, effect: "unverifiable" }]) {
+    const response = contentResponse({ result, status: "executed", operation_id: "op_Fixture1" });
+    const text = response.content[0]!;
+    assert.equal(text.type, "text");
+    assert.deepEqual(
+      response.content.map((block) => block.type),
+      ["text", "image"],
+    );
+    const prefix = text.text.split('"elements"')[0]!;
+    for (const key of ["operation_id", "observation_id", "available_actions", "hint"])
+      assert.ok(prefix.includes(`"${key}"`), key);
+  }
+  const failure = contentResponse(
+    {
+      result: { elements: observation.elements },
+      error: { code: "focus_changed", hint: "Refresh this window" },
+    },
+    true,
+  );
+  const first = failure.content[0]!;
+  assert.equal(first.type, "text");
+  assert.ok(first.text.split('"elements"')[0]!.includes('"hint"'));
+});
+
 test("bounded transport terminates a non-draining socket", async () => {
   let terminated = false;
   const socket = {

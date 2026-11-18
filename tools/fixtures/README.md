@@ -21,6 +21,10 @@ swiftc -target arm64-apple-macosx14.0 -parse-as-library -O tools/fixtures/deskto
 
 状态文件中的 PID、时间和计数应属于本次进程；不要复用上次运行的窗口 ID。截图明确指定 PID 与窗口 ID，避免采集整个桌面。桌面引用最长有效 120 秒，动作后使用返回的新观察；暂停或用户接管时停止。
 
+点击路由验收使用两个重叠的 fixture 实例和各自的状态文件。保持一个实例在前台，观察另一个实例并点击其按钮，先用元素引用再用截图坐标。核对前台实例的 `click_count` 保持为零，目标实例的计数各增加一次。需要自动识别前台应用时，把两个程序放入各自的 `.app`，使用不同的 bundle ID。
+
+前台点击验收先观察已聚焦的 fixture。给该实例的状态路径追加 `.command` 并写入 `sibling`、`move` 或 `cover`，再向该 fixture 的 PID 发送 `SIGUSR1`。等待状态文件的 `updated_at` 更新，再用旧截图坐标显式请求 `delivery_mode=foreground`。分别核对 `focus_changed`、`window_frame_changed` 或 `window_point_occluded`，以及两个点击计数。每个用例用 `clear` 关闭竞争窗口、聚焦主窗口，然后获取新观察。
+
 ## 浏览器表单
 
 启动本机 HTTP 表单：

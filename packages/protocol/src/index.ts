@@ -237,6 +237,12 @@ const clickSchema = portable(
       y: coordinateSchema.optional(),
       button: z.enum(["left", "right", "middle"]).default("left"),
       modifiers: z.array(modifierSchema).default([]),
+      delivery_mode: z
+        .enum(["background", "foreground"])
+        .default("background")
+        .describe(
+          "Use background for element references or window screenshot clicks. Foreground requires screenshot coordinates and verified focus. Modified clicks require foreground.",
+        ),
     })
     .strict(),
   [
@@ -296,6 +302,7 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 // Operation diagnostics stay bounded across clients, server and script receipts.
 const operationErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
 export const operationErrorSchema = operationErrorDetailSchema.extend({
+  hint: z.string().max(240).optional(),
   cause: operationErrorDetailSchema.optional(),
   connection: connectionLossSchema.optional(),
   cleanup_error: operationErrorDetailSchema.optional(),
