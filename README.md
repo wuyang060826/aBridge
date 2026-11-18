@@ -193,11 +193,13 @@ npm run benchmark:miniwob
 从源码开发需要 Node.js 22.13+（22.x）、23.4+ 或更新版本。安装依赖并运行完整检查：
 
 ```sh
-npm ci
+npm install
 npm run check
 ```
 
 检查覆盖格式、架构、类型、自动化测试、打包和评测报告一致性。启动开发版 Server 可使用 `npm run build` 和 `npm start -- --web`。
+
+[官网与文档](https://xerrors.github.io/aBridge/)使用 VitePress，源码位于 `docs/`。在仓库根目录运行 `npm run docs:dev` 可本地预览，运行 `npm run docs:build` 可生成静态站点。向 `main` 提交 PR 时会检查官网构建，合并后由 GitHub Actions 自动发布到 GitHub Pages。
 
 | 文档                                           | 内容                                             |
 | ---------------------------------------------- | ------------------------------------------------ |

@@ -9,7 +9,7 @@ Server、管理台和扩展从同一套 TypeScript 源码构建。用户运行�
 ## 从源码运行 Server
 
 ```sh
-npm ci
+npm install
 npm run build
 npm start -- --web
 ```
@@ -24,7 +24,7 @@ node dist/server/cli.js --reset-admin-token
 
 环境变量配置的 Token 通过修改变量并重启更换。管理链接包含实例管理员凭据，不写入终端或请求日志；也可通过已配置的管理员 Token 登录。普通用户使用不带 fragment 的地址。
 
-实例管理员独立于普通账户，进入“实例管理”即可创建用户、查看用户及其设备统计，不需要先登录普通账户。第一个用户和后续用户统一由管理员 API 创建，不提供 CLI 创建用户或公开注册入口。普通账户登录后维护自己的设备与 Agent 连接，管理员凭据不授予设备操作权限。完整接口与外部调用示例见 [Server API](../apps/server/README.md#管理员-api)。
+实例管理员独立于普通账户，进入“实例管理”即可创建用户、查看用户及其设备统计，不需要先登录普通账户。第一个用户和后续用户统一由管理员 API 创建，不提供 CLI 创建用户或公开注册入口。普通账户登录后维护自己的设备与 Agent 连接，管理员凭据不授予设备操作权限。完整接口与外部调用示例见 [Server API](https://github.com/xerrors/aBridge/blob/main/apps/server/README.md#管理员-api)。
 
 ### 配置
 
@@ -76,7 +76,7 @@ npm run package
 npm run package:check
 ```
 
-分发构建包含 Server 所需的预构建 CLI、管理台，以及通过 `bundleDependencies` 随包携带的生产依赖闭包，剥离桌面 SDK。从根 `package-lock.json` 提取 Server 生产依赖锁，通过 `npm ci` 安装已测试的固定依赖；分发检查根据根锁核验 tarball 中的依赖路径与版本，不依赖 npm 12 已移除的 `shrinkwrap` 命令或 `npm-shrinkwrap.json` 支持。版本由根 `package.json` 生成。使用构建工具生成的本地 tarball 验证安装，再决定是否发布到 npm。
+分发构建包含 Server 所需的预构建 CLI、管理台，以及通过 `bundleDependencies` 随包携带的生产依赖闭包，剥离桌面 SDK。从源码安装时在本地生成的 `package-lock.json` 提取 Server 生产依赖锁，通过 `npm ci` 安装本次构建解析出的固定依赖；分发检查根据根锁核验 tarball 中的依赖路径与版本，不依赖 npm 12 已移除的 `shrinkwrap` 命令或 `npm-shrinkwrap.json` 支持。版本由根 `package.json` 生成。使用构建工具生成的本地 tarball 验证安装，再决定是否发布到 npm。
 
 `npm exec --package <本地tgz路径> -- abridge --web` 的 package 参数必须指向实际生成的文件，不能替换为尚未发布的候选包名。npx/npm exec 的临时包目录仅用于运行程序；数据库仍由 `--data-dir` 或 `--db` 指向持久位置。
 
@@ -85,7 +85,7 @@ npm run package:check
 在完整源码目录安装：
 
 ```sh
-npm ci
+npm install
 npm run build
 npm run desktop:install
 open "$HOME/Applications/aBridge.app"
@@ -153,7 +153,7 @@ Linux 客户端是独立 Rust 可执行文件，只提供 `shell/files`，使用
 
 暂停、能力开关和绑定保存在用户私有状态目录；可用 `--state-dir` 指定。服务重启和重连不解除暂停，未知结果操作不重放。更新时停止任务，用新版二进制执行 `service install` 并保留相同状态目录；`service uninstall` 移除服务但保留用户状态。
 
-源码构建使用 `npm run linux:build`，Rust 检查使用 `npm run linux:check`，Linux 候选包使用 `npm run package:linux`。分发包含单个可执行文件、说明和许可证，并输出 SHA-256、实际体积报告；构建强制执行 15 MiB 二进制和 5 MiB 下载包预算。原生 Linux amd64/arm64 CI 另验证协议和真实 systemd 生命周期。完整命令、依赖和目标平台说明见 [Linux 客户端](../apps/linux-client/README.md)。
+源码构建使用 `npm run linux:build`，Rust 检查使用 `npm run linux:check`，Linux 候选包使用 `npm run package:linux`。分发包含单个可执行文件、说明和许可证，并输出 SHA-256、实际体积报告；构建强制执行 15 MiB 二进制和 5 MiB 下载包预算。原生 Linux amd64/arm64 CI 另验证协议和真实 systemd 生命周期。完整命令、依赖和目标平台说明见 [Linux 客户端](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md)。
 
 ## 浏览器扩展
 
