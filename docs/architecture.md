@@ -56,7 +56,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
-持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 5，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 6，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
 
 ## Linux CLI 客户端
 
@@ -112,9 +112,9 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 管理台提供连接视角的设备预览，展示同账户设备的授权范围、在线状态与可用能力。MCP 的 `devices_list` 只返回该连接获准访问且具有有效能力的设备，并附带非秘密的连接 ID 与名称；它不公开未授权设备或账户设备总数。设备在线不等于每个连接都获准访问。
 
-`session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `device_get`、`devices_list` 一致的设备详情。渲染端可直接读取 `device.name`、`device.kind`（`computer` 或 `browser`）和 `device.platform`（客户端上报的平台字符串，如 `darwin`、`win32` 或 `Browser extension`），无需再次查询设备。
+`session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `devices_list` 一致的设备摘要，包含名称、类型、平台、连接状态和可用的系统与浏览器版本信息。管理台及已授权 Agent 的 `device_get` 可读取完整详情，包括主机名、型号、运行用户和归属账户。
 
-设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展优先读取浏览器声明的品牌列表，缺失时读取 User-Agent；Chrome 及声明为 Chrome 的衍生浏览器上报 `chrome`，无法确认的品牌使用 `Browser extension`，不推断宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
+设备的 `platform`、`version` 和可选 `details` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启后仍可读取。后续成功连接替换整份上报，缺失字段保持未知。基础字段 `platform` 保留平台标签，`version` 表示 aBridge 客户端或扩展版本。`details` 可包含系统及版本、发行版、架构和浏览器品牌及主版本。macOS 和 Linux 可提供主机名、型号和客户端进程的系统用户名，Linux 额外提供内核版本。归属账户来自 Server 的绑定关系。设备上报只用于展示和排障，授权仍由 Server 验证，在线状态由连接与心跳判定。失败、过期连接和凭据撤销后的迟到握手不会更新设备信息。
 
 有效能力取连接对该设备的策略、设备授权、会话请求、本机开关及实际就绪状态的交集。设备列举、执行和保留结果访问复用同一策略判定。每次执行重新核对所有者、密钥、撤销与过期状态、会话、能力和当前连接代次。收紧策略会终止不再满足要求的会话并请求取消在途操作；不会恢复本机暂停，也不能回滚已发生的副作用。桌面输入会话在同一设备上独占，浏览器任务分别持有自建标签页。
 

@@ -172,9 +172,9 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "device_get",
-    "Read one granted device and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
+    "Read one granted device, its reported system details, and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
     z.object({ device_id: id }).strict(),
-    (a) => control.deviceView(control.authorizedDevice(agentConnection, a.device_id), agentConnection),
+    (a) => control.deviceView(control.authorizedDevice(agentConnection, a.device_id), agentConnection, true),
   );
   register(
     "session_open",

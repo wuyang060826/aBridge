@@ -54,6 +54,7 @@ struct State {
     config: Config,
     journal: Journal,
     journal_ready: bool,
+    details: Value,
     operations: BTreeMap<String, Running>,
     closed_sessions: BTreeSet<String>,
     epoch: u64,
@@ -86,7 +87,7 @@ fn local_caps(config: &Config, ready: bool) -> Value {
     )
 }
 
-fn binding_snapshot(config: &Config, connection: &str) -> Value {
+fn binding_snapshot(config: &Config, connection: &str, details: &Value) -> Value {
     json!({
         "connection": connection,
         "paused": config.paused,
@@ -95,12 +96,13 @@ fn binding_snapshot(config: &Config, connection: &str) -> Value {
         "device_id": config.device_id,
         "version": env!("ABRIDGE_VERSION"),
         "platform": "linux",
+        "details": details,
     })
 }
 
 pub fn offline_snapshot(config: &Config) -> Value {
     let connection = if config.revoked { "revoked" } else { "offline" };
-    let mut snapshot = binding_snapshot(config, connection);
+    let mut snapshot = binding_snapshot(config, connection, &crate::system::details());
     snapshot["capabilities"] = local_caps(config, !config.revoked);
     snapshot["active_operations"] = json!(0);
     snapshot
@@ -111,7 +113,7 @@ impl State {
         local_caps(&self.config, self.journal_ready && !self.config.revoked)
     }
     fn snapshot(&self) -> Value {
-        let mut snapshot = binding_snapshot(&self.config, self.connection);
+        let mut snapshot = binding_snapshot(&self.config, self.connection, &self.details);
         snapshot["device_id"] = json!(self.device_id);
         snapshot["device_name"] = json!(self.name);
         snapshot["owner_name"] = json!(self.owner);
@@ -478,6 +480,7 @@ async fn network(
     generation: u64,
     config: Config,
     caps: Value,
+    details: Value,
     events: mpsc::Sender<Event>,
     cancel: CancellationToken,
 ) {
@@ -519,6 +522,7 @@ async fn network(
             "version": env!("ABRIDGE_VERSION"),
             "capabilities": caps,
             "paused": config.paused,
+            "details": details,
         });
         timeout(
             Duration::from_secs(5),
@@ -583,6 +587,7 @@ pub async fn run(dir: PathBuf) -> Result<()> {
     let _lock = storage::lock(&dir)?;
     let config = storage::load(&dir)?;
     crate::normalize_server(&config.url, config.http_confirmed_origin.as_deref())?;
+    let details = tokio::task::spawn_blocking(crate::system::details).await?;
     // Lock ownership makes replacement of a stale socket safe.
     let path = socket_path(&dir);
     if let Ok(metadata) = fs::symlink_metadata(&path) {
@@ -614,6 +619,7 @@ pub async fn run(dir: PathBuf) -> Result<()> {
         config,
         journal,
         journal_ready: true,
+        details,
         operations: BTreeMap::new(),
         closed_sessions: BTreeSet::new(),
         epoch: 0,
@@ -752,7 +758,7 @@ pub async fn run(dir: PathBuf) -> Result<()> {
                         state.generation += 1;
                         state.connection = "connecting";
                         state.connection_cancel = CancellationToken::new();
-                        tokio::spawn(network(state.generation, state.config.clone(), state.caps(),
+                        tokio::spawn(network(state.generation, state.config.clone(), state.caps(), state.details.clone(),
                             events.clone(), state.connection_cancel.clone()));
                     }
                 }

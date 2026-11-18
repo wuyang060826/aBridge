@@ -1,7 +1,7 @@
 import { normalizeDeviceServer, deviceIdentitySchema } from "@abridge/protocol";
 import { authorizeBrowser } from "./authorization.js";
 import { BrowserBridge } from "./bridge.js";
-import { browserPlatform, type BrowserIdentity } from "./browser-brand.js";
+import { collectBrowserDetails, browserPlatform, type BrowserIdentity } from "./browser-brand.js";
 import {
   BROWSER_AUTH_CALLBACK_PATH,
   PROTOCOL_VERSION,
@@ -16,6 +16,7 @@ import {
   HEARTBEAT_SECONDS,
   OPERATION_JOURNAL_LIMIT,
   OPERATION_START_GRACE_SECONDS,
+  type DeviceDetails,
   type DeviceDispatchEnvelope,
   type OperationError,
 } from "@abridge/protocol";
@@ -115,6 +116,8 @@ export class BrowserDeviceClient {
   private disposed = false;
   private ready?: Promise<void>;
   private closing?: Promise<void>;
+  private readonly details: DeviceDetails = {};
+  private detailsReady?: Promise<void>;
   constructor(options: BrowserDeviceClientOptions) {
     this.identity = options.navigator ?? globalThis.navigator ?? {};
     this.chrome = options.chrome;
@@ -137,11 +140,25 @@ export class BrowserDeviceClient {
     this.chrome.alarms.onAlarm.addListener(this.onAlarm);
     this.chrome.runtime.onStartup.addListener(this.onStartup);
     this.ready = this.initialize();
+    this.detailsReady = this.readDetails();
     void this.connect().catch(() => {});
     return this.ready;
   }
   private assertRunning(): void {
     if (this.disposed) throw fail("client_closed", "浏览器客户端已关闭");
+  }
+  private async readDetails(): Promise<void> {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        collectBrowserDetails(this.chrome.runtime, this.identity, this.details),
+        new Promise<void>((resolve) => {
+          deadline = this.timers.setTimeout(resolve, 350);
+        }),
+      ]);
+    } finally {
+      this.timers.clearTimeout(deadline);
+    }
   }
   private track<T>(task: Promise<T>): Promise<T> {
     this.operations.add(task);
@@ -517,6 +534,7 @@ export class BrowserDeviceClient {
   private async connect(): Promise<void> {
     if (this.disposed) return;
     await this.ready;
+    await this.detailsReady;
     await this.cleanup;
     if (this.disposed) return;
     if (this.cleanupError) throw this.cleanupError;
@@ -589,6 +607,7 @@ export class BrowserDeviceClient {
                 paused: !!this.profile.paused,
                 platform: browserPlatform(this.identity),
                 version: this.chrome.runtime.getManifest().version,
+                details: Object.keys(this.details).length ? this.details : undefined,
               }),
             );
           },

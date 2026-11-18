@@ -426,7 +426,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
   }
 });
 
-test("session_open includes the same device details as device_get and devices_list across platforms", async () => {
+test("session_open returns the same device summary as devices_list across platforms", async () => {
   const f = await fixture();
   try {
     const user = await f.store.createUser("owner", "test-password-long");
@@ -457,7 +457,7 @@ test("session_open includes the same device details as device_get and devices_li
         assert.equal(opened.value.device.platform, platform);
         const detail = await rpc(f.url, agentConnection.key, "device_get", { device_id: device.id });
         const listed = await rpc(f.url, agentConnection.key, "devices_list");
-        const stableDevice = (value: JsonObject) => ({
+        const stableDevice = (value: JsonObject): JsonObject => ({
           ...value,
           sessions: (value.sessions as JsonObject[]).map(({ server_time, ...session }) => {
             assert.equal(typeof server_time, "number");
@@ -465,7 +465,9 @@ test("session_open includes the same device details as device_get and devices_li
             return session;
           }),
         });
-        assert.deepEqual(stableDevice(opened.value.device), stableDevice(detail.value));
+        const { owner_name, ...deviceDetail } = stableDevice(detail.value);
+        assert.equal(owner_name, user.username);
+        assert.deepEqual(stableDevice(opened.value.device), deviceDetail);
         assert.deepEqual(listed.value.devices.map(stableDevice), [stableDevice(opened.value.device)]);
         await rpc(f.url, agentConnection.key, "session_close", { session_id: opened.value.id });
         const closed = once(socket, "close");

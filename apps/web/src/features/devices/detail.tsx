@@ -7,6 +7,7 @@ import type { Device, ManagementData, Mutate, RunAction } from "../../lib/types.
 import { ArrowLeft, ChevronRight, Square } from "lucide-preact";
 import { ActivityPage } from "../activity/page.js";
 import { connectionCapabilities } from "../connections/policy.js";
+import { browserLabel, systemLabel } from "./metadata.js";
 export function DevicePage({
   device,
   data,
@@ -30,7 +31,7 @@ export function DevicePage({
 }) {
   const [renaming, setRenaming] = useState(false);
   const activeSection = ["activity", "settings"].includes(section) ? section : "overview";
-  const platform = device ? platformName(device.platform) : "—";
+  const details = device?.details;
   return (
     <>
       <a class="device-back" href="#devices">
@@ -162,10 +163,33 @@ export function DevicePage({
                     <dt>设备类型</dt>
                     <dd>{device.kind === "browser" ? "浏览器" : "电脑"}</dd>
                   </div>
-                  <div>
-                    <dt>平台</dt>
-                    <dd>{platform}</dd>
-                  </div>
+                  {[
+                    [
+                      "操作系统",
+                      systemLabel(device) ??
+                        (device.kind === "computer" ? platformName(device.platform) : undefined),
+                    ],
+                    ["架构", details?.architecture],
+                    [
+                      "浏览器",
+                      device.kind === "browser"
+                        ? (browserLabel(device) ?? platformName(device.platform))
+                        : undefined,
+                    ],
+                    [device.kind === "browser" ? "扩展版本" : "客户端版本", device.version],
+                    ["主机名", details?.hostname],
+                    ["设备型号", details?.model],
+                    ["内核版本", details?.kernel_version],
+                    ["归属账户", device.owner_name],
+                    ["运行用户", details?.runtime_user],
+                  ].map(([label, value]) =>
+                    value ? (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value}</dd>
+                      </div>
+                    ) : null,
+                  )}
                   <div>
                     <dt>设备 ID</dt>
                     <dd>

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
-import { VERSION } from "@abridge/protocol";
+import { VERSION, deviceHelloSchema } from "@abridge/protocol";
 const exec = promisify(execFile);
 const binary = resolve(
   process.env.ABRIDGE_NATIVE_TEST_APP ?? "dist/desktop/aBridge.app",
@@ -240,6 +240,10 @@ test(
       const hello = f.frames.find((frame) => frame.type === "hello")!;
       assert.equal(hello.platform, "darwin");
       assert.equal(hello.version, VERSION);
+      const details = deviceHelloSchema.parse(hello).details!;
+      assert.equal(details.os, "macos");
+      assert.equal(details.architecture, "arm64");
+      assert.match(details.os_version ?? "", /^\d+\.\d+\.\d+$/);
       assert.deepEqual(hello.capabilities, {
         browser: false,
         files: true,

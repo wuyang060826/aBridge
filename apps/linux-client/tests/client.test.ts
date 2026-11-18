@@ -331,6 +331,14 @@ test(
       const listed = await f.rpc("devices_list");
       assert.ok(Array.isArray(listed.devices));
       const device = object(listed.devices[0]);
+      const summary = object(device.details);
+      assert.equal(summary.os, "linux");
+      assert.equal("runtime_user" in summary, false);
+      const full = await f.rpc("device_get", { device_id: device.id });
+      const details = object(full.details);
+      assert.equal(typeof details.hostname, "string");
+      assert.equal(typeof details.runtime_user, "string");
+      assert.equal(typeof details.architecture, "string");
       assert.equal(device.platform, "linux");
       assert.equal(device.version, VERSION);
       assert.deepEqual(object(device.available), {

@@ -60,7 +60,7 @@ export function DeviceSetupPage({
                 onClick={() => setKind(value)}
               >
                 <DeviceIcon kind={value} platform={value === "computer" ? "macos" : "chrome"} />
-                <span>{value === "computer" ? "Mac 电脑" : "浏览器"}</span>
+                <span>{value === "computer" ? "电脑" : "浏览器"}</span>
               </button>
             ))}
           </div>
@@ -142,7 +142,7 @@ export function DeviceSetupPage({
                   使用设备凭据手动绑定
                   <ChevronDown aria-hidden="true" />
                 </summary>
-                <p class="small muted">设备凭据仅用于客户端绑定。</p>
+                {kind === "computer" && <p class="small muted">Linux CLI 使用这里生成的设备凭据绑定。</p>}
                 {credential ? (
                   <>
                     <p class="secret-notice">仅显示一次，请保存到客户端。</p>

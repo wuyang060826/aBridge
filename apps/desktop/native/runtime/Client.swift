@@ -1,6 +1,32 @@
 import Foundation
 import Darwin
 
+private func systemDetails() -> JSONObject {
+    let info = ProcessInfo.processInfo
+    let version = info.operatingSystemVersion
+    var fields = [
+        "os": "macos",
+        "os_version": "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
+        "hostname": info.hostName,
+        "runtime_user": NSUserName(),
+    ]
+    #if arch(arm64)
+    fields["architecture"] = "arm64"
+    #elseif arch(x86_64)
+    fields["architecture"] = "x86_64"
+    #endif
+    var model = [CChar](repeating: 0, count: 129)
+    var size = model.count
+    if sysctlbyname("hw.model", &model, &size, nil, 0) == 0, size > 0, size <= model.count, model[size - 1] == 0 {
+        fields["model"] = model.withUnsafeBufferPointer { String(validatingCString: $0.baseAddress!) }
+    }
+    return fields.compactMapValues { value in
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.utf16.count <= 128, text.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        return .string(text)
+    }
+}
+
 /// Credentials never follow HTTP or WebSocket redirects to another endpoint.
 final class DeviceNetworkDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
@@ -112,7 +138,7 @@ actor DeviceClient {
         try await writeStatus(); ws.resume()
         do {
             let caps = await capabilities()
-            try await send(["type": .string("hello"), "protocol": .string(contract.protocolVersion), "platform": .string("darwin"), "version": .string(contract.version), "capabilities": .object(caps), "paused": .bool(config.paused)])
+            try await send(["type": .string("hello"), "protocol": .string(contract.protocolVersion), "platform": .string("darwin"), "version": .string(contract.version), "capabilities": .object(caps), "paused": .bool(config.paused), "details": .object(systemDetails())])
             let welcome = try contract.validate("welcome", try await next(ws, timeout: 10))
             epoch = welcome.number("connection_epoch")!; deviceId = welcome.string("device_id")!
             deviceName = welcome.string("device_name") ?? ""; owner = welcome.string("owner_name")!

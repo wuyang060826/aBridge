@@ -85,6 +85,34 @@ export type ConnectionPolicy = z.infer<typeof connectionPolicySchema>;
 
 export const deviceKindSchema = z.enum(["computer", "browser"]);
 
+const reportedText = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[^\p{Cc}]+$/u)
+  .optional();
+export const deviceSummaryDetailsSchema = z.object({
+  os: z.enum(["macos", "linux", "windows", "chromeos", "android", "openbsd", "fuchsia"]).optional(),
+  os_version: reportedText,
+  distribution: reportedText,
+  architecture: reportedText,
+  browser_name: reportedText,
+  browser_version: z
+    .string()
+    .regex(/^\d{1,8}$/)
+    .optional(),
+});
+export const deviceDetailsSchema = deviceSummaryDetailsSchema
+  .extend({
+    hostname: reportedText,
+    model: reportedText,
+    runtime_user: reportedText,
+    kernel_version: reportedText,
+  })
+  .strict();
+export type DeviceDetails = z.infer<typeof deviceDetailsSchema>;
+
 /** Last successfully reported client metadata; unknown values never imply an operating system. */
 export const deviceMetadataSchema = z.object({
   platform: z
@@ -99,6 +127,7 @@ export const deviceMetadataSchema = z.object({
     .max(30)
     .nullish()
     .transform((value) => value || null),
+  details: deviceDetailsSchema.optional(),
 });
 export type DeviceMetadata = z.infer<typeof deviceMetadataSchema>;
 export const operationStateSchema = z.enum([
