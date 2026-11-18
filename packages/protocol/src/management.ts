@@ -16,6 +16,7 @@ export type UserView = z.infer<typeof managementUserSchema>;
 export const deviceViewSchema = deviceMetadataSchema.extend({
   id: z.string(),
   name: z.string(),
+  owner_name: z.string().optional(),
   kind: deviceKindSchema,
   capabilities: z.array(capabilitySchema),
   status: z.enum(["online", "offline", "revoked"]),

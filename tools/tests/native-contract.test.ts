@@ -45,6 +45,8 @@ test(
       );
       for (const action of [
         { type: "click", x: 0, y: 1 },
+        { type: "click", x: 0, y: 1, delivery_mode: "foreground" },
+        { type: "click", x: 0, y: 1, delivery_mode: "automatic" },
         { type: "click", x: 1 },
         { type: "click", element_ref: "e1", x: 1, y: 2 },
         { type: "click", element_ref: "e1" },

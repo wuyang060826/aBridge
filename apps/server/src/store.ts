@@ -35,12 +35,12 @@ const SCHEMA = [
   "CREATE TABLE external_identities(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(issuer,subject));",
   "CREATE TABLE platform_connections(issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),PRIMARY KEY(issuer,subject,client_id),FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject));",
   "CREATE TABLE logins(digest TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at REAL NOT NULL);",
-  "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')),platform TEXT,version TEXT);",
+  "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')),platform TEXT,version TEXT,details TEXT);",
   "CREATE TABLE agent_connections(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
   "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
   "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),agent_connection_id TEXT NOT NULL REFERENCES agent_connections(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,key_hash TEXT UNIQUE,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
   "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,agent_connection_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=5;",
+  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=6;",
 ].join("\n");
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -55,7 +55,7 @@ export class Store {
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
     if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 5) {
+    else if (version !== 6) {
       this.db.close();
       throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
     }
@@ -95,6 +95,8 @@ export class Store {
     const result = { ...row };
     for (const key of ["capabilities", "policy"])
       if (typeof result[key] === "string") result[key] = JSON.parse(result[key]);
+    if (typeof result.details === "string") result.details = JSON.parse(result.details);
+    else if (result.details === null) delete result.details;
     return result;
   }
   users(): (User & { created_at: number })[] {
@@ -287,7 +289,7 @@ export class Store {
     const key = secretKey("device");
     this.transaction(() => {
       this.run(
-        "INSERT INTO devices VALUES(?,?,?,?,?,1,0,NULL,?,NULL,?,NULL,NULL)",
+        "INSERT INTO devices(id,owner_id,name,capabilities,token_digest,credential_version,epoch,created_at,kind) VALUES(?,?,?,?,?,1,0,?,?)",
         id,
         owner,
         name,
@@ -333,9 +335,10 @@ export class Store {
   }
   updateDeviceMetadata(id: string, credentialVersion: number, epoch: number, metadata: DeviceMetadata): void {
     this.run(
-      "UPDATE devices SET platform=?,version=? WHERE id=? AND credential_version=? AND epoch=? AND revoked_at IS NULL",
+      "UPDATE devices SET platform=?,version=?,details=? WHERE id=? AND credential_version=? AND epoch=? AND revoked_at IS NULL",
       metadata.platform,
       metadata.version,
+      metadata.details ? JSON.stringify(metadata.details) : null,
       id,
       credentialVersion,
       epoch,

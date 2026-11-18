@@ -1,10 +1,11 @@
-import { platformName, CapabilityIcon, DeviceIcon } from "../../components/icons.js";
+import { CapabilityIcon, DeviceIcon } from "../../components/icons.js";
 import { ActionButton } from "../../components/actions.js";
 import { capabilityLabels, stateLabels } from "../../lib/labels.js";
 import { Select } from "../../components/forms.js";
 import { useState } from "preact/hooks";
 import type { Device, Mutate, RunAction } from "../../lib/types.js";
 import { ChevronRight, Plus, Search, Square } from "lucide-preact";
+import { deviceSummary } from "./metadata.js";
 function DeviceStatus({ device }: { device: Device }) {
   return (
     <span class="device-state">
@@ -49,7 +50,9 @@ export function DevicesPage({
     (device) =>
       (kind === "all" || device.kind === kind) &&
       (status === "all" || (device.paused ? "paused" : device.status) === status) &&
-      `${device.name} ${platformName(device.platform)} ${device.id}`
+      [device.name, deviceSummary(device), device.details?.hostname, device.id]
+        .filter(Boolean)
+        .join(" ")
         .toLocaleLowerCase()
         .includes(query.trim().toLocaleLowerCase()),
   );
@@ -113,7 +116,7 @@ export function DevicesPage({
                 <a class="device-card-link" href={`#devices/${encodeURIComponent(device.id)}`}>
                   {device.name}
                 </a>
-                <span class="small muted">{platformName(device.platform)}</span>
+                <span class="small muted">{deviceSummary(device)}</span>
               </div>
               <div class="device-card-footer">
                 <DeviceCapabilities device={device} />
@@ -145,7 +148,7 @@ export function DevicesPage({
               <button onClick={addDevice}>
                 <DeviceIcon kind="computer" />
                 <span>
-                  添加电脑<span class="small muted">macOS 客户端</span>
+                  添加电脑<span class="small muted">macOS 或 Linux</span>
                 </span>
                 <ChevronRight aria-hidden="true" />
               </button>

@@ -278,7 +278,16 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
         capabilities: ["shell", "files", "screen"],
       }),
       session = opened.value.id;
-    for (const env of [{ "BAD=KEY": "value" }, { ["BAD\0KEY"]: "value" }, { VALID: "bad\0value" }]) {
+    for (const [tool, args] of [
+      ["command_execute", { command: "echo hello", env: { "BAD=KEY": "value" } }],
+      ["command_execute", { command: "echo hello", env: { ["BAD\0KEY"]: "value" } }],
+      ["command_execute", { command: "echo hello", env: { VALID: "bad\0value" } }],
+      ["command_execute", { command: "echo \uD800" }],
+      ["command_execute", { command: "echo hello", cwd: "/tmp/\uD800" }],
+      ["command_execute", { command: "echo hello", env: { "\uD800": "value" } }],
+      ["command_execute", { command: "echo hello", env: { VALID: "\uD800" } }],
+      ["file_read", { path: "/tmp/\uD800" }],
+    ] as const) {
       const rejected = await fetch(f.url + "/mcp", {
         method: "POST",
         headers: {
@@ -290,12 +299,12 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
           jsonrpc: "2.0",
           id: 3,
           method: "tools/call",
-          params: { name: "command_execute", arguments: { session_id: session, command: "echo hello", env } },
+          params: { name: tool, arguments: { session_id: session, ...args } },
         }),
       });
       assert.equal(rejected.status, 200);
       assert.equal(((await rejected.json()) as { result: { isError?: boolean } }).result.isError, true);
-      assert.equal(dispatches, 0, "Invalid environment names/values must never reach the device");
+      assert.equal(dispatches, 0, "Invalid command and file arguments must never reach the device");
     }
     const command = await rpc(f.url, agentConnection.key, "command_execute", {
       session_id: session,
@@ -426,7 +435,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
   }
 });
 
-test("session_open includes the same device details as device_get and devices_list across platforms", async () => {
+test("session_open returns the same device summary as devices_list across platforms", async () => {
   const f = await fixture();
   try {
     const user = await f.store.createUser("owner", "test-password-long");
@@ -457,7 +466,7 @@ test("session_open includes the same device details as device_get and devices_li
         assert.equal(opened.value.device.platform, platform);
         const detail = await rpc(f.url, agentConnection.key, "device_get", { device_id: device.id });
         const listed = await rpc(f.url, agentConnection.key, "devices_list");
-        const stableDevice = (value: JsonObject) => ({
+        const stableDevice = (value: JsonObject): JsonObject => ({
           ...value,
           sessions: (value.sessions as JsonObject[]).map(({ server_time, ...session }) => {
             assert.equal(typeof server_time, "number");
@@ -465,7 +474,9 @@ test("session_open includes the same device details as device_get and devices_li
             return session;
           }),
         });
-        assert.deepEqual(stableDevice(opened.value.device), stableDevice(detail.value));
+        const { owner_name, ...deviceDetail } = stableDevice(detail.value);
+        assert.equal(owner_name, user.username);
+        assert.deepEqual(stableDevice(opened.value.device), deviceDetail);
         assert.deepEqual(listed.value.devices.map(stableDevice), [stableDevice(opened.value.device)]);
         await rpc(f.url, agentConnection.key, "session_close", { session_id: opened.value.id });
         const closed = once(socket, "close");
@@ -594,6 +605,38 @@ test("pagination uses Unicode code points and native images never duplicate base
   const text = response.content[0]!;
   assert.equal(text.type, "text");
   assert.ok(!text.text.includes("aGk="));
+});
+
+test("desktop MCP response puts action context before the element list", () => {
+  const observation = {
+    elements: [{ label: "A".repeat(7000) }],
+    observation_id: "obs_Fixture1",
+    available_actions: ["element_click"],
+    hint: "Refresh this window",
+    image_base64: "aGk=",
+  };
+  for (const result of [observation, { observation, effect: "unverifiable" }]) {
+    const response = contentResponse({ result, status: "executed", operation_id: "op_Fixture1" });
+    const text = response.content[0]!;
+    assert.equal(text.type, "text");
+    assert.deepEqual(
+      response.content.map((block) => block.type),
+      ["text", "image"],
+    );
+    const prefix = text.text.split('"elements"')[0]!;
+    for (const key of ["operation_id", "observation_id", "available_actions", "hint"])
+      assert.ok(prefix.includes(`"${key}"`), key);
+  }
+  const failure = contentResponse(
+    {
+      result: { elements: observation.elements },
+      error: { code: "focus_changed", hint: "Refresh this window" },
+    },
+    true,
+  );
+  const first = failure.content[0]!;
+  assert.equal(first.type, "text");
+  assert.ok(first.text.split('"elements"')[0]!.includes('"hint"'));
 });
 
 test("bounded transport terminates a non-draining socket", async () => {

@@ -273,6 +273,85 @@ test("Chrome-compatible browser identity is reported on connection and worker re
   assert.equal(restored.messages.find((m) => m.type === "hello").platform, "chrome");
 });
 
+test("browser hello reports the browser separately from the host OS and extension version", async (t) => {
+  const h = harness(
+    t,
+    { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
+    {},
+    {
+      navigator: {
+        userAgent: "Chrome/151.0.0.0 Edg/151.0.1.0",
+        userAgentData: {
+          brands: [
+            { brand: "Chromium", version: "151" },
+            { brand: "Microsoft Edge", version: "151" },
+          ],
+          async getHighEntropyValues() {
+            return { platformVersion: "27.0.1" };
+          },
+        },
+      },
+    },
+  );
+  h.chrome.runtime.getPlatformInfo = async () => ({ os: "mac", arch: "arm64" });
+  await h.start();
+  await delay(10);
+  assert.deepEqual(h.messages.find((message) => message.type === "hello").details, {
+    os: "macos",
+    os_version: "27.0.1",
+    architecture: "arm64",
+    browser_name: "Microsoft Edge",
+    browser_version: "151",
+  });
+});
+
+test("a Chromium brand remains Chromium when its UA contains a Chrome token", async (t) => {
+  const h = harness(
+    t,
+    { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
+    {},
+    {
+      navigator: {
+        userAgent: "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36",
+        userAgentData: { brands: [{ brand: "Chromium", version: "151" }] },
+      },
+    },
+  );
+  await h.start();
+  await delay(10);
+  const hello = h.messages.find((message) => message.type === "hello");
+  assert.equal(hello.platform, "Browser extension");
+  assert.deepEqual(hello.details, { browser_name: "Chromium", browser_version: "151" });
+});
+
+test("a slow browser version probe keeps the known device details in the hello", async (t) => {
+  const h = harness(
+    t,
+    { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
+    {},
+    {
+      navigator: {
+        userAgentData: {
+          brands: [{ brand: "Google Chrome", version: "151" }],
+          getHighEntropyValues() {
+            return new Promise(() => {});
+          },
+        },
+      },
+    },
+  );
+  h.chrome.runtime.getPlatformInfo = async () => ({ os: "mac", arch: "arm64" });
+  await h.start();
+  for (let attempt = 0; attempt < 100 && !h.messages.some((message) => message.type === "hello"); attempt++)
+    await delay(10);
+  assert.deepEqual(h.messages.find((message) => message.type === "hello").details, {
+    os: "macos",
+    architecture: "arm64",
+    browser_name: "Google Chrome",
+    browser_version: "151",
+  });
+});
+
 test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
   let authorizationRequest;
   const local = {},

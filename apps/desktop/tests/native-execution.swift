@@ -7,13 +7,14 @@ actor FixtureDriver: DesktopNativeDriver {
     var actions: [JSONObject] = [], targets: [JSONObject] = [], released: [String] = []
     var captures = 0, appQueries = 0, windowQueries = 0
     var frameValid = true, failObservation = false, failAction = false, failApps = false, failWindows = false
-    var moveDuringCapture = false, windowDelay: UInt64 = 0
+    var moveDuringCapture = false, focusReported = true, keyboardAvailable = true, windowDelay: UInt64 = 0
     func configure(_ key: String, _ value: Bool = true) {
         switch key {
         case "noApps": if value { applicationList = [] }
         case "ambiguousApps": applicationList.append(applicationList[0])
         case "ambiguousWindows": var extra = windowList[0]; extra["window_id"] = .number(21); windowList.append(extra)
-        case "missingZ": windowList[0].removeValue(forKey: "z_index")
+        case "missingFocusProof": focusReported = !value
+        case "keyboardUnavailable": keyboardAvailable = !value
         case "layer": windowList[0]["layer"] = .number(1)
         case "move": windowList[0]["window_id"] = .number(21)
         case "emptyWindows": windowList = []
@@ -32,12 +33,21 @@ actor FixtureDriver: DesktopNativeDriver {
     func diagnostics(initialize: Bool) async -> JSONObject { [:] }
     func apps() async throws -> [JSONObject] { appQueries += 1; if failApps { throw DesktopError(code: "fixture", message: "fixture") }; return applicationList }
     func windows(pid: Double?) async throws -> [JSONObject] { windowQueries += 1; if windowDelay > 0 { try await Task.sleep(nanoseconds: windowDelay) }; if failWindows { throw DesktopError(code: "fixture", message: "fixture") }; return windowList }
+    func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? {
+        guard candidates.count == 1, focusReported else { return nil }
+        return candidates[0].number("window_id")
+    }
     func open(bundleID: String) async throws {}
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
         captures += 1; targets.append(target)
         if failObservation { throw DesktopError(code: "fixture", message: "fixture") }
         if moveDuringCapture { windowList[0]["window_id"] = .number(21) }
-        var raw: JSONObject = ["elements": .array([.object(["token": .string("private-native-token"), "role": .string("AXButton"), "label": .string("Continue"), "depth": .number(1)]), .object(["token": .string("private-password-token"), "role": .string("AXSecureTextField"), "label": .string("Password"), "value": .string("protected-value"), "depth": .number(1)])]), "width": .number(100), "height": .number(80), "frame_valid": .bool(frameValid), "capture_id": .string("fixture-capture")]
+        var raw: JSONObject = ["elements": .array([.object(["token": .string("private-native-token"), "role": .string("AXButton"), "label": .string("Continue"), "depth": .number(1), "actions": .array([.string("AXPress")])]), .object(["token": .string("private-text-token"), "role": .string("AXStaticText"), "label": .string("Read only")]), .object(["token": .string("private-password-token"), "role": .string("AXSecureTextField"), "label": .string("Password"), "value": .string("protected-value"), "depth": .number(1)])]), "width": .number(100), "height": .number(80), "window_bounds": windowList.first?["bounds"] ?? .null, "frame_valid": .bool(frameValid), "capture_id": .string("fixture-capture")]
+        raw["background_input"] = .object(["routes": .array(
+            ["accessibility", "window_pointer", "pid_keyboard"].map { route in
+                .object(["route": .string(route), "status": .string(route == "pid_keyboard" && !keyboardAvailable ? "refused" : "available")])
+            }
+        )])
         if screenshot { raw["image_base64"] = .string(Data("fixture-image".utf8).base64EncodedString()); raw["mime_type"] = .string("image/png") }
         return raw
     }
@@ -102,8 +112,10 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         let (typeTool, typeWire) = try NativeDriver.actionRequest(session: "wire", action: shared.merging(["action": .string("type"), "text": .string("fixture")]) { _, new in new })
         check(typeTool == "type_text" && Set(typeWire.keys) == ["session", "target", "element_token", "text"], "Element typing only sends its tool fields")
         let (_, clickWire) = try NativeDriver.actionRequest(session: "wire", action: shared.merging(["action": .string("double_click")]) { _, new in new })
-        check(clickWire.string("delivery_mode") == "foreground" && clickWire.number("count") == 2 && clickWire.array("modifier") == [.string("cmd")], "Modified clicks request foreground delivery")
-        for fault in ["noApps", "ambiguousApps", "ambiguousWindows", "missingZ", "layer", "failApps", "failWindows", "moveDuringCapture"] {
+        check(clickWire.string("delivery_mode") == "background" && clickWire.number("count") == 2 && clickWire["capture_id"] == nil, "Element clicks never send capture_id or implicitly use foreground")
+        let (_, pixelWire) = try NativeDriver.actionRequest(session: "wire", action: shared.filter { $0.key != "native_ref" }.merging(["action": .string("click"), "x": .number(3), "y": .number(4)]) { _, new in new })
+        check(pixelWire.string("delivery_mode") == "background" && pixelWire.string("capture_id") == "fixture-capture", "Window pixel clicks default to background and carry the capture")
+        for fault in ["noApps", "ambiguousApps", "ambiguousWindows", "missingFocusProof", "layer", "failApps", "failWindows", "moveDuringCapture"] {
             let driver = FixtureDriver(); await driver.configure(fault)
             let computer = NativeComputer(native: driver)
             let observed = try await computer.execute(session: "focus", tool: "computer_observe", arguments: ["desktop": .bool(true)])
@@ -131,16 +143,19 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         let driver = FixtureDriver(), clock = TestClock()
         let computer = NativeComputer(native: driver, now: { clock.read() })
         await driver.configure("failApps")
+        await driver.configure("keyboardUnavailable")
         let observed = try await computer.execute(session: "window", tool: "computer_observe", arguments: ["pid": .number(10), "window_id": .number(20)])
         let encoded = String(decoding: try observed.encoded(), as: UTF8.self)
         check(!encoded.contains("protected-value") && !encoded.contains("private-native-token"), "No protected values or SDK tokens escape")
         check(observed.string("observation_id")?.count == 12, "Shared observation reference format")
         try await refusal("invalid_reference") { try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, ["type": .string("click"), "element_ref": .string("e999")])) }
         try await refusal("invalid_arguments") { try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, ["type": .string("click"), "x": .number(100), "y": .number(2)])) }
-        let click: JSONObject = ["type": .string("click"), "element_ref": .string("e1"), "modifiers": .array([.string("command"), .string("alt")])]
+        check(observed.array("available_actions")?.contains(.string("element_click")) == true && observed.array("elements")?[1].object?["element_ref"] == nil, "Advertise supported actions without turning static text into an action")
+        check(observed.array("available_actions")?.contains(.string("key")) == false, "Do not advertise ambiguous background keyboard input")
+        let click: JSONObject = ["type": .string("click"), "element_ref": .string("e1")]
         _ = try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, click))
         let delivered = await driver.lastAction()
-        check(delivered.string("native_ref") == "private-native-token" && delivered.array("modifiers") == [.string("cmd"), .string("option")], "Resolve reference and modifier aliases")
+        check(delivered.string("native_ref") == "private-native-token" && delivered["capture_id"] == nil, "Resolve reference without capture_id")
         try await refusal("stale_observation") { try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, click)) }
         let another = try await computer.execute(session: "window", tool: "computer_observe", arguments: [:])
         clock.advance()
@@ -154,7 +169,33 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         await driver.configure("failAction", false)
         await computer.closeSession("window")
         try await refusal("session_closed") { try await computer.execute(session: "window", tool: "computer_observe", arguments: ["pid": .number(10)]) }
-        try await windowTests(); try await waitTests()
+        try await foregroundTests(); try await windowTests(); try await waitTests()
+    }
+    static func foregroundTests() async throws {
+        let window: JSONObject = ["pid": .number(10), "window_id": .number(20)]
+        let point: JSONObject = ["type": .string("click"), "x": .number(10), "y": .number(30)]
+        let foreground = point.merging(["delivery_mode": .string("foreground"), "modifiers": .array([.string("command")])]) { _, new in new }
+        for fault in ["noApps", "moveDuringCapture", "move"] {
+            let driver = FixtureDriver()
+            let computer = NativeComputer(native: driver)
+            if fault != "move" { await driver.configure(fault) }
+            let observation = try await computer.execute(session: "fg", tool: "computer_observe", arguments: window)
+            if fault == "move" { await driver.configure(fault) }
+            try await refusal(fault == "move" ? "focus_changed" : "focus_unavailable") {
+                try await computer.execute(session: "fg", tool: "computer_act", arguments: actArgs(observation, foreground))
+            }
+            check(await driver.counts().0 == 0, "Unverified foreground click never dispatches")
+        }
+        let driver = FixtureDriver()
+        let computer = NativeComputer(native: driver)
+        let observation = try await computer.execute(session: "fg", tool: "computer_observe", arguments: window)
+        check(observation.array("available_actions")?.contains(.string("pixel_click_foreground")) == true, "Focused screenshot advertises foreground click")
+        try await refusal("foreground_required") {
+            try await computer.execute(session: "fg", tool: "computer_act", arguments: actArgs(observation, foreground.filter { $0.key != "delivery_mode" }))
+        }
+        _ = try await computer.execute(session: "fg", tool: "computer_act", arguments: actArgs(observation, foreground))
+        let delivered = await driver.lastAction()
+        check(delivered.string("delivery_mode") == "foreground" && delivered.array("modifiers") == [.string("cmd")] && delivered.string("capture_id") == "fixture-capture", "Explicit foreground preserves capture and modifier identity")
     }
     static func windowTests() async throws {
         let driver = FixtureDriver()
@@ -167,7 +208,7 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         _ = try await targetComputer.execute(session: "single", tool: "computer_observe", arguments: [:])
         check(await driver.lastTarget().number("window_id") == 20, "Failed selection preserves complete prior target")
         let count = await driver.counts().3
-        _ = try await targetComputer.execute(session: "explicit", tool: "computer_observe", arguments: ["pid": .number(10), "window_id": .number(21)])
+        _ = try await targetComputer.execute(session: "explicit", tool: "computer_observe", arguments: ["pid": .number(10), "window_id": .number(21), "screenshot": .bool(false)])
         check(await driver.counts().3 == count, "Explicit target bypasses enumeration")
         await driver.configure("emptyWindows")
         try await refusal("window_unavailable") { try await targetComputer.execute(session: "empty", tool: "computer_observe", arguments: ["pid": .number(10)]) }

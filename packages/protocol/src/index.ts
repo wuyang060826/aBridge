@@ -237,6 +237,12 @@ const clickSchema = portable(
       y: coordinateSchema.optional(),
       button: z.enum(["left", "right", "middle"]).default("left"),
       modifiers: z.array(modifierSchema).default([]),
+      delivery_mode: z
+        .enum(["background", "foreground"])
+        .default("background")
+        .describe(
+          "Use background for element references or window screenshot clicks. Foreground requires screenshot coordinates and verified focus. Modified clicks require foreground.",
+        ),
     })
     .strict(),
   [
@@ -296,6 +302,7 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 // Operation diagnostics stay bounded across clients, server and script receipts.
 const operationErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
 export const operationErrorSchema = operationErrorDetailSchema.extend({
+  hint: z.string().max(240).optional(),
   cause: operationErrorDetailSchema.optional(),
   connection: connectionLossSchema.optional(),
   cleanup_error: operationErrorDetailSchema.optional(),
@@ -500,17 +507,32 @@ export const browserActSchema = z
   })
   .strict()
   .refine(screenshotRequiresObservation, "Screenshot requires observe_after=true");
-const filePathSchema = portable(z.string().min(1).max(4096), ["noNul"], "Path contains NUL");
+const filePathSchema = portable(
+  z.string().min(1).max(4096),
+  ["and", ["noNul"], ["unicode"]],
+  "Path must be well-formed Unicode without NUL",
+);
 export const commandExecuteSchema = z
   .object({
     command: portable(
       z.string().min(1).max(65536),
-      ["and", ["noNul"], ["nonblank"]],
-      "Command must be nonblank and NUL-free",
+      ["and", ["noNul"], ["nonblank"], ["unicode"]],
+      "Command must be nonblank, well-formed Unicode without NUL",
     ),
     cwd: filePathSchema.optional(),
     env: z
-      .record(z.string().regex(/^[^=\u0000]+$/), portable(z.string(), ["noNul"], "Environment contains NUL"))
+      .record(
+        portable(
+          z.string().regex(/^[^=\u0000]+$/),
+          ["unicode"],
+          "Environment names must be well-formed Unicode",
+        ),
+        portable(
+          z.string(),
+          ["and", ["noNul"], ["unicode"]],
+          "Environment values must be well-formed Unicode without NUL",
+        ),
+      )
       .optional(),
     timeout: z.number().finite().min(1).max(120).default(30),
   })

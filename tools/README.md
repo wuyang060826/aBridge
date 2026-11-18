@@ -37,6 +37,14 @@
 
 构建与安装参数见 [部署说明](../docs/deployment.md)。这些脚本在准备产品时执行，安装完成后的 App 使用包内 Swift 程序和 Cua dylib。
 
+## Linux 原生客户端
+
+[linux-client.ts](linux-client.ts) 提供 `linux:build`、`linux:check`、`package:linux`。它从协议包的原生导出选择 Linux 使用的消息与 Shell/File 参数 schema，在构建时嵌入 Rust 客户端；版本仍由根 `package.json` 决定。`linux:check` 检查 Rust 格式、单元测试与 Clippy，并构建当前源码执行真实 Server 联调和跨语言契约测试；调用 Cargo 时锁定依赖。
+
+构建产物为 `dist/linux-client/<target>/abridge-client`。Linux 打包要求 ELF 文件，生成确定性 tar.gz、依赖许可证、SHA-256 和体积报告，并限制二进制 ≤15 MiB、压缩包 ≤5 MiB。正式 CI 使用 musl 静态目标，核验产物没有 ELF 动态解释器和动态库依赖。macOS 本机构建只用于开发验证，不能冒充 Linux 分发。
+
+[Linux 工作流](../.github/workflows/linux-client.yml) 在 amd64/arm64 原生 Ubuntu runner 上验证 Rust、Server 协议集成、包内可执行文件和真实用户级 systemd 安装、暂停持久化、重启与卸载。实际服务验收只使用虚构 Token、自有回环 fixture 和临时状态目录。工具链与安装说明见 [Linux 客户端](../apps/linux-client/README.md)。
+
 ## 按需品牌资源生成
 
 | 文件                                         | 用途                                 | 入口                         |

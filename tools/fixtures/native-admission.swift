@@ -27,6 +27,7 @@ actor AdmissionDriver: DesktopNativeDriver {
         return []
     }
     func windows(pid: Double?) async throws -> [JSONObject] { [] }
+    func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? { nil }
     func open(bundleID: String) async throws { throw DesktopError(code: "fixture_forbidden", message: "No real applications in fixture") }
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject { throw DesktopError(code: "fixture_forbidden", message: "No real desktop in fixture") }
     func act(session: String, action: JSONObject) async throws -> JSONObject { throw DesktopError(code: "fixture_forbidden", message: "No real input in fixture") }

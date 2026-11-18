@@ -29,7 +29,10 @@
     "benchmark:report": "node --import tsx tools/bench-report.ts",
     "benchmark:report:check": "node --import tsx tools/bench-report.ts --check",
     "benchmark:smoke": "npm run build && node --import tsx tools/bench/run.ts",
-    "test:browser:reliability:live": "npm run build && node --import tsx tools/browser-reliability-live.ts"
+    "test:browser:reliability:live": "npm run build && node --import tsx tools/browser-reliability-live.ts",
+    "linux:build": "node --import tsx tools/linux-client.ts build",
+    "linux:check": "node --import tsx tools/linux-client.ts check",
+    "package:linux": "node --import tsx tools/linux-client.ts package"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
@@ -43,7 +46,7 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2"
   },
-  "version": "0.4.17",
+  "version": "0.4.18",
   "type": "module",
   "workspaces": [
     "apps/*",

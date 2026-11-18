@@ -46,10 +46,35 @@ interface ImageContent {
   data: string;
   mimeType: string;
 }
+function prioritize(container: JsonObject, keys: readonly string[]): JsonObject {
+  const ordered: JsonObject = {};
+  for (const key of keys) {
+    if (Object.hasOwn(container, key)) ordered[key] = container[key];
+  }
+  return { ...ordered, ...container };
+}
+
+const desktopObservationFields = [
+  "observation_id",
+  "available_actions",
+  "hint",
+  "window",
+  "app_name",
+  "window_title",
+  "desktop",
+  "focus_status",
+  "pixel_actions",
+  "coordinate_space",
+  "geometry",
+] as const;
+
 /** Native MCP images are separate content blocks, never duplicated in JSON text. */
-export function contentResponse(value: unknown): { content: (TextContent | ImageContent)[] } {
-  const copy = structuredClone(value),
-    images: ImageContent[] = [];
+export function contentResponse(
+  value: unknown,
+  desktop = false,
+): { content: (TextContent | ImageContent)[] } {
+  let copy = structuredClone(value);
+  const images: ImageContent[] = [];
   const extract = (container: JsonObject): void => {
     if (typeof container.image_base64 !== "string") return;
     const data = container.image_base64;
@@ -65,6 +90,24 @@ export function contentResponse(value: unknown): { content: (TextContent | Image
   if (object(copy) && object(copy.result)) {
     extract(copy.result);
     if (object(copy.result.observation)) extract(copy.result.observation);
+    desktop ||=
+      Array.isArray(copy.result.available_actions) ||
+      (object(copy.result.observation) && Array.isArray(copy.result.observation.available_actions));
+  }
+  if (desktop && object(copy)) {
+    if (object(copy.result)) {
+      if (object(copy.result.observation))
+        copy.result.observation = prioritize(copy.result.observation, desktopObservationFields);
+      copy.result = prioritize(copy.result, [
+        ...desktopObservationFields,
+        "observation_error",
+        "effect",
+        "delivery",
+        "observation",
+      ]);
+    }
+    if (object(copy.error)) copy.error = prioritize(copy.error, ["code", "hint", "message"]);
+    copy = prioritize(copy, ["status", "error", "operation_id", "result"]);
   }
   return { content: [{ type: "text", text: JSON.stringify(copy) }, ...images] };
 }
@@ -78,6 +121,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     schema: z.ZodObject<S>,
     run: (args: z.infer<z.ZodObject<S>>) => Promise<unknown> | unknown,
   ): void {
+    const desktop = name.startsWith("computer_");
     server.registerTool(
       name,
       { description: "aBridge: " + description, inputSchema: z.object(schema.shape).strict() },
@@ -89,7 +133,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
           if (!parsed.success)
             throw new BridgeError("invalid_arguments", parsed.error.issues[0]!.message, 422);
           const value = await run(parsed.data),
-            response = contentResponse(value);
+            response = contentResponse(value, desktop);
           if (
             object(value) &&
             (value.status === "failed" || value.status === "refused" || value.status === "outcome_unknown")
@@ -99,7 +143,10 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
         } catch (error) {
           if (error instanceof BridgeError)
             return {
-              ...contentResponse({ error: { code: error.code, message: error.message, ...error.details } }),
+              ...contentResponse(
+                { error: { code: error.code, message: error.message, ...error.details } },
+                desktop,
+              ),
               isError: true,
             };
           throw error;
@@ -125,9 +172,9 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "device_get",
-    "Read one granted device and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
+    "Read one granted device, its reported system details, and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
     z.object({ device_id: id }).strict(),
-    (a) => control.deviceView(control.authorizedDevice(agentConnection, a.device_id), agentConnection),
+    (a) => control.deviceView(control.authorizedDevice(agentConnection, a.device_id), agentConnection, true),
   );
   register(
     "session_open",
@@ -171,13 +218,13 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "computer_observe",
-    "Observe the selected window with native image by default. Pass pid alone to observe its only window; multiple windows return window_selection_required and no windows return window_unavailable. Use computer_windows(pid=...) then pass both pid and window_id to select a specific window. Omit both to reuse the session's selected window. Observation references last 120s until an action. desktop=true selects the whole desktop; capture does not require verified focus. Desktop results include focus_status (confirmed or unconfirmed). Unavailable or changing focus returns the observation with focus_status=unconfirmed and pixel_actions=false; desktop actions then refuse with focus_unavailable. Observe again once focus is verifiable, or use computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true.",
+    "Observe the selected window with a screenshot. Reuse the session target by omitting pid and window_id. To select a window, pass pid for an app with one window or use computer_windows and pass pid and window_id. Read observation_id, available_actions, and hint first. References expire after 120 seconds or an action. Use desktop=true only for an explicit whole-desktop task; without confirmed focus it returns a read-only observation.",
     computerObserveSchema.safeExtend(base),
     (a) => exec("computer_observe", a),
   );
   register(
     "computer_act",
-    "Act once on a current desktop observation. Whole-desktop actions require focus_status=confirmed and recheck current focus before input: unavailable focus returns focus_unavailable and changed focus returns focus_changed. Observe again or select a window via computer_windows. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
+    "Act once using the current observation_id. Prefer a supported element_ref action. Window screenshot clicks default to background. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, with screenshot=true on the action for visual follow-up. wait_after_ms defaults to 2000.",
     computerActSchema.safeExtend(base),
     (a) => exec("computer_act", a),
   );
