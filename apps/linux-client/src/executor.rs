@@ -89,7 +89,7 @@ fn expand(path: &str) -> Result<PathBuf, ExecError> {
     let path = if path == "~" {
         home()?
     } else if let Some(rest) = path.strip_prefix("~/") {
-        home()?.join(rest)
+        home()?.join(rest.trim_start_matches('/'))
     } else {
         PathBuf::from(path)
     };
@@ -515,6 +515,16 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tilde_with_repeated_separator_stays_under_home() {
+        if let Ok(home) = home() {
+            assert_eq!(
+                expand("~//abridge-fixture").unwrap(),
+                home.join("abridge-fixture")
+            );
+        }
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 

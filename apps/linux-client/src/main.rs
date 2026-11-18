@@ -9,7 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
+    fs::OpenOptions,
     io::{self, BufRead, IsTerminal, Read, Write},
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -55,39 +57,53 @@ fn bounded_stdin(max: usize) -> Result<Vec<u8>> {
     ensure!(bytes.len() <= max, "Input too large");
     Ok(bytes)
 }
-fn hidden_token() -> Result<String> {
+async fn hidden_token() -> Result<String> {
     eprint!("Device Token: ");
     io::stderr().flush()?;
     if !io::stdin().is_terminal() {
         let bytes = bounded_stdin(4097)?;
         return Ok(String::from_utf8(bytes)?.trim().to_owned());
     }
-    struct Echo(libc::termios);
+    let terminal = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open("/dev/stdin")?;
+    // AsyncFd owns the nonblocking file and deregisters it before closing it.
+    let terminal = unsafe {
+        tokio::io::unix::AsyncFd::register_with_interest(terminal, tokio::io::Interest::READABLE)
+    }?;
+    let fd = terminal.get_ref().as_raw_fd();
+    struct Echo(libc::c_int, libc::termios);
     impl Drop for Echo {
         fn drop(&mut self) {
             unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0);
+                libc::tcsetattr(self.0, libc::TCSANOW, &self.1);
             }
         }
     }
     let mut old = std::mem::MaybeUninit::<libc::termios>::uninit();
     ensure!(
-        unsafe { libc::tcgetattr(libc::STDIN_FILENO, old.as_mut_ptr()) } == 0,
+        unsafe { libc::tcgetattr(fd, old.as_mut_ptr()) } == 0,
         "Cannot disable terminal echo"
     );
     let old = unsafe { old.assume_init() };
-    let _restore = Echo(old);
+    let _restore = Echo(fd, old);
     let mut settings = old;
     settings.c_lflag &= !libc::ECHO;
     ensure!(
-        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &settings) } == 0,
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &settings) } == 0,
         "Cannot disable terminal echo"
     );
-    let mut value = String::new();
-    io::stdin().lock().take(4098).read_line(&mut value)?;
+    let mut value = [0; 4098];
+    let length = loop {
+        let mut ready = terminal.readable().await?;
+        if let Ok(result) = ready.try_io(|fd| fd.get_ref().read(&mut value)) {
+            break result?;
+        }
+    };
     eprintln!();
-    ensure!(value.len() <= 4097, "Device Token too long");
-    Ok(value.trim().to_owned())
+    ensure!(length <= 4097, "Device Token too long");
+    Ok(std::str::from_utf8(&value[..length])?.trim().to_owned())
 }
 fn parse_server(value: &str) -> Result<url::Url> {
     let url = url::Url::parse(value.trim()).context("Provide a complete HTTP(S) Server URL")?;
@@ -264,9 +280,11 @@ async fn main_inner() -> Result<()> {
     args.remove(0);
     match command.as_str() {
         "setup" => {
-            let input = if take_flag(&mut args, "--stdin") {
+            if take_flag(&mut args, "--stdin") {
                 ensure!(args.is_empty(), "Unexpected setup arguments");
-                serde_json::from_slice(&bounded_stdin(65536)?).context("Invalid setup input")?
+                let input = serde_json::from_slice(&bounded_stdin(65536)?)
+                    .context("Invalid setup input")?;
+                setup(&dir, input).await?;
             } else {
                 let url = take_option(&mut args, "--url")?.context("setup requires --url")?;
                 let mut http_confirmed_origin = take_option(&mut args, "--http-confirmed-origin")?;
@@ -278,14 +296,40 @@ async fn main_inner() -> Result<()> {
                     }
                 }
                 normalize_server(&url, http_confirmed_origin.as_deref())?;
-                BindingInput {
-                    url,
-                    device_key: hidden_token()?,
-                    http_confirmed_origin,
-                    capabilities: None,
+                let bind = async {
+                    let input = BindingInput {
+                        url,
+                        device_key: hidden_token().await?,
+                        http_confirmed_origin,
+                        capabilities: None,
+                    };
+                    setup(&dir, input).await
+                };
+                if io::stdin().is_terminal() {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut interrupt = signal(SignalKind::interrupt())?;
+                    let mut terminate = signal(SignalKind::terminate())?;
+                    let mut hangup = signal(SignalKind::hangup())?;
+                    let mut quit = signal(SignalKind::quit())?;
+                    let mut suspend = signal(SignalKind::from_raw(libc::SIGTSTP))?;
+                    // Dropping the pending read restores the tty before setup exits.
+                    let cancelled = tokio::select! {
+                        biased;
+                        _ = interrupt.recv() => true,
+                        _ = terminate.recv() => true,
+                        _ = hangup.recv() => true,
+                        _ = quit.recv() => true,
+                        _ = suspend.recv() => true,
+                        result = bind => { result?; false }
+                    };
+                    if cancelled {
+                        eprintln!();
+                        bail!("Setup cancelled");
+                    }
+                } else {
+                    bind.await?;
                 }
-            };
-            setup(&dir, input).await?;
+            }
         }
         "run" => {
             ensure!(args.is_empty(), "Unexpected run arguments");
