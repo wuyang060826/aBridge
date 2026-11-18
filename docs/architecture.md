@@ -94,6 +94,12 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 引用动作先验证观察引用，locator 动作先解析唯一 DOM 目标；二者共享输入执行函数，均核对任务页、文档版本和目标可用性。locator 不创建临时观察，也不通过替换观察状态来获得输入权限。输入准备可能滚动或聚焦，因此准备开始后的失败仍需按未知副作用处理。
 
+## Windows 客户端
+
+Windows PC 客户端位于 `apps/windows/`，使用独立 TypeScript 运行时与 WPF 托盘壳，直接连接 Server。`windows-native.ts`、`windows-uia.ts` 与 `windows-script.ts` 提供 Win32/UIA；壳与运行时通过私有 stdio 通信。本机权限、焦点、遮挡、暂停及操作去重仍由客户端检查。其构建输出为 `dist/windows/`，不改变 Swift macOS、Rust Linux 或 Kotlin Android 客户端。
+
+Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](https://github.com/xerrors/aBridge/blob/main/apps/windows/README.md)。
+
 ## 身份与授权
 
 实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；本地账户统一由 `/api/admin/users` 创建；可选 OIDC 外部身份在首次验证登录时建立独立账户。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
