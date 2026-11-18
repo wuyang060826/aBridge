@@ -45,7 +45,8 @@ test(
         cwd: root,
         env: { ABRIDGE_TEST_VALUE: "中文 😀" },
       });
-      assert.equal(output.stdout, "中文 😀");
+      assert.equal(output.timed_out, false, JSON.stringify(output));
+      assert.equal(output.stdout, "中文 😀", JSON.stringify(output));
       assert.equal(output.exit_code, 0);
       const timeout = await executor.execute("timeout", "command_execute", {
         command: "Start-Sleep 60",

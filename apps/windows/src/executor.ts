@@ -159,9 +159,20 @@ export class LocalExecutor {
       "LANG",
       "TMPDIR",
       ...(process.platform === "win32"
-        ? [
+        ? // PowerShell/.NET module discovery needs these Windows installation paths.
+          // Keep an explicit OS allowlist; application credentials remain excluded.
+          [
             "SystemRoot",
+            "SystemDrive",
             "WINDIR",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "CommonProgramFiles",
+            "CommonProgramFiles(x86)",
+            "CommonProgramW6432",
+            "PROCESSOR_ARCHITECTURE",
+            "PSModulePath",
             "TEMP",
             "TMP",
             "USERPROFILE",

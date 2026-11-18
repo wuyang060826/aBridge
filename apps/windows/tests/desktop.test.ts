@@ -296,7 +296,8 @@ test("Shell captures unicode output directly, strips unrequested env and bounds 
         ? "[Console]::Write('😀 中文'); [Console]::Error.Write('error'); if (-not $env:ABRIDGE_PRIVATE_FIXTURE) { [Console]::Write('unset') }"
         : "printf '😀 中文'; printf error >&2; printf \"${ABRIDGE_PRIVATE_FIXTURE-unset}\"",
   });
-  assert.equal(result.stdout, "😀 中文unset");
+  assert.equal(result.timed_out, false, JSON.stringify(result));
+  assert.equal(result.stdout, "😀 中文unset", JSON.stringify(result));
   assert.equal(result.stderr, "error");
   assert.equal(result.exit_code, 0);
   const large = await executor.commandExecute("large", {
