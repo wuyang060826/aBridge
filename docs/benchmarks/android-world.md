@@ -15,3 +15,16 @@ python tools/android-world/run.py --adb /absolute/path/to/adb \
 ```
 
 The controller creates an isolated server and uses ADB reverse to connect the disposable APK. It records each result and writes the aggregate to `results.json`. A strict success requires an upstream reward of 1 and a normal actor exit within both budgets and within its tool grant. Failures, timeouts and tool refusals stay visible. Raw agent traces and disposable credentials remain under `.local/`. This subset should be reported with its exact tasks, seeds, environment and model.
+
+The optional two-emulator run keeps the same 15 pairs. Assign Files tasks to `AndroidWorldAvd` on console/gRPC ports 5562/8554 and Markor tasks to `AndroidWorldAvdMarkor` on ports 5564/8556. Both use the same Pixel 6 profile and system image. Run setup separately for each emulator with its group and ports, then run the two groups with the same model catalog. Each group runs sequentially. Merge results only after both complete.
+
+```sh
+python tools/android-world/run.py --adb /absolute/path/to/adb --group files \
+  --model-catalog /absolute/path/to/model-catalog.json --out .local/android/run-files
+python tools/android-world/run.py --adb /absolute/path/to/adb --group markor --port 5564 --grpc 8556 \
+  --model-catalog /absolute/path/to/model-catalog.json --out .local/android/run-markor
+python tools/android-world/merge-results.py .local/android/run-files/results.json \
+  .local/android/run-markor/results.json --out .local/android/results.json
+```
+
+In a separate deterministic file API check, the controller used the public `MarkorCreateNote` generator and grader with seeds 0, 1 and 2. On the API 33 emulator, the three cases each passed official grading and verified aBridge directory listing, write, read-back, default overwrite refusal and traversal refusal. This probe uses the task parameters as inputs and is outside the agent score.

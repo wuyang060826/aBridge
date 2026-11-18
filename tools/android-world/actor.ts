@@ -9,8 +9,15 @@ import { runCodexAgent } from "../bench/codex-agent.js";
 import { createAgentGateway } from "../bench/gateway.js";
 import suite from "./suite.json" with { type: "json" };
 
-const [adb, serial, output, modelCatalog] = process.argv.slice(2);
-if (!adb || !serial || !/^emulator-[0-9]+$/.test(serial) || !output || !modelCatalog)
+const [adb, serial, output, modelCatalog, avdName] = process.argv.slice(2);
+if (
+  !adb ||
+  !serial ||
+  !/^emulator-[0-9]+$/.test(serial) ||
+  !output ||
+  !modelCatalog ||
+  (avdName !== "AndroidWorldAvd" && avdName !== "AndroidWorldAvdMarkor")
+)
   throw Error("Expected ADB path, emulator serial, results directory, and model catalog");
 const runDir = resolve(output);
 const modelCatalogPath = await realpath(modelCatalog);
@@ -60,7 +67,7 @@ try {
   if (
     adbCall(["shell", "getprop", "ro.build.version.sdk"]).trim() !== String(suite.emulator.api) ||
     adbCall(["shell", "getprop", "ro.product.cpu.abi"]).trim() !== suite.emulator.arch ||
-    !adbCall(["emu", "avd", "name"]).split(/\r?\n/).includes("AndroidWorldAvd")
+    !adbCall(["emu", "avd", "name"]).split(/\r?\n/).includes(avdName)
   )
     throw Error("Unexpected benchmark emulator profile");
   const pkg = "dev.abridge.android";

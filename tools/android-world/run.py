@@ -18,6 +18,12 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 SUITE = json.loads((HERE / "suite.json").read_text())
+AVDS = {"all": "AndroidWorldAvd", "files": "AndroidWorldAvd", "markor": "AndroidWorldAvdMarkor"}
+GROUPS = {
+    "all": SUITE["tasks"],
+    "files": [task for task in SUITE["tasks"] if task.startswith("Files")],
+    "markor": [task for task in SUITE["tasks"] if task.startswith("Markor")],
+}
 
 
 def git(directory, *args):
@@ -31,6 +37,9 @@ def run_suite(args, env, output):
     report = {
         "protocol": SUITE,
         "sourceCommit": git(ROOT, "rev-parse", "HEAD"),
+        "group": args.group,
+        "avd": AVDS[args.group],
+        "fingerprint": args.fingerprint,
         "workingTreeDirty": bool(git(ROOT, "status", "--porcelain")),
         "catalogSha256": None,
         "episodes": records,
@@ -43,7 +52,7 @@ def run_suite(args, env, output):
 
     with (output / "actor.stderr.log").open("w") as errors, subprocess.Popen(
         ["node", "--import", "tsx", str(HERE / "actor.ts"), args.adb,
-         f"emulator-{args.port}", str(output), str(args.model_catalog.resolve())],
+         f"emulator-{args.port}", str(output), str(args.model_catalog.resolve()), AVDS[args.group]],
         cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True,
     ) as actor:
         try:
@@ -52,7 +61,7 @@ def run_suite(args, env, output):
                 raise RuntimeError("aBridge Android failed to register. See actor.stderr.log")
             report["catalogSha256"] = ready["catalogSha256"]
             save()
-            for task_name in SUITE["tasks"]:
+            for task_name in GROUPS[args.group]:
                 task_type = public[task_name]
                 for seed in SUITE["seeds"]:
                     record = {"task": task_name, "seed": seed, "reward": None, "success": False,
@@ -99,7 +108,7 @@ def run_suite(args, env, output):
                         records.append(record)
                         save()
                         print(f"{task_name}:{seed} {record['outcome']} reward={record['reward']}", flush=True)
-            denominator = len(SUITE["tasks"]) * len(SUITE["seeds"])
+            denominator = len(GROUPS[args.group]) * len(SUITE["seeds"])
             succeeded = sum(e["success"] for e in records)
             report["summary"] = {"passed": succeeded, "total": denominator, "rate": succeeded / denominator}
             save()
@@ -119,10 +128,11 @@ def verify_emulator(args):
     serial = f"emulator-{args.port}"
     def adb(*command):
         return subprocess.check_output([args.adb, "-s", serial, *command], text=True, timeout=15).strip()
-    if ("AndroidWorldAvd" not in adb("emu", "avd", "name").splitlines()
+    if (AVDS[args.group] not in adb("emu", "avd", "name").splitlines()
         or adb("shell", "getprop", "ro.build.version.sdk") != str(SUITE["emulator"]["api"])
         or adb("shell", "getprop", "ro.product.cpu.abi") != SUITE["emulator"]["arch"]):
-        raise RuntimeError("The disposable AndroidWorldAvd API 33 ARM64 emulator is required")
+        raise RuntimeError("The required disposable AndroidWorld API 33 ARM64 emulator is unavailable")
+    return adb("shell", "getprop", "ro.build.fingerprint")
 
 
 def main():
@@ -133,13 +143,14 @@ def main():
     parser.add_argument("--model-catalog", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--setup", action="store_true")
+    parser.add_argument("--group", choices=AVDS, default="all")
     args = parser.parse_args()
     if not args.setup and args.model_catalog is None:
         parser.error("--model-catalog is required to run the suite")
     upstream = Path(registry.__file__).resolve().parent.parent
     if git(upstream, "rev-parse", "HEAD") != SUITE["upstream"] or git(upstream, "status", "--porcelain", "--untracked-files=no"):
         raise RuntimeError("Use the clean pinned AndroidWorld checkout from suite.json")
-    verify_emulator(args)
+    args.fingerprint = verify_emulator(args)
     os.umask(0o077)
     args.out.mkdir(parents=True, exist_ok=False)
     # The public task initializer sets the task-specific time for each episode.

@@ -1,4 +1,4 @@
-<img src="docs/assets/overview.png" width="100%" alt="aBridge 通过 MCP 连接 Agent 与用户的 macOS 和浏览器；Windows 与 Android 客户端为规划能力。" />
+<img src="docs/assets/overview.png" width="100%" alt="aBridge 通过 MCP 连接 Agent 与用户的 macOS 和浏览器；另有 Android 开发版客户端。" />
 
 # aBridge
 
@@ -25,7 +25,7 @@ Server 提供 MCP 接口、账户管理和授权控制。App 与浏览器扩展*
 | **aBridge App**         | 屏幕观察、键鼠操作、Shell、UTF-8 文件读写  | Apple Silicon，macOS 14+   |
 | **aBridge for Browser** | 网页观察、导航、点击、填表与浏览器代码执行 | Chromium 扩展，Chrome 116+ |
 
-浏览器扩展复用当前 Profile 的登录态，并为任务创建独立标签页。每个 Profile 注册为独立设备；浏览器退出后设备离线，扩展不能自行启动浏览器。Windows 与 Android 原生客户端仍在规划中。
+浏览器扩展复用当前 Profile 的登录态，并为任务创建独立标签页。每个 Profile 注册为独立设备；浏览器退出后设备离线，扩展不能自行启动浏览器。[Android 开发版](apps/android/README.md)支持屏幕观察、触摸和文本输入，以及用户授权目录的文本文件操作。Windows 原生客户端仍在规划中。
 
 ## 快速开始
 
