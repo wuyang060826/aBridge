@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::{fs::PermissionsExt, net::SocketAddr},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -401,13 +401,18 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
-pub fn socket_path(dir: &Path) -> PathBuf {
-    dir.join("control.sock")
+pub fn socket_path(dir: &Path) -> Result<PathBuf> {
+    let path = fs::canonicalize(dir)?.join("control.sock");
+    SocketAddr::from_pathname(&path).context(
+        "State directory is too long for the local control socket; choose a shorter --state-dir",
+    )?;
+    Ok(path)
 }
 pub async fn local_control(dir: &Path, request: Value) -> Result<Value> {
     storage::private_dir(dir)?;
+    let path = socket_path(dir)?;
     timeout(Duration::from_secs(15), async {
-        let mut socket = UnixStream::connect(socket_path(dir))
+        let mut socket = UnixStream::connect(path)
             .await
             .context("Client is not running")?;
         socket.write_all(format!("{request}\n").as_bytes()).await?;
@@ -589,7 +594,7 @@ pub async fn run(dir: PathBuf) -> Result<()> {
     crate::normalize_server(&config.url, config.http_confirmed_origin.as_deref())?;
     let details = tokio::task::spawn_blocking(crate::system::details).await?;
     // Lock ownership makes replacement of a stale socket safe.
-    let path = socket_path(&dir);
+    let path = socket_path(&dir)?;
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         use std::os::unix::fs::FileTypeExt;
         if !metadata.file_type().is_socket() {
@@ -597,8 +602,7 @@ pub async fn run(dir: PathBuf) -> Result<()> {
         }
         fs::remove_file(&path)?;
     }
-    let listener = UnixListener::bind(&path)
-        .context("Cannot create private control socket (state path may be too long)")?;
+    let listener = UnixListener::bind(&path).context("Cannot create private control socket")?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     let journal = Journal::open(&dir)?;
     let (control_tx, mut controls) = mpsc::channel(16);

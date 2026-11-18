@@ -180,6 +180,7 @@ struct BindingInput {
 }
 async fn setup(dir: &Path, input: BindingInput) -> Result<()> {
     let _lock = storage::lock(dir).context("Stop the running client before rebinding")?;
+    runtime::socket_path(dir)?;
     let url = normalize_server(&input.url, input.http_confirmed_origin.as_deref())?;
     ensure!(
         input.device_key.starts_with("abr_device_")

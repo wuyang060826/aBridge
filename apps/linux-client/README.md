@@ -25,7 +25,7 @@ tar -xzf abridge-client-<version>-<target>.tar.gz
 ./abridge-client service install --linger
 ```
 
-`--linger` 调用系统的 `loginctl enable-linger`；能否执行取决于系统授权策略。客户端不自动调用 sudo。没有 systemd 的环境可以使用 `run`，由现有进程管理器保持前台进程运行。
+`--linger` 向 `loginctl enable-linger` 显式传入当前 UID，无需登录会话；能否执行取决于系统授权策略。客户端不自动调用 sudo。没有 systemd 的环境可以使用 `run`，由现有进程管理器保持前台进程运行。
 
 ```sh
 ~/.local/lib/abridge-client/abridge-client status
@@ -40,7 +40,7 @@ systemctl --user restart abridge-client.service
 
 服务执行环境不等同于交互式登录 Shell，不自动加载 `.bashrc`、`.zshrc` 或激活虚拟环境。命令应明确工作目录，工具可使用绝对路径或显式传入 `env.PATH`。
 
-默认状态目录是 `$XDG_DATA_HOME/abridge/linux-client` 或 `~/.local/share/abridge/linux-client`，绑定文件权限为 `0600`、目录为 `0700`。`--state-dir /absolute/path` 可用于独立实例的配置与前台运行。用户级服务固定为一个 `abridge-client.service`，再次安装时使用指定状态目录。卸载服务：
+默认状态目录是 `$XDG_DATA_HOME/abridge/linux-client` 或 `~/.local/share/abridge/linux-client`，绑定文件权限为 `0600`、目录为 `0700`。`--state-dir /absolute/path` 可用于独立实例的配置与前台运行。实际路径加上 `/control.sock` 须符合本机 Unix socket 路径长度限制，绑定时会校验。用户级服务固定为一个 `abridge-client.service`，再次安装时使用指定状态目录。卸载服务：
 
 ```sh
 ~/.local/lib/abridge-client/abridge-client service uninstall

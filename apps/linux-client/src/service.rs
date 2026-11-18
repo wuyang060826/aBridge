@@ -142,7 +142,8 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
     if !cfg!(target_os = "linux") {
         bail!("Service management requires Linux with systemd; use run for foreground execution");
     }
-    if unsafe { libc::geteuid() } == 0 {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
         bail!("Install the user service as a regular user, without sudo");
     }
     if linger && action != "install" {
@@ -153,6 +154,7 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
         "install" => {
             crate::storage::load(state_dir)
                 .context("Bind this device with setup before installing the service")?;
+            crate::runtime::socket_path(state_dir)?;
             let state_dir = fs::canonicalize(state_dir)?;
             let contents = unit_contents(&binary, &state_dir, &home()?)?;
             existing_unit(&unit)?;
@@ -160,7 +162,7 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
             // contain secrets inherited from the login session.
             command("systemctl", &["--user", "daemon-reload"])?;
             if linger {
-                command("loginctl", &["enable-linger"])?;
+                command("loginctl", &["enable-linger", &uid.to_string()])?;
             }
             let source = std::env::current_exe()?;
             crate::storage::private_dir(
@@ -173,7 +175,7 @@ pub fn manage(action: &str, state_dir: &Path, linger: bool) -> Result<()> {
             command("systemctl", &["--user", "restart", UNIT])?;
             println!("Installed user service. Use abridge-client service status to inspect it.");
             if !linger {
-                println!("For startup before login and operation after logout, enable lingering with loginctl enable-linger.");
+                println!("For startup before login and operation after logout, run: loginctl enable-linger {uid}");
             }
         }
         "uninstall" => {

@@ -380,6 +380,10 @@ test(
       assert.equal((await f.control("pause")).paused, true);
       await f.stop();
       const binding = await readFile(join(f.state, "binding.json"));
+      const longState = join(f.directory, "a".repeat(110));
+      const invalidState = await cli(["setup", "--stdin", "--state-dir", longState], f.bind, 1);
+      assert.match(invalidState.stderr, /State directory is too long for the local control socket/);
+      await assert.rejects(readFile(join(longState, "binding.json")), { code: "ENOENT" });
       await cli(
         ["setup", "--stdin", "--state-dir", f.state],
         { ...f.bind, device_key: "abr_device_invalid_fixture" },
