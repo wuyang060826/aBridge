@@ -48,11 +48,16 @@ struct DesktopError: Error, LocalizedError, Sendable {
     let code: String
     let message: String
     let outcome: String
-    init(code: String, message: String, outcome: String = "refused") {
-        self.code = code; self.message = message; self.outcome = outcome
+    let hint: String?
+    init(code: String, message: String, outcome: String = "refused", hint: String? = nil) {
+        self.code = code; self.message = message; self.outcome = outcome; self.hint = hint
     }
     var errorDescription: String? { message }
-    var json: JSONObject { ["code": .string(code), "message": .string(message)] }
+    var json: JSONObject {
+        var result: JSONObject = ["code": .string(code), "message": .string(message)]
+        if let hint { result["hint"] = .string(hint) }
+        return result
+    }
 }
 func sha256(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 func sleepMilliseconds(_ ms: Double) async throws { try await Task.sleep(nanoseconds: UInt64(max(0, ms) * 1_000_000)) }

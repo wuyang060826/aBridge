@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import ApplicationServices
 import Darwin
 
@@ -6,6 +7,7 @@ protocol DesktopNativeDriver: Sendable {
     func diagnostics(initialize: Bool) async -> JSONObject
     func apps() async throws -> [JSONObject]
     func windows(pid: Double?) async throws -> [JSONObject]
+    func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double?
     func open(bundleID: String) async throws
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject
     func act(session: String, action: JSONObject) async throws -> JSONObject
@@ -157,10 +159,31 @@ actor NativeDriver: DesktopNativeDriver {
         if result.bool("isError") == true || result.bool("is_error") == true {
             let structured = result.object("structuredContent") ?? [:]
             let code = structured.string("code") ?? structured.object("refusal")?.string("code") ?? structured.object("error")?.string("code") ?? result.string("errorCode") ?? "outcome_unknown"
-            let known = ["action_refused", "permission_denied", "permission_required", "accessibility_permission_required", "screen_recording_permission_required", "invalid_arguments", "stale_element", "stale_capture", "target_not_found", "window_not_found", "window_id_not_found", "window_owner_pid_mismatch", "session_not_found", "session_closed", "unsupported"]
-            throw DesktopError(code: code, message: "Desktop driver could not complete the requested operation", outcome: known.contains(code) ? "refused" : "outcome_unknown")
+            let recovery = actionRecovery(code)
+            let known = ["action_refused", "permission_denied", "permission_required", "accessibility_permission_required", "screen_recording_permission_required", "invalid_arguments", "session_not_found", "session_closed", "unsupported"]
+            throw DesktopError(code: code, message: recovery ?? "Desktop driver could not complete the requested operation", outcome: recovery != nil || known.contains(code) ? "refused" : "outcome_unknown", hint: recovery)
         }
         return result
+    }
+    nonisolated static func actionRecovery(_ code: String) -> String? {
+        switch code {
+        case "stale_capture", "capture_id_invalid", "capture_not_found", "capture_expired", "capture_generation_mismatch", "capture_target_mismatch", "capture_frame_mismatch", "capture_coordinate_invalid", "px_capture_unavailable", "px_frame_mismatch":
+            return "Refresh the same window with computer_observe and use coordinates from the new screenshot."
+        case "stale_element", "element_outside_target_window":
+            return "Refresh the same window with computer_observe and use an element_ref from the new observation."
+        case "target_not_found", "window_not_found", "window_id_not_found", "window_owner_pid_mismatch", "owner_pid_mismatch", "px_window_not_found":
+            return "Use computer_windows to find the intended window, then observe it again."
+        case "off_space_or_ax_unresolved", "minimized_or_hidden_window":
+            return "Make the intended window available on the current space, then observe it again."
+        case "screen_locked":
+            return "Unlock the Mac and refresh the same target."
+        case "same_pid_keyboard_ambiguity":
+            return "Use a supported element action in the intended window."
+        case "background_unavailable":
+            return "Observe the same window and try a supported element action. A foreground click requires an explicit request and verified focus."
+        default:
+            return nil
+        }
     }
     private func session(_ id: String) async throws {
         if sessions.contains(id) { return }
@@ -190,6 +213,34 @@ actor NativeDriver: DesktopNativeDriver {
             return window.filter { ["pid", "window_id", "app_name", "title", "bounds", "is_on_screen", "layer", "z_index"].contains($0.key) }
         }
     }
+    private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+    }
+    private func focusedElement(pid: Double, system: AXUIElement) -> AXUIElement? {
+        guard let application = attribute(system, kAXFocusedApplicationAttribute),
+              CFGetTypeID(application) == AXUIElementGetTypeID() else { return nil }
+        var activePid: pid_t = 0
+        let app = application as! AXUIElement
+        guard AXUIElementGetPid(app, &activePid) == .success, Double(activePid) == pid,
+              let window = attribute(app, kAXFocusedWindowAttribute), CFGetTypeID(window) == AXUIElementGetTypeID() else { return nil }
+        return (window as! AXUIElement)
+    }
+    func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? {
+        guard let focused = focusedElement(pid: pid, system: AXUIElementCreateSystemWide()) else { return nil }
+        guard let position = attribute(focused, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
+              let size = attribute(focused, kAXSizeAttribute), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero, dimensions = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(size as! AXValue, .cgSize, &dimensions),
+              dimensions.width > 0, dimensions.height > 0 else { return nil }
+        let frame = CGRect(origin: origin, size: dimensions)
+        let matching = candidates.filter { Self.windowFrame($0.object("bounds")) == frame }
+        if matching.count == 1 { return matching[0].number("window_id") }
+        guard let title = attribute(focused, kAXTitleAttribute) as? String, !title.isEmpty else { return nil }
+        let titled = matching.filter { $0.string("title") == title }
+        return titled.count == 1 ? titled[0].number("window_id") : nil
+    }
     func open(bundleID: String) async throws {
         let result = try await NativeShell.run(executable: "/usr/bin/open", arguments: ["-b", bundleID], cwd: NSHomeDirectory(), environment: ProcessInfo.processInfo.environment, timeout: 5000, output: nil)
         guard result.number("exit_code") == 0, result.bool("timed_out") != true else { throw DesktopError(code: "app_launch_failed", message: "Application launch failed") }
@@ -204,11 +255,12 @@ actor NativeDriver: DesktopNativeDriver {
         if !desktop {
             args["include_screenshot"] = .bool(screenshot); args["include_accessibility_tree"] = .bool(true)
             args["tree_format"] = .string("elements"); args["max_elements"] = .number(500); args["max_depth"] = .number(12)
+            args["verbose"] = .bool(true)
         }
         let result = try await invoke(desktop ? "get_desktop_state" : "get_window_state", args)
         let data = result.object("structuredContent") ?? [:]
         var observation: JSONObject = [:]
-        for key in ["app_name", "window_title", "truncated", "capture_id"] { observation[key] = data[key] }
+        for key in ["app_name", "window_title", "truncated", "capture_id", "window_bounds", "background_input"] { observation[key] = data[key] }
         observation["frame_valid"] = data["screenshot_frame_valid"]
         observation["elements"] = .array(desktop ? [] : (data.array("elements") ?? []).compactMap { value in
             guard let element = value.object else { return nil }
@@ -237,9 +289,12 @@ actor NativeDriver: DesktopNativeDriver {
         switch kind {
         case "click", "double_click":
             tool = "click"; wire["element_token"] = action["native_ref"]
-            for key in ["x", "y", "capture_id", "button"] { wire[key] = action[key] }
+            if wire["element_token"] == nil {
+                for key in ["x", "y", "capture_id"] { wire[key] = action[key] }
+            }
+            wire["button"] = action["button"]
             wire["modifier"] = action["modifiers"]; wire["count"] = .number(kind == "double_click" ? 2 : 1)
-            wire["delivery_mode"] = .string(action.string("native_ref") != nil && (action.array("modifiers") ?? []).isEmpty ? "background" : "foreground")
+            wire["delivery_mode"] = action["delivery_mode"] ?? .string("background")
         case "type": tool = "type_text"; wire["element_token"] = action["native_ref"]; wire["text"] = action["text"]
         case "key": tool = "press_key"; wire["modifiers"] = action["modifiers"]; wire["key"] = action["key"]
         case "move": tool = "move_cursor"; wire["x"] = action["x"]; wire["y"] = action["y"]
@@ -256,14 +311,99 @@ actor NativeDriver: DesktopNativeDriver {
         }
         return (tool, wire)
     }
+
+    nonisolated static func windowFrame(_ bounds: JSONObject?) -> CGRect? {
+        guard let bounds, let x = bounds.number("x"), let y = bounds.number("y"),
+              let width = bounds.number("width"), let height = bounds.number("height"), width > 0, height > 0 else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func pointHitsFocusedElement(_ point: CGPoint, pid: Double) -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        guard let focused = focusedElement(pid: pid, system: system) else { return false }
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success,
+              let hit else { return false }
+        if CFEqual(focused, hit) { return true }
+        guard let hitWindow = attribute(hit, kAXWindowAttribute) else { return false }
+        return CFEqual(focused, hitWindow)
+    }
+
+    private func checkForegroundPoint(_ action: JSONObject, target: JSONObject) throws {
+        let hint = "Bring the intended window to the front and use coordinates from a fresh computer_observe screenshot."
+        guard let frame = Self.windowFrame(action.object("window_bounds")),
+              let position = action.object("window_position"),
+              let x = position.number("x"), let y = position.number("y"),
+              let pid = target.number("pid"), let id = target.number("window_id"),
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            throw DesktopError(code: "window_frame_unavailable", message: "Cannot verify the screen position of the target", hint: hint)
+        }
+        func frameOf(_ entry: [String: Any]) -> CGRect? {
+            guard let bounds = entry[kCGWindowBounds as String] as? NSDictionary else { return nil }
+            return CGRect(dictionaryRepresentation: bounds as CFDictionary)
+        }
+        guard let window = windows.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.doubleValue == id }),
+              (window[kCGWindowOwnerPID as String] as? NSNumber)?.doubleValue == pid else {
+            throw DesktopError(code: "window_unavailable", message: "The observed window is no longer on screen", hint: hint)
+        }
+        guard frameOf(window) == frame else {
+            throw DesktopError(code: "window_frame_changed", message: "The target window moved or resized after observation", hint: hint)
+        }
+        let point = CGPoint(x: frame.minX + x * frame.width, y: frame.minY + y * frame.height)
+        // Cua maps capture pixels through the original bitmap and a discrete
+        // backing scale, with up to 3% frame tolerance. Check that entire
+        // possible destination stays inside the window and clear of blockers.
+        let toleranceX = 1 + x * frame.width * 0.03
+        let toleranceY = 1 + y * frame.height * 0.03
+        let destination = CGRect(x: point.x - toleranceX, y: point.y - toleranceY,
+                                 width: 2 * toleranceX, height: 2 * toleranceY)
+        guard frame.contains(destination) else {
+            throw DesktopError(code: "window_point_near_edge", message: "The screenshot point is too close to the window edge", hint: "Choose a point farther inside the intended control in the current screenshot.")
+        }
+        var display: CGDirectDisplayID = 0, displays: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &display, &displays) == .success, displays > 0,
+              CGDisplayBounds(display).contains(destination) else {
+            throw DesktopError(code: "window_point_offscreen", message: "The screenshot point is outside the visible displays", hint: hint)
+        }
+        let hits = windows.lazy.filter { entry in
+            // The embedded driver draws its own click-through cursor overlay in this process.
+            (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value != getpid()
+                && (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue != 0
+                && frameOf(entry)?.intersects(destination) == true
+        }
+        let blockers = hits.prefix { ($0[kCGWindowNumber as String] as? NSNumber)?.doubleValue != id }
+        // Dock can publish a full-screen WindowServer frame for an overlay. Require
+        // a separate AX hit on the focused window before disregarding that frame.
+        let onlyDockOverlay = !blockers.isEmpty && blockers.allSatisfy { entry in
+            guard let owner = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value else { return false }
+            return (entry[kCGWindowLayer as String] as? NSNumber)?.int32Value == CGWindowLevelForKey(.dockWindow)
+                && frameOf(entry) == CGDisplayBounds(display)
+                && NSRunningApplication(processIdentifier: owner)?.bundleIdentifier == "com.apple.dock"
+        }
+        guard hits.contains(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.doubleValue == id }),
+              blockers.isEmpty || (onlyDockOverlay && pointHitsFocusedElement(point, pid: pid)) else {
+            throw DesktopError(code: "window_point_occluded", message: "The screenshot point is covered by another surface", hint: hint)
+        }
+    }
+
     func act(session id: String, action: JSONObject) async throws -> JSONObject {
         try await session(id)
         let (tool, wire) = try Self.actionRequest(session: id, action: action)
+        if tool == "click", wire.string("delivery_mode") == "foreground",
+           let target = action.object("target"), target.number("pid") != nil {
+            try checkForegroundPoint(action, target: target)
+        }
         let reply = try await invoke(tool, wire)
         let result = reply.object("structuredContent") ?? [:]
-        if result.object("error") != nil || result.string("effect") == "refused" { throw DesktopError(code: "action_refused", message: "Desktop action was refused") }
+        if result.object("error") != nil || result.string("effect") == "refused" {
+            let code = result.object("error")?.string("code") ?? result.string("code") ?? "action_refused"
+            throw DesktopError(code: code, message: "Desktop action was refused", hint: Self.actionRecovery(code))
+        }
         var output: JSONObject = ["action_executed": .bool(true), "business_verified": .bool(false)]
         for key in ["effect", "route", "delivery"] { output[key] = result[key] }
+        if ["unverifiable", "partial", "suspected_noop"].contains(result.string("effect") ?? "") {
+            output["hint"] = .string("Verify the expected change in the follow-up observation or refresh the same target before continuing.")
+        }
         if let summary = result.string("summary") { output["summary"] = .string(String(summary.prefix(500))) }
         return output
     }

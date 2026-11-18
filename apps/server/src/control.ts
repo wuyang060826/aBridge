@@ -5,6 +5,7 @@ import {
   SESSION_IDLE_SECONDS,
   deviceCapabilities,
   deviceMetadataSchema,
+  deviceSummaryDetailsSchema,
   requiredCapabilities,
   operationFrameSchema,
   parseDeviceToolRequest,
@@ -131,7 +132,11 @@ export class ControlService {
       .filter((device) => deviceAccess(current, device).access === "allowed")
       .map((device) => this.deviceView(device, current));
   }
-  deviceView(device: Device, agentConnection?: AgentConnection): DeviceView {
+  deviceView(
+    device: Device,
+    agentConnection?: AgentConnection,
+    includeDetails = !agentConnection,
+  ): DeviceView {
     const connection = this.deviceConnections.get(device.id),
       now = this.mono();
     const current = agentConnection ? this.currentAgentConnection(agentConnection) : undefined;
@@ -151,6 +156,10 @@ export class ControlService {
       ),
       platform: device.platform,
       version: device.version,
+      ...(device.details
+        ? { details: includeDetails ? device.details : deviceSummaryDetailsSchema.parse(device.details) }
+        : {}),
+      ...(includeDetails ? { owner_name: this.store.user(device.owner_id)?.username } : {}),
       last_seen: device.last_seen,
       created_at: device.created_at,
       ...(current ? { sessions: this.activeSessions(current, device.id) } : {}),

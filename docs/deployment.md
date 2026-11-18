@@ -135,6 +135,26 @@ dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop diagnose
 
 自定义状态目录使用 `--state-dir`，日志相应位于 `<state-dir>/logs/client.log`。终端诊断的权限责任链不等于 App 的责任链；实际窗口截图和输入需在 App 环境中用自有目标核对。
 
+## Linux CLI
+
+Linux 客户端是独立 Rust 可执行文件，只提供 `shell/files`，使用现有设备协议直接连接 Server。安装后不需要 Node、浏览器或图形环境；需要系统 `/bin/sh` 和可信 CA 证书。设备以 `computer` 类型和 `linux` 平台显示，能力仍受设备授权、Agent 策略和本机开关共同限制。
+
+在管理台创建电脑设备并取得 Device Token，解压已校验的对应架构分发包后运行：
+
+```sh
+./abridge-client setup --url https://bridge.example.com
+./abridge-client service install
+./abridge-client status
+```
+
+`setup` 隐藏输入 Token，先校验再保存。连接远程 HTTP 时，终端先显示 Origin 并要求确认，再提示输入 Token。无人值守绑定使用 `setup --stdin` 从私有输入读取绑定 JSON，远程 HTTP 须提供完全匹配的 `http_confirmed_origin`。
+
+默认安装当前普通用户的 systemd 服务，可执行文件复制到 `~/.local/lib/abridge-client/abridge-client`。`service install --linger` 额外请求开启用户 linger，使退出登录后继续运行并在开机时启动；系统可能要求管理员预先授权，客户端不自动调用 sudo。日志使用 `logs` 或 `journalctl --user -u abridge-client.service` 查看。没有 systemd 时用 `run` 交给现有进程管理器。
+
+暂停、能力开关和绑定保存在用户私有状态目录；可用 `--state-dir` 指定。服务重启和重连不解除暂停，未知结果操作不重放。更新时停止任务，用新版二进制执行 `service install` 并保留相同状态目录；`service uninstall` 移除服务但保留用户状态。
+
+源码构建使用 `npm run linux:build`，Rust 检查使用 `npm run linux:check`，Linux 候选包使用 `npm run package:linux`。分发包含单个可执行文件、说明和许可证，并输出 SHA-256、实际体积报告；构建强制执行 15 MiB 二进制和 5 MiB 下载包预算。原生 Linux amd64/arm64 CI 另验证协议和真实 systemd 生命周期。完整命令、依赖和目标平台说明见 [Linux 客户端](../apps/linux-client/README.md)。
+
 ## 浏览器扩展
 
 ```sh
@@ -193,7 +213,7 @@ ABRIDGE_ALLOW_INSECURE_HTTP=true
 
 浏览器会话仍由 aBridge 持有，有效期 12 小时。退出/停用提供方账户不会立即注销已有 aBridge Cookie；平台停用用户后应停止签发委托，已签发令牌最多保留 60 秒。aBridge 本地撤权即时应用于后续操作与已有控制会话，不能回滚已发生副作用。身份提供方不可用时新登录和委托验证可能失败，本地账号与 Agent Key 继续工作。密钥轮换须保留旧验证公钥至少到已签发令牌过期，JWKS 缓存也需要考虑。
 
-数据库开发 schema 为 5，设备表保存可为空的最近上报 `platform` / `version`，操作表以内部 `key_hash` 唯一映射完整作用域去重键到短执行 ID。历史开发数据库不能直接打开；请备份并在隔离副本中明确转换或重新初始化，禁止用现有服务的数据目录试运行。更换 issuer 或 sub 会建立新身份，必须事先安排设备归属恢复，不能靠显示名自动合并。
+数据库开发 schema 为 6，设备表保存最近上报的 `platform`、`version` 和可空的 `details`，操作表以内部 `key_hash` 唯一映射完整作用域去重键到短执行 ID。历史开发数据库不能直接打开；请备份并在隔离副本中明确转换或重新初始化，禁止用现有服务的数据目录试运行。更换 issuer 或 sub 会建立新身份，必须事先安排设备归属恢复，不能靠显示名自动合并。
 
 ### 应用内更新
 

@@ -105,10 +105,51 @@ test("invalid identity or metadata cannot replace a connected device's metadata"
       ),
       { code: "unauthorized" },
     );
-    for (const invalid of [{ platform: 1 }, { platform: "x".repeat(81) }, { version: "x".repeat(31) }])
+    for (const invalid of [
+      { platform: 1 },
+      { platform: "x".repeat(81) },
+      { version: "x".repeat(31) },
+      { details: { runtime_user: "test\0user" } },
+      { details: { os_version: "x".repeat(129) } },
+      { details: { browser_version: "137.2" } },
+      { details: { owner_name: "forged" } },
+    ])
       await assert.rejects(f.attach(invalid));
     assert.equal(f.view().status, "online");
     assert.deepEqual(deviceMetadataSchema.parse(f.view()), { platform: "linux", version: "fixture-1" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("system details persist, while discovery omits local account and host labels", async () => {
+  const f = await fixture();
+  try {
+    const summary = { os: "linux", os_version: "24.04", distribution: "Ubuntu", architecture: "arm64" };
+    const details = {
+      ...summary,
+      hostname: "fixture-host",
+      runtime_user: "fixture-unix",
+      model: "Fixture model",
+      kernel_version: "6.8.0",
+    };
+    await f.attach({ platform: "linux", version: "fixture-1", details, owner_name: "forged" });
+    assert.deepEqual(f.view().details, summary);
+    assert.equal(f.view().owner_name, undefined);
+    await f.restart();
+    const device = f.store.device(f.device.id)!;
+    for (const view of [
+      f.control.deviceView(device),
+      f.control.deviceView(device, f.agentConnection, true),
+    ]) {
+      assert.deepEqual(view.details, details);
+      assert.equal(view.owner_name, "metadata-fixture");
+      assert.equal(view.status, "offline");
+    }
+    await f.attach({ platform: "linux", version: "fixture-2", details: summary });
+    assert.deepEqual(f.store.device(device.id)?.details, summary);
+    await f.attach({ platform: "linux", version: "fixture-3" });
+    assert.equal(f.store.device(device.id)?.details, undefined);
   } finally {
     await f.close();
   }

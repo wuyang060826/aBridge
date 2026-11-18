@@ -21,7 +21,10 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
     private var window: FixtureWindow!
     private var countLabel: NSTextField!
     private var inputField: NSTextField!
+    private var control: DispatchSourceSignal?
+    private var competingWindow: NSWindow?
     private var clickCount = 0
+    private var competingClickCount = 0
     private let code = String((0..<6).map { _ in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".randomElement()! })
     private let stateURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[1])
 
@@ -58,13 +61,56 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
 
         countLabel = addLabel("点击次数：0", size: 24, y: 80, to: content)
         addLabel("Esc 结束测试", size: 16, y: 25, to: content)
-        writeState()
         window.orderFront(nil)
+        signal(SIGUSR1, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { [weak self] in self?.applyControl() }
+        source.resume()
+        control = source
+        writeState()
+    }
+
+    private func applyControl() {
+        let path = stateURL.appendingPathExtension("command")
+        guard let command = try? String(contentsOf: path, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: path)
+        switch command {
+        case "move":
+            let origin = window.frame.origin
+            window.setFrameOrigin(NSPoint(x: origin.x + 40, y: origin.y + 20))
+        case "sibling", "cover":
+            competingWindow?.orderOut(nil)
+            let contentRect = window.contentRect(forFrameRect: window.frame).offsetBy(dx: 24, dy: 0)
+            let other = FixtureWindow(contentRect: contentRect, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            other.title = "aBridge Competing Fixture Window"
+            let button = NSButton(title: "Competing button", target: self, action: #selector(recordCompetingClick))
+            button.frame = NSRect(x: 210, y: 135, width: 220, height: 66)
+            other.contentView?.addSubview(button)
+            competingWindow = other
+            if command == "cover" {
+                other.level = .floating
+                other.orderFrontRegardless()
+            } else {
+                other.makeKeyAndOrderFront(nil)
+            }
+        case "clear":
+            competingWindow?.orderOut(nil)
+            competingWindow = nil
+            window.makeKeyAndOrderFront(nil)
+        default:
+            break
+        }
+        writeState()
     }
 
     @objc private func recordClick() {
         clickCount += 1
         countLabel.stringValue = "点击次数：\(clickCount)"
+        writeState()
+    }
+
+    @objc private func recordCompetingClick() {
+        competingClickCount += 1
         writeState()
     }
 
@@ -74,8 +120,9 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
 
     private func writeState() {
         let state: [String: Any] = [
-            "code": code, "click_count": clickCount, "text": inputField.stringValue,
+            "code": code, "click_count": clickCount, "competing_click_count": competingClickCount, "text": inputField.stringValue,
             "pid": ProcessInfo.processInfo.processIdentifier,
+            "key_window_title": NSApp.keyWindow?.title ?? "",
             "updated_at": Date().timeIntervalSince1970,
         ]
         do {

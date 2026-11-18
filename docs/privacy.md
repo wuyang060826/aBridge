@@ -1,12 +1,14 @@
 # aBridge for Browser Privacy Policy
 
-Last updated: November 15, 2026
+Last updated: November 18, 2026
 
 aBridge for Browser connects the browser Profile where you install it to an aBridge Server that you choose. It lets Agents that you authorize observe and operate task pages in that browser.
 
 ## Data and destinations
 
-The extension sends its device identity, connection status and capability information to your configured Server. When an authorized Agent requests a browser operation, the extension may send the task page's URL, title, visible text, interactive element information, action results and, when requested, a screenshot through that Server to the Agent. Page content may contain personal or sensitive information. Only authorize Agents and Servers you trust with that content.
+The extension sends its device identity, connection status and capability information to your configured Server. When available, it also reports browser brand and major version, operating system, architecture, and the operating system version supplied by the browser. The Server keeps these details in the device record.
+
+When an authorized Agent requests a browser operation, the extension may send the task page's URL, title, visible text, interactive element information, action results and, when requested, a screenshot through that Server to the Agent. Page content may contain personal or sensitive information. Only authorize Agents and Servers you trust with that content.
 
 The extension creates task tabs in the current Profile. Websites in those tabs use that Profile's existing login sessions under the browser's normal rules. There is no dedicated cookie or browser password database export tool. Protected password-field values are excluded from fixed observations. Authorized code can execute JavaScript inside task pages, read page-accessible data and make requests under the website session; observation filtering does not limit that code or make page text and screenshots free of sensitive information.
 
