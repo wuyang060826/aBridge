@@ -133,9 +133,12 @@ fn parse_server(value: &str) -> Result<url::Url> {
     Ok(url)
 }
 
+fn is_loopback(url: &url::Url) -> bool {
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+}
+
 fn remote_http_origin(url: &url::Url) -> Option<String> {
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    (url.scheme() == "http" && !local).then(|| url.origin().ascii_serialization())
+    (url.scheme() == "http" && !is_loopback(url)).then(|| url.origin().ascii_serialization())
 }
 
 fn confirm_remote_http(origin: &str) -> Result<()> {
@@ -195,8 +198,14 @@ async fn setup(dir: &Path, input: BindingInput) -> Result<()> {
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()?;
+        .timeout(Duration::from_secs(10));
+    // Loopback setup, including SSH tunnels, must keep the Token on the local hop.
+    let client = if is_loopback(&parse_server(&url)?) {
+        client.no_proxy()
+    } else {
+        client
+    }
+    .build()?;
     let mut response = client
         .get(format!("{url}/api/device"))
         .bearer_auth(&input.device_key)
