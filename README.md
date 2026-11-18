@@ -152,6 +152,21 @@ npm run benchmark:miniwob
 
 <!-- benchmark:miniwob:end -->
 
+### AndroidWorld
+
+**15/15（100%）**，在两台 Pixel 6 / Android 13 模拟器上实测。Agent 的截图和输入经 aBridge 客户端执行，AndroidWorld 负责生成数据与判分。
+
+| 公开任务             |  严格成功 |
+| -------------------- | --------: |
+| 移动文件             |       3/3 |
+| 删除文件             |       3/3 |
+| 创建笔记             |       3/3 |
+| 编辑笔记             |       3/3 |
+| 添加笔记标题并重命名 |       3/3 |
+| **合计**             | **15/15** |
+
+固定 gpt-6.1-sol / medium、seed 0–2 和每例 360 秒 / 45 个操作预算单位。完整运行零剔除、无逐例重试。279 次 MCP 调用，Agent 耗时中位数 146.7 秒。独立的直接文件 API 验收 **3/3**。[方法、限制与历史失败](docs/benchmarks/android-world.md) · [逐例数据](docs/benchmarks/android-world-results.json)
+
 ## 授权与安全边界
 
 - **设备与能力显式授权**：每个 Agent 连接可选择设备、能力和有效期；设备本机可以暂停或关闭能力，自动重连不会解除这些限制。

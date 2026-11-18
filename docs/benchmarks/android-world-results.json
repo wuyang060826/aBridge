@@ -1,0 +1,388 @@
+{
+  "protocol": {
+    "upstream": "55ddaf5edc6f6c25673aed343907d5b9dca66f84",
+    "emulator": {
+      "profile": "Pixel 6",
+      "api": 33,
+      "arch": "arm64-v8a"
+    },
+    "tasks": [
+      "FilesMoveFile",
+      "FilesDeleteFile",
+      "MarkorCreateNote",
+      "MarkorEditNote",
+      "MarkorAddNoteHeader"
+    ],
+    "seeds": [0, 1, 2],
+    "model": "gpt-6.1-sol",
+    "reasoning": "medium",
+    "episodeLimitMs": 360000,
+    "maxToolCalls": 45,
+    "batchBudget": "charge each click against the same tool budget",
+    "retries": 0
+  },
+  "sourceCommit": "6e9a811617c01de557b093b7f56316af0ad560c4",
+  "catalogSha256": "578e4bab76fbd3999747b7d3c8c34b83a4cdbef4a3bd033f21f0399e094f1c3d",
+  "fingerprint": "google/sdk_gphone64_arm64/emu64a:13/TE1A.240213.009/12342917:userdebug/dev-keys",
+  "concurrency": 2,
+  "environments": [
+    {
+      "group": "files",
+      "avd": "AndroidWorldAvd"
+    },
+    {
+      "group": "markor",
+      "avd": "AndroidWorldAvdMarkor"
+    }
+  ],
+  "summary": {
+    "passed": 15,
+    "total": 15,
+    "rate": 1.0,
+    "toolCalls": 279,
+    "agentLatencyP50Ms": 146656,
+    "actionUnits": 308,
+    "toolViolations": 0,
+    "sessionsCleaned": 15,
+    "tasksCleaned": 15,
+    "usageCoverage": 15,
+    "imageBlocks": 24,
+    "recoverableRefusals": {
+      "stale_observation": 31
+    },
+    "exclusions": 0
+  },
+  "episodes": [
+    {
+      "task": "FilesMoveFile",
+      "seed": 0,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 27,
+      "actionUnits": 34,
+      "toolViolations": 0,
+      "elapsedMs": 262711,
+      "usage": {
+        "inputTokens": 1610447,
+        "cachedInputTokens": 1524992,
+        "outputTokens": 1985,
+        "reasoningTokens": 101
+      },
+      "cleanup": true
+    },
+    {
+      "task": "FilesMoveFile",
+      "seed": 1,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 31,
+      "actionUnits": 31,
+      "toolViolations": 0,
+      "elapsedMs": 278222,
+      "usage": {
+        "inputTokens": 1610207,
+        "cachedInputTokens": 1513728,
+        "outputTokens": 3116,
+        "reasoningTokens": 157
+      },
+      "cleanup": true
+    },
+    {
+      "task": "FilesMoveFile",
+      "seed": 2,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 34,
+      "actionUnits": 35,
+      "toolViolations": 0,
+      "elapsedMs": 296367,
+      "usage": {
+        "inputTokens": 2238818,
+        "cachedInputTokens": 2147200,
+        "outputTokens": 2612,
+        "reasoningTokens": 271
+      },
+      "cleanup": true
+    },
+    {
+      "task": "FilesDeleteFile",
+      "seed": 0,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 25,
+      "actionUnits": 40,
+      "toolViolations": 0,
+      "elapsedMs": 223795,
+      "usage": {
+        "inputTokens": 1598149,
+        "cachedInputTokens": 1497472,
+        "outputTokens": 2072,
+        "reasoningTokens": 188
+      },
+      "cleanup": true
+    },
+    {
+      "task": "FilesDeleteFile",
+      "seed": 1,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 13,
+      "actionUnits": 19,
+      "toolViolations": 0,
+      "elapsedMs": 109516,
+      "usage": {
+        "inputTokens": 611162,
+        "cachedInputTokens": 567808,
+        "outputTokens": 1102,
+        "reasoningTokens": 58
+      },
+      "cleanup": true
+    },
+    {
+      "task": "FilesDeleteFile",
+      "seed": 2,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 12,
+      "actionUnits": 12,
+      "toolViolations": 0,
+      "elapsedMs": 95033,
+      "usage": {
+        "inputTokens": 485230,
+        "cachedInputTokens": 438016,
+        "outputTokens": 978,
+        "reasoningTokens": 43
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorCreateNote",
+      "seed": 0,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 16,
+      "actionUnits": 16,
+      "toolViolations": 0,
+      "elapsedMs": 146656,
+      "usage": {
+        "inputTokens": 591666,
+        "cachedInputTokens": 519680,
+        "outputTokens": 1634,
+        "reasoningTokens": 21
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorCreateNote",
+      "seed": 1,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 16,
+      "actionUnits": 16,
+      "toolViolations": 0,
+      "elapsedMs": 155018,
+      "usage": {
+        "inputTokens": 591983,
+        "cachedInputTokens": 564992,
+        "outputTokens": 1175,
+        "reasoningTokens": 0
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorCreateNote",
+      "seed": 2,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 16,
+      "actionUnits": 16,
+      "toolViolations": 0,
+      "elapsedMs": 121680,
+      "usage": {
+        "inputTokens": 592881,
+        "cachedInputTokens": 551680,
+        "outputTokens": 1195,
+        "reasoningTokens": 16
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorEditNote",
+      "seed": 0,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 8,
+      "actionUnits": 8,
+      "toolViolations": 0,
+      "elapsedMs": 75735,
+      "usage": {
+        "inputTokens": 296780,
+        "cachedInputTokens": 263680,
+        "outputTokens": 849,
+        "reasoningTokens": 9
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorEditNote",
+      "seed": 1,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 9,
+      "actionUnits": 9,
+      "toolViolations": 0,
+      "elapsedMs": 74383,
+      "usage": {
+        "inputTokens": 326072,
+        "cachedInputTokens": 287744,
+        "outputTokens": 714,
+        "reasoningTokens": 9
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorEditNote",
+      "seed": 2,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 9,
+      "actionUnits": 9,
+      "toolViolations": 0,
+      "elapsedMs": 80925,
+      "usage": {
+        "inputTokens": 325494,
+        "cachedInputTokens": 306176,
+        "outputTokens": 958,
+        "reasoningTokens": 13
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorAddNoteHeader",
+      "seed": 0,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 25,
+      "actionUnits": 25,
+      "toolViolations": 0,
+      "elapsedMs": 194352,
+      "usage": {
+        "inputTokens": 1102926,
+        "cachedInputTokens": 1045760,
+        "outputTokens": 1860,
+        "reasoningTokens": 28
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorAddNoteHeader",
+      "seed": 1,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 17,
+      "actionUnits": 17,
+      "toolViolations": 0,
+      "elapsedMs": 125293,
+      "usage": {
+        "inputTokens": 658050,
+        "cachedInputTokens": 611072,
+        "outputTokens": 1273,
+        "reasoningTokens": 20
+      },
+      "cleanup": true
+    },
+    {
+      "task": "MarkorAddNoteHeader",
+      "seed": 2,
+      "reward": 1.0,
+      "success": true,
+      "outcome": "success",
+      "upstreamCleanup": true,
+      "exitCode": 0,
+      "timedOut": false,
+      "budgetExceeded": false,
+      "toolCalls": 21,
+      "actionUnits": 21,
+      "toolViolations": 0,
+      "elapsedMs": 176737,
+      "usage": {
+        "inputTokens": 889608,
+        "cachedInputTokens": 819968,
+        "outputTokens": 1606,
+        "reasoningTokens": 33
+      },
+      "cleanup": true
+    }
+  ],
+  "apkSha256": "e7b03ca097fbce9b71ac95c2a4b29db0f29b054f1a991886ac8fece43b13a618"
+}
