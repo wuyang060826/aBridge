@@ -1,6 +1,6 @@
 # aBridge for Android
 
-Android 13 and newer. The app registers as an independent computer device and connects directly to the server. Use a computer Device Key whose grant includes the capabilities you intend to enable.
+Development preview for Android 13 and newer. Use a Server built from this branch or a later build that includes the Android device time handshake. The app registers as an independent computer device and connects directly to the server. Use a computer Device Key whose grant includes the capabilities you intend to enable.
 
 ```sh
 npm run build

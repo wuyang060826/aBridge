@@ -96,3 +96,28 @@ python tools/android-world/merge-results.py .local/android/challenge/a/results.j
 ```
 
 The 80% acceptance threshold is 24/30, and 90% is 27/30. The merger requires all 30 registered pairs, with a common product revision, catalog and emulator image. Intermediate results are progress records.
+
+### Challenge results
+
+The first complete challenge run scored **15/30 (50%)**. Nine episodes missed the upstream goal, and six exceeded the 600-second limit. The test retained all 30 planned episodes. The APK and runner belong to the 0.4.17 development snapshot `0cabb04`.
+
+| Public task                                 | seed 3       | seed 4       | seed 5       | Passed |
+| ------------------------------------------- | ------------ | ------------ | ------------ | -----: |
+| `ExpenseAddMultipleFromMarkor`              | Goal not met | Goal not met | Goal not met |    0/3 |
+| `RecipeAddMultipleRecipesFromImage`         | Pass         | Pass         | Timeout      |    2/3 |
+| `MarkorMergeNotes`                          | Goal not met | Goal not met | Goal not met |    0/3 |
+| `SimpleCalendarAddRepeatingEvent`           | Pass         | Pass         | Pass         |    3/3 |
+| `VlcCreateTwoPlaylists`                     | Timeout      | Timeout      | Timeout      |    0/3 |
+| `ExpenseAddMultipleFromGallery`             | Pass         | Timeout      | Timeout      |    1/3 |
+| `RecipeAddMultipleRecipesFromMarkor`        | Pass         | Pass         | Goal not met |    2/3 |
+| `MarkorTranscribeReceipt`                   | Pass         | Goal not met | Pass         |    2/3 |
+| `RetroSavePlaylist`                         | Pass         | Pass         | Pass         |    3/3 |
+| `RecipeDeleteMultipleRecipesWithConstraint` | Pass         | Pass         | Goal not met |    2/3 |
+
+The agent made 1,114 MCP calls with a median latency of 515.7 seconds. AndroidWorld confirmed teardown for all 30 episodes. The gateway confirmed session cleanup for 28 episodes and recorded zero tool-scope violations. The two sessions without cleanup confirmation are visible in the [complete results](android-world-challenge-results.json). The challenge missed the documented 80% threshold.
+
+In this run, expense entry from notes and note merging scored 0/3 each. All three VLC two-playlist tasks timed out. These three task families account for nine of the 15 failures.
+
+### Integration verification
+
+After merging main 0.4.18, the debug APK built and installed on a Pixel 6 / API 33 emulator. An MCP screenshot returned a 1080 × 2400 image, and an element click opened the Apps page in Android Settings. The direct file interface passed three checks against the public Markor data on this APK. The fully scored Agent runs above were measured on their recorded 0.4.17 revisions.

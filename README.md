@@ -18,13 +18,14 @@
 
 ![Agent 经 MCP 调用 aBridge Server；macOS App 和浏览器扩展分别通过 WebSocket 直接连接 Server。](docs/assets/architecture.svg)
 
-Server 提供 MCP 接口、账户管理和授权控制。App、Linux CLI 与浏览器扩展**独立安装、独立授权、直接连接 Server**；浏览器操作不依赖 App，也不经 App 转发。
+Server 提供 MCP 接口、账户管理和授权控制。macOS App、Android App、Linux CLI 与浏览器扩展**独立安装、独立授权、直接连接 Server**；浏览器操作不依赖 App，也不经 App 转发。
 
-| 客户端                  | 能力                                       | 当前支持                   |
-| ----------------------- | ------------------------------------------ | -------------------------- |
-| **aBridge App**         | 屏幕观察、键鼠操作、Shell、UTF-8 文件读写  | Apple Silicon，macOS 14+   |
-| **aBridge Linux CLI**   | Shell、UTF-8 文件读写、systemd 后台运行    | Linux amd64 / arm64        |
-| **aBridge for Browser** | 网页观察、导航、点击、填表与浏览器代码执行 | Chromium 扩展，Chrome 116+ |
+| 客户端                          | 能力                                       | 当前支持                   |
+| ------------------------------- | ------------------------------------------ | -------------------------- |
+| **aBridge App**                 | 屏幕观察、键鼠操作、Shell、UTF-8 文件读写  | Apple Silicon，macOS 14+   |
+| **aBridge for Android（预览）** | 屏幕观察、触摸与文本输入、授权目录读写     | Android 13+                |
+| **aBridge Linux CLI**           | Shell、UTF-8 文件读写、systemd 后台运行    | Linux amd64 / arm64        |
+| **aBridge for Browser**         | 网页观察、导航、点击、填表与浏览器代码执行 | Chromium 扩展，Chrome 116+ |
 
 浏览器扩展复用当前 Profile 的登录态，并为任务创建独立标签页。每个 Profile 注册为独立设备；浏览器退出后设备离线，扩展不能自行启动浏览器。[Android 开发版](apps/android/README.md)支持屏幕观察、触摸和文本输入，以及用户授权目录的文本文件操作。Windows 原生客户端仍在规划中。
 
@@ -79,12 +80,14 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 
 ### 3. 连接设备
 
-按需安装客户端并填写可以访问的 Server 地址。App 和扩展通过浏览器授权，Linux CLI 使用管理台签发的 Device Token：
+按需安装客户端并填写可以访问的 Server 地址。macOS App 和扩展通过浏览器授权，Linux CLI 和 Android 客户端使用管理台签发的设备凭据：
 
 | 客户端         | 安装与连接                                                                                                                                                               |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **浏览器扩展** | 从 [Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) 安装，点击扩展图标填写 Server 地址，完成浏览器授权。 |
 | **macOS App**  | 从 [GitHub Releases](https://github.com/xerrors/aBridge/releases) 下载 Apple Silicon 包，填写 Server 地址并完成授权，启用所需能力。                                      |
+
+Android 预览版的构建、绑定和能力说明见 [Android 客户端](apps/android/README.md)。
 
 Linux CLI 的构建、绑定和后台安装见 [Linux 客户端](apps/linux-client/README.md)。
 
@@ -169,6 +172,8 @@ npm run benchmark:miniwob
 | **合计**             | **15/15** |
 
 固定 gpt-6.1-sol / medium、seed 0–2 和每例 360 秒 / 45 个操作预算单位。完整运行零剔除、无逐例重试。279 次 MCP 调用，Agent 耗时中位数 146.7 秒。独立的直接文件 API 验收 **3/3**。[方法、限制与历史失败](docs/benchmarks/android-world.md) · [逐例数据](docs/benchmarks/android-world-results.json)
+
+挑战集覆盖 7 个应用、10 类任务，**15/30（50%）**。其中 9 例未达目标、6 例超时，低于 80% 目标。挑战集采用独立的 600 秒 / 75 个操作预算单位。[挑战集逐例数据](docs/benchmarks/android-world-challenge-results.json)
 
 ## 授权与安全边界
 
