@@ -811,6 +811,7 @@ export class ControlService {
             capabilities: device.capabilities,
             heartbeat_interval: 10,
             lease_seconds: 30,
+            server_time: this.now(),
           });
           if (this.deviceConnections.get(device.id) === ticket)
             this.store.updateDeviceMetadata(device.id, ticket.credentialVersion, ticket.epoch, metadata);
@@ -909,6 +910,7 @@ export class ControlService {
         device_name: device.name,
         connection_epoch: ticket.epoch,
         lease_seconds: 30,
+        server_time: this.now(),
       });
       return;
     }

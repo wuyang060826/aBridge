@@ -1,0 +1,12 @@
+{
+  "upstream": "55ddaf5edc6f6c25673aed343907d5b9dca66f84",
+  "emulator": { "profile": "Pixel 6", "api": 33, "arch": "arm64-v8a" },
+  "tasks": ["FilesMoveFile", "FilesDeleteFile", "MarkorCreateNote", "MarkorEditNote", "MarkorAddNoteHeader"],
+  "seeds": [0, 1, 2],
+  "model": "gpt-6.1-sol",
+  "reasoning": "medium",
+  "episodeLimitMs": 360000,
+  "maxToolCalls": 45,
+  "batchBudget": "charge each click against the same tool budget",
+  "retries": 0
+}

@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 
-const allowedTools = new Set(["browser_observe", "browser_read", "browser_act", "browser_wait"]);
+const browserTools = new Set(["browser_observe", "browser_read", "browser_act", "browser_wait"]);
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,9 +58,12 @@ export async function createAgentGateway(options: {
   sessionId: string;
   maxToolCalls: number;
   onBudgetExceeded?: () => void;
+  tools?: readonly string[];
+  toolCost?: (tool: string, args: Record<string, unknown>) => number;
 }) {
   if (!Number.isSafeInteger(options.maxToolCalls) || options.maxToolCalls < 0)
     throw Error("Invalid tool budget");
+  const allowedTools = options.tools ? new Set(options.tools) : browserTools;
   const target = new URL(options.targetUrl);
   if (target.pathname === "/") target.pathname = "/mcp";
   const token = randomBytes(32).toString("hex");
@@ -120,7 +123,8 @@ export async function createAgentGateway(options: {
           const args = record(params.arguments) ? params.arguments : {};
           call = { tool, args, status: 0, elapsedMs: 0 };
           calls.push(call);
-          attempts++;
+          const cost = options.toolCost?.(tool, args) ?? 1;
+          attempts += Number.isSafeInteger(cost) && cost > 0 ? cost : 1;
           if (attempts > options.maxToolCalls) {
             if (!budgetExceeded) {
               budgetExceeded = true;
@@ -228,6 +232,9 @@ export async function createAgentGateway(options: {
     token,
     calls,
     violations,
+    get actionUnits() {
+      return attempts;
+    },
     get budgetExceeded() {
       return budgetExceeded;
     },

@@ -2,7 +2,7 @@
 
 ## 组成与职责
 
-Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信。Linux CLI 使用 Rust。Server 与各客户端分别部署：App 提供桌面、Shell 和文件，Linux CLI 提供 Shell 和文件，扩展提供浏览器，各客户端不互为运行前提。
+Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信；Linux CLI 使用 Rust，Android App 使用 Kotlin。Server 与各客户端分别部署：Mac 提供桌面、Shell 和文件，Linux CLI 提供 Shell 和文件，Android App 提供屏幕、输入和授权目录读写，扩展提供浏览器。
 
 ```text
 MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
@@ -13,6 +13,9 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
                                        │                ├ Shell
                                        │                └ UTF-8 文件
                                        ├─ /ws/device ─ Rust Linux CLI：Shell / UTF-8 文件
+                                       ├─ /ws/device ─ Kotlin Android 客户端
+                                       │                ├ 无障碍观察与触摸输入
+                                       │                └ 系统选择器授权的 UTF-8 文件
                                        └─ /ws/browser ─ TypeScript 浏览器扩展
                                                         └ Profile 自有任务标签
 ```

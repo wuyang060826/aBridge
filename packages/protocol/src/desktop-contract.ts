@@ -23,6 +23,7 @@ export function desktopContract() {
     toolCapabilities: p.TOOL_CAPABILITIES,
     limits: {
       messageBytes: p.MAX_MESSAGE_BYTES,
+      imageBytes: p.MAX_IMAGE_BYTES,
       operations: p.MAX_DEVICE_OPERATIONS,
       leaseSeconds: p.DEVICE_LEASE_SECONDS,
       heartbeatSeconds: p.HEARTBEAT_SECONDS,

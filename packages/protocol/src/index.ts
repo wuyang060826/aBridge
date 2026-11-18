@@ -252,6 +252,32 @@ const clickSchema = portable(
   ],
   "Use element_ref or both screenshot coordinates",
 );
+const longPressSchema = portable(
+  z
+    .object({
+      type: z.literal("long_press"),
+      element_ref: elementRefSchema.optional(),
+      x: coordinateSchema.optional(),
+      y: coordinateSchema.optional(),
+    })
+    .strict(),
+  [
+    "or",
+    ["and", ["exists", "element_ref"], ["not", ["exists", "x"]], ["not", ["exists", "y"]]],
+    ["and", ["not", ["exists", "element_ref"]], ["exists", "x"], ["exists", "y"]],
+  ],
+  "Use element_ref or both screenshot coordinates",
+);
+const clickRefsSchema = z
+  .object({
+    type: z.literal("click_refs"),
+    element_refs: portable(
+      z.array(elementRefSchema).min(2).max(12),
+      ["unique"],
+      "Each element must be distinct",
+    ),
+  })
+  .strict();
 const typeSchema = z
   .object({
     type: z.literal("type"),
@@ -293,6 +319,8 @@ const scrollSchema = portable(
 );
 export const computerActionSchema = z.discriminatedUnion("type", [
   clickSchema,
+  longPressSchema,
+  clickRefsSchema,
   typeSchema,
   keySchema,
   moveSchema,
@@ -655,6 +683,7 @@ export const deviceWelcomeSchema = z
     owner_name: z.string(),
     lease_seconds: z.number().positive(),
     heartbeat_interval: z.number().positive(),
+    server_time: z.number().positive().optional(),
   })
   .passthrough();
 

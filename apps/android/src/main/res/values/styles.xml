@@ -1,0 +1,6 @@
+<resources>
+    <string name="service_description">Shares screen observations and performs actions requested by an authorized aBridge Agent when you enable those capabilities.</string>
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#0066DD</item>
+    </style>
+</resources>

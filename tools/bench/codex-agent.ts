@@ -31,7 +31,10 @@ function tokenCount(value: unknown): value is number {
 }
 
 /** Parse CLI JSONL only; never executes commands or contacts a model. */
-export function parseCodexAgentLog(jsonl: string): AgentTranscript {
+export function parseCodexAgentLog(
+  jsonl: string,
+  tools: ReadonlySet<string> = allowedTools,
+): AgentTranscript {
   const result: AgentTranscript = {
     usage: null,
     mcpCalls: 0,
@@ -141,7 +144,7 @@ export function parseCodexAgentLog(jsonl: string): AgentTranscript {
       !["mcp_tool_call", "tool_call"].includes(item.type) ||
       server !== "abridge" ||
       !tool ||
-      !allowedTools.has(tool)
+      !tools.has(tool)
     ) {
       // Names only: never copy tool arguments, results, prompts or environment into audit messages.
       violations.add(`Disallowed tool item ${id}: ${item.type} ${server ?? "unknown"}/${tool ?? "unknown"}`);
@@ -162,6 +165,7 @@ export async function runCodexAgent(options: {
   modelCatalogPath?: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  actor?: { tools: readonly string[]; instruction: string };
 }): Promise<AgentTranscript & { exitCode: number | null; timedOut: boolean }> {
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 2_147_483_647)
     throw Error("Codex timeoutMs must be a positive integer within the Node timer range");
@@ -178,6 +182,9 @@ export async function runCodexAgent(options: {
   }
   const environment: NodeJS.ProcessEnv = { ...process.env, ABRIDGE_BENCH_AGENT_KEY: options.bearerToken };
   delete environment.CODEX_THREAD_ID;
+  const tools = options.actor?.tools ?? [...allowedTools];
+  if (tools.length === 0 || tools.some((tool) => !/^[a-z_]+$/.test(tool))) throw Error("Invalid actor tools");
+  const approvals = tools.map((tool) => `${tool}={approval_mode="approve"}`).join(",");
   const settings = [
     "features.shell_tool=false",
     "features.apps=false",
@@ -189,18 +196,24 @@ export async function runCodexAgent(options: {
     "plugins={}",
     'approval_policy="never"',
     'model_reasoning_effort="medium"',
-    `mcp_servers={abridge={url=${JSON.stringify(options.serverUrl.replace(/\/$/, "") + "/mcp")},bearer_token_env_var="ABRIDGE_BENCH_AGENT_KEY",enabled_tools=["browser_observe","browser_read","browser_act","browser_wait"],required=true,default_tools_approval_mode="approve",tools={browser_observe={approval_mode="approve"},browser_read={approval_mode="approve"},browser_act={approval_mode="approve"},browser_wait={approval_mode="approve"}}}}`,
+    `mcp_servers={abridge={url=${JSON.stringify(options.serverUrl.replace(/\/$/, "") + "/mcp")},bearer_token_env_var="ABRIDGE_BENCH_AGENT_KEY",enabled_tools=${JSON.stringify(tools)},required=true,default_tools_approval_mode="approve",tools={${approvals}}}}`,
   ];
   if (options.modelCatalogPath)
     settings.push(`model_catalog_json=${JSON.stringify(options.modelCatalogPath)}`);
   // The prompt contains the task and opaque session ID only; grading implementation is not provided.
-  const prompt = [
-    "Complete the browser task using only the abridge browser_observe, browser_read, browser_act and browser_wait tools.",
-    `Use the already-open browser session_id ${JSON.stringify(options.sessionId)}.`,
-    "Observe the page before acting. Request screenshots when needed. Do not use shell, files, network, other tools, browser_exec or page evaluation.",
-    "Do not navigate away from the assigned task or inspect grader implementation. Stop when the visible task is complete and give a concise final response.",
-    options.taskPrompt,
-  ].join("\n\n");
+  const prompt = options.actor
+    ? [
+        options.actor.instruction,
+        `Session ID: ${JSON.stringify(options.sessionId)}`,
+        options.taskPrompt,
+      ].join("\n\n")
+    : [
+        "Complete the browser task using only the abridge browser_observe, browser_read, browser_act and browser_wait tools.",
+        `Use the already-open browser session_id ${JSON.stringify(options.sessionId)}.`,
+        "Observe the page before acting. Request screenshots when needed. Do not use shell, files, network, other tools, browser_exec or page evaluation.",
+        "Do not navigate away from the assigned task or inspect grader implementation. Stop when the visible task is complete and give a concise final response.",
+        options.taskPrompt,
+      ].join("\n\n");
   let timedOut = false;
   let aborted = false;
   let infraError: Error | undefined;
@@ -273,7 +286,7 @@ export async function runCodexAgent(options: {
   } finally {
     await Promise.all([stdout.close(), stderr.close()]);
   }
-  const parsed = parseCodexAgentLog(await readFile(stdoutPath, "utf8"));
+  const parsed = parseCodexAgentLog(await readFile(stdoutPath, "utf8"), new Set(tools));
   if (infraError) {
     parsed.usage = null;
     parsed.finalText = `Infrastructure error: Codex process could not run (${"code" in infraError ? String(infraError.code) : infraError.name})`;
