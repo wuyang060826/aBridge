@@ -1,12 +1,10 @@
 {
   "main": {
     "cases": 12,
-    "strictSuccess": 11,
-    "toolCalls": 63,
+    "strictSuccess": 12,
+    "toolCalls": 67,
     "toolErrors": {
-      "invalid_action": 2,
-      "outcome_unknown": 1,
-      "task_tab_missing": 1
+      "invalid_action": 2
     },
     "toolViolations": 0,
     "knownUsageCases": 12,

@@ -122,6 +122,7 @@ const history = await Promise.all(
     { version: "本轮stage1基线", file: "miniwob-v2-stage1-baseline.json" },
     { version: "本轮stage1候选原始判分", file: "miniwob-v2-stage1-results.json" },
     { version: "本轮stage1候选全量重解析", file: "miniwob-v2-stage1-rescored.json" },
+    { version: "整合0.4.16前的0.4.14完整修复版", file: "miniwob-v2-premerge-results.json" },
   ].map(async (entry) => {
     const data = JSON.parse(await readFile(resolve(root, "docs/benchmarks", entry.file), "utf8")) as Snapshot;
     validateSnapshot(data);

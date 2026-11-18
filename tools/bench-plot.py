@@ -35,8 +35,8 @@ def summary(d):
       output=sum(u['outputTokens'] for u in known),coverage=len(known),cleanup=sum(e['cleanup'] for e in es))
 a=summary(base);b=summary(fixed)
 text(.055,.947,'aBridge · 浏览器 Agent 工具优化验证',25,weight='bold')
-text(.055,.91,'0.4.14 · 固定 gpt-6.1-sol / medium 与模型目录 · 相同任务 prompt / 种子 / 预算',12,muted)
-for x,title,value,sub,color in [(.055,'启动修复后基线',f"{a['s']}/{a['n']}",f"成功率 {a['s']/a['n']:.1%}",muted),(.355,'仅优化工具',f"{b['s']}/{b['n']}",f"成功率 {b['s']/b['n']:.1%}",teal),(.655,'额外种子（非盲测）',f"{summary(holdout)['s']}/{summary(holdout)['n']}" if holdout else '待测','seed = 2，单独统计',navy)]:
+text(.055,.91,f"v{fixed['productVersion']} · 固定 gpt-6.1-sol / medium 与模型目录 · 相同任务 prompt / 种子 / 预算",12,muted)
+for x,title,value,sub,color in [(.055,'0.4.14 启动修复后基线',f"{a['s']}/{a['n']}",f"成功率 {a['s']/a['n']:.1%}",muted),(.355,'0.4.16 通用工具修复',f"{b['s']}/{b['n']}",f"成功率 {b['s']/b['n']:.1%}",teal),(.655,'额外种子（非盲测）',f"{summary(holdout)['s']}/{summary(holdout)['n']}" if holdout else '待测','seed = 2，单独统计',navy)]:
     fig.add_artist(FancyBboxPatch((x,.754),.282,.12,boxstyle='round,pad=0.008,rounding_size=0.012',transform=fig.transFigure,facecolor=light,edgecolor='none'))
     text(x+.015,.843,title,12,muted);text(x+.015,.788,value,29,color,weight='bold');text(x+.122,.792,sub,11,color)
 text(.055,.705,'同一批任务的成功数',16,weight='bold')
@@ -75,6 +75,7 @@ artifact=root/'.local/bench/reliability-v2/artifacts/comparison.png';artifact.pa
 fig.savefig(artifact,dpi=190,facecolor='white')
 svg=root/'docs/benchmarks/miniwob-v2-comparison.svg'
 fig.savefig(svg,facecolor='white',metadata={'Date':None})
+svg.write_text('\n'.join(line.rstrip() for line in svg.read_text().splitlines())+'\n')
 inputs=['miniwob-v2-baseline.json','miniwob-v2-results.json','miniwob-v2-extra.json']
 digest=hashlib.sha256(b''.join((root/'docs/benchmarks'/f).read_bytes() for f in inputs)).hexdigest()
 with svg.open('a') as out: out.write('\n<!-- abridge-input-sha256:'+digest+' -->\n')
