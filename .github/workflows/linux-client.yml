@@ -4,10 +4,11 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: linux-client-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   linux-client:

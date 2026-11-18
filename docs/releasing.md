@@ -1,6 +1,6 @@
 # 发布
 
-软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后先执行完整检查，再生成 Server、浏览器 ZIP 和 macOS Apple Silicon 包。
+软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后执行完整检查，生成 Server、浏览器 ZIP、macOS Apple Silicon 包和 Linux CLI 包。
 
 项目采用根目录 [Apache-2.0](../LICENSE)；第三方组件保留各自许可证。候选构建成功、上传到商店、商店审核通过和 npm 实际可安装是不同状态。
 
@@ -70,6 +70,10 @@ npm run package:macos
 当前仅支持 Apple Silicon/macOS14+。构建与运行时自检不等于用户设备已授予录屏和辅助功能；ad hoc 原生签名改变还可能影响现有系统授权。不要放宽 designated requirement 来规避权限校验。
 
 [Apple 官方公证说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) · [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+## Linux
+
+发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带各架构的 `abridge-client-<version>-<target>.tar.gz`、SHA-256 和体积报告。下载后按 [Linux 安装说明](../apps/linux-client/README.md#安装与绑定) 核对校验和。
 
 ## Chrome 应用商店
 
