@@ -189,13 +189,13 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "browser_observe",
-    "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after 10s and actions/navigation.",
+    "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after 60s and actions/navigation.",
     browserObserveSchema.safeExtend(base),
     (a) => exec("browser_observe", a),
   );
   register(
     "browser_act",
-    "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native actions already scroll and check the target. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
+    "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native pointer actions already scroll and check the target. Scroll changes DOM offsets and reports actual delta; it does not dispatch wheel events. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
     browserActSchema.safeExtend(base),
     (a) => exec("browser_act", a),
   );

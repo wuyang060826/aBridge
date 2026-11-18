@@ -16,6 +16,7 @@ interface AXNode {
 }
 export interface CdpResults {
   "Accessibility.getFullAXTree": { nodes?: AXNode[] };
+  "Runtime.getProperties": { result?: { name: string; value?: { value?: unknown; objectId?: string } }[] };
   "Runtime.evaluate": {
     result?: { value?: unknown; objectId?: string };
     exceptionDetails?: unknown;

@@ -175,9 +175,11 @@ export async function createBenchmarkEnvironment(options: {
       `chrome.runtime.sendMessage(${JSON.stringify({ type: "bind_token", server: url, device_key: device.key })})`,
     );
     if (!record(bind) || bind.ok !== true) throw Error("Disposable extension binding rejected");
+    let connectionStatus: unknown;
     for (let i = 0; i < 150; i++) {
       ensureActive();
       const status = await popup.evaluate<unknown>("chrome.runtime.sendMessage({type:'status'})");
+      connectionStatus = status;
       if (record(status) && status.connected === true) {
         ready = true;
         break;
@@ -186,7 +188,13 @@ export async function createBenchmarkEnvironment(options: {
       await delay(100);
     }
     await popup.close();
-    if (!ready) throw Error("Extension did not connect to the isolated Server");
+    if (!ready) {
+      await writeFile(
+        join(runDirectory, "connection-failure.json"),
+        JSON.stringify(connectionStatus, null, 2),
+      );
+      throw Error("Extension did not connect to the isolated Server");
+    }
     async function call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
       ensureActive();
       mcpCalls++;

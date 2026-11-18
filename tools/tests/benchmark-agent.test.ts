@@ -110,3 +110,52 @@ test("Missing usage stays unknown; absent reasoning stays null and failed turns 
   assert.equal(invalid.usage, null);
   assert.equal(parseCodexAgentLog("not-json").toolViolations.length, 1);
 });
+
+test("CLI message-only error items preserve diagnostics without claiming tool execution", () => {
+  const message = "Codex could not update marketplace fixture: git ls-remote timed out after 30s";
+  const result = parseCodexAgentLog(
+    jsonl(
+      { type: "item.completed", item: { id: "diagnostic-1", type: "error", message } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 5, output_tokens: 3 } },
+      { type: "item.completed", item: { type: "agent_message", text: "Completed the visible task." } },
+    ),
+  );
+  assert.deepEqual(result.diagnostics, [message]);
+  assert.deepEqual(result.toolViolations, []);
+  assert.deepEqual(result.calls, []);
+  assert.equal(result.mcpCalls, 0);
+  assert.equal(result.error, undefined);
+  assert.equal(result.usage?.inputTokens, 10);
+  assert.equal(result.finalText, "Completed the visible task.");
+});
+
+test("error-shaped executable or unknown items still fail closed", () => {
+  const variants = [
+    { tool: "browser_exec" },
+    { tool_name: "browser_exec" },
+    { name: "mcp__abridge__browser_exec" },
+    { server: "abridge" },
+    { function: { name: "browser_exec" } },
+    { command: "fixture executable" },
+    { arguments: {} },
+    { tool: null },
+    { unknown_metadata: true },
+  ];
+  for (const fields of variants) {
+    const result = parseCodexAgentLog(
+      jsonl({ type: "item.completed", item: { type: "error", message: "Fixture diagnostic", ...fields } }),
+    );
+    assert.equal(result.toolViolations.length, 1, JSON.stringify(fields));
+    assert.deepEqual(result.diagnostics, []);
+  }
+  assert.equal(
+    parseCodexAgentLog(jsonl({ type: "item.completed", item: { type: "error" } })).toolViolations.length,
+    1,
+  );
+  assert.equal(
+    parseCodexAgentLog(
+      jsonl({ type: "item.completed", item: { type: "future_tool", message: "Fixture diagnostic" } }),
+    ).toolViolations.length,
+    1,
+  );
+});

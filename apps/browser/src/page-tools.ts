@@ -1,18 +1,207 @@
-// Page-local functions are serialized explicitly; no extension globals enter the page.
-export function prepareInput(this: HTMLElement) {
-  if (!this.isConnected) throw new Error("Element detached");
-  this.scrollIntoView({ block: "center", inline: "center" });
-  const doc = this.ownerDocument;
+/** Bounded, read-only discovery of visible pointer affordances absent from semantic AX controls. */
+export function capturePointerTargets() {
+  const targets: HTMLElement[] = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  let scanned = 0,
+    truncated = false;
+  while (walker.nextNode()) {
+    if (++scanned > 4000) {
+      truncated = true;
+      break;
+    }
+    const el = walker.currentNode as HTMLElement;
+    if (["SCRIPT", "STYLE", "NOSCRIPT", "IFRAME", "CANVAS", "OBJECT", "EMBED"].includes(el.tagName)) continue;
+    if (el.closest("button,a,input,select,textarea,[role='button'],[role='link']")) continue;
+    const style = getComputedStyle(el);
+    if (
+      style.cursor !== "pointer" ||
+      style.visibility !== "visible" ||
+      style.display === "none" ||
+      Number(style.opacity) === 0
+    )
+      continue;
+    let transparent = false;
+    for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (Number(getComputedStyle(ancestor).opacity) === 0) {
+        transparent = true;
+        break;
+      }
+    }
+    if (transparent) continue;
+    // Visible text already has AX text references; this fallback supplies unnamed visual affordances.
+    if ((el.innerText || "").trim()) continue;
+    if (
+      [...el.children].some(
+        (child) => getComputedStyle(child).cursor === "pointer" && child.getClientRects().length,
+      )
+    )
+      continue;
+    const r = el.getBoundingClientRect();
+    const x = Math.max(0, r.left),
+      y = Math.max(0, r.top);
+    const width = Math.min(innerWidth, r.right) - x,
+      height = Math.min(innerHeight, r.bottom) - y;
+    if (width < 2 || height < 2) continue;
+    const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+    if (!hit || (hit !== el && !el.contains(hit))) continue;
+    if (targets.length >= 16) {
+      truncated = true;
+      break;
+    }
+    targets.push(el);
+  }
+  return { targets, truncated };
+}
+/** Metadata is read from the same element handle later bound to the action reference. */
+export function pointerTargetDetails(this: HTMLElement) {
+  if (!this.isConnected) return null;
+  const style = getComputedStyle(this);
+  if (style.cursor !== "pointer" || style.visibility !== "visible" || style.display === "none") return null;
+  for (let ancestor: HTMLElement | null = this; ancestor; ancestor = ancestor.parentElement)
+    if (Number(getComputedStyle(ancestor).opacity) === 0) return null;
+  const r = this.getBoundingClientRect();
+  const x = Math.max(0, r.left),
+    y = Math.max(0, r.top),
+    width = Math.min(innerWidth, r.right) - x,
+    height = Math.min(innerHeight, r.bottom) - y;
+  if (width < 2 || height < 2) return null;
+  const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+  if (!hit || (hit !== this && !this.contains(hit))) return null;
+  return {
+    name: (
+      this.getAttribute("aria-label") ||
+      this.getAttribute("title") ||
+      this.getAttribute("alt") ||
+      "Unlabelled clickable target"
+    ).slice(0, 240),
+    bounds: { x, y, width, height },
+  };
+}
+/** Scroll offsets directly: background compositor wheel acknowledgement does not prove movement. */
+export function scrollElement(this: Node, deltaX: number, deltaY: number) {
+  const doc = this.nodeType === 9 ? (this as Document) : this.ownerDocument!;
   const win = doc.defaultView!;
-  const rect = this.getBoundingClientRect();
-  const style = win.getComputedStyle(this);
+  let candidate =
+    this.nodeType === 9 ? doc.scrollingElement : this.nodeType === 3 ? this.parentElement : (this as Element);
+  let target: Element | null = null;
+  while (candidate && candidate !== doc.scrollingElement) {
+    const style = win.getComputedStyle(candidate);
+    const vertical =
+      deltaY !== 0 &&
+      /^(auto|scroll|overlay)$/.test(style.overflowY) &&
+      candidate.scrollHeight > candidate.clientHeight;
+    const horizontal =
+      deltaX !== 0 &&
+      /^(auto|scroll|overlay)$/.test(style.overflowX) &&
+      candidate.scrollWidth > candidate.clientWidth;
+    if (vertical || horizontal) {
+      target = candidate;
+      break;
+    }
+    candidate = candidate.parentElement;
+  }
+  target ||= doc.scrollingElement || doc.documentElement;
+  const before = { x: target.scrollLeft, y: target.scrollTop };
+  target.scrollBy({ left: deltaX, top: deltaY, behavior: "instant" });
+  const after = { x: target.scrollLeft, y: target.scrollTop };
+  return {
+    target: target === doc.scrollingElement ? "page" : "element",
+    before,
+    after,
+    delta: { x: after.x - before.x, y: after.y - before.y },
+  };
+}
+// Page-local functions are serialized explicitly; no extension globals enter the page.
+/** Pure validation runs before focus/scroll or native input, so a known refusal keeps the task tab. */
+export function validateInput(this: Node, action: string): string | null {
+  if (this.nodeType === 9)
+    return action === "press" || action === "scroll" ? null : "页面根节点只支持按键或滚动，请选择具体元素";
+  if (this.nodeType === 3 && (action === "fill" || action === "select"))
+    return "文本引用只用于定位文字，请选择可编辑输入框或下拉控件";
+  const node = this.nodeType === 3 ? this.parentElement : this;
+  if (!node || node.nodeType !== 1) return "目标不是可操作元素，请重新观察";
+  const element = node as HTMLElement;
+  if (action === "fill") {
+    const input = element as HTMLInputElement;
+    if (input.readOnly) return "目标为只读字段，不能 fill；请点击控件并使用页面提供的选择界面";
+    if (input.disabled || element.closest("[inert]")) return "目标已禁用，不能 fill";
+    if (
+      !element.isContentEditable &&
+      (!["INPUT", "TEXTAREA"].includes(element.tagName) ||
+        ["file", "checkbox", "radio", "button", "submit", "reset", "hidden"].includes(input.type))
+    )
+      return "目标不是可编辑文本字段；请重新观察并选择文本输入框";
+  }
+  if (!element.isConnected) return "目标已离开页面，请重新观察";
+  let rect = element.getBoundingClientRect();
+  const doc = element.ownerDocument,
+    win = doc.defaultView!;
+  if (this.nodeType === 3) {
+    const range = doc.createRange();
+    range.selectNodeContents(this);
+    rect = range.getBoundingClientRect();
+  }
+  if (rect.width <= 0 || rect.height <= 0) return "目标不可见，请重新观察";
+  if (action === "scroll") return null; // DOM offsets do not require a pointer hit on the descendant.
+  const x = rect.x + rect.width / 2,
+    y = rect.y + rect.height / 2;
+  // Only reject current in-viewport occlusion here: no scroll/focus/input has happened.
+  if (x >= 0 && y >= 0 && x < win.innerWidth && y < win.innerHeight) {
+    const hit = doc.elementFromPoint(x, y);
+    if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit))) {
+      // A point can be inside the page viewport but outside a nested scrollport.
+      // Let native preparation reveal that original target, then perform its final hit test.
+      const canReveal = ["click", "fill", "hover", "press"].includes(action);
+      for (let parent = canReveal ? element.parentElement : null; parent; parent = parent.parentElement) {
+        const style = win.getComputedStyle(parent);
+        const clipsX = /^(auto|scroll|hidden|overlay)$/.test(style.overflowX);
+        const clipsY = /^(auto|scroll|hidden|overlay)$/.test(style.overflowY);
+        if (!clipsX && !clipsY) continue;
+        if (style.transform && style.transform !== "none") return null;
+        const p = parent.getBoundingClientRect();
+        const left = p.left + (parent.clientLeft || 0),
+          top = p.top + (parent.clientTop || 0);
+        if (
+          (clipsX && (x < left || x >= left + parent.clientWidth)) ||
+          (clipsY && (y < top || y >= top + parent.clientHeight))
+        )
+          return null;
+      }
+      return "目标被覆盖，未执行输入；请先处理覆盖层并重新观察";
+    }
+  }
+  return null;
+}
+
+export function prepareInput(this: HTMLElement | Document | Text, action?: string) {
+  const rootKey = this.nodeType === 9 && action === "press";
+  const element =
+    this.nodeType === 9
+      ? (this as Document).body
+      : this.nodeType === 3
+        ? this.parentElement
+        : (this as HTMLElement);
+  if (!element) throw new Error("Element detached");
+  if (!element.isConnected) throw new Error("Element detached");
+  if (rootKey) return { x: 0, y: 0 };
+  element.scrollIntoView({ block: "center", inline: "center" });
+  const doc = element.ownerDocument;
+  const win = doc.defaultView!;
+  let rect = element.getBoundingClientRect();
+  if (this.nodeType === 3) {
+    const range = doc.createRange();
+    range.selectNodeContents(this);
+    rect = range.getBoundingClientRect();
+  }
+  const style = win.getComputedStyle(element);
   if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none")
     throw new Error("Element is not visible");
-  if (this.matches(":disabled") || this.closest("[inert]")) throw new Error("Element is disabled");
+  if (element.matches(":disabled") || element.closest("[inert]")) throw new Error("Element is disabled");
   let x = Math.max(0, Math.min(win.innerWidth - 1, rect.x + rect.width / 2));
   let y = Math.max(0, Math.min(win.innerHeight - 1, rect.y + rect.height / 2));
   const hit = doc.elementFromPoint(x, y);
-  if (!hit || (hit !== this && !this.contains(hit))) throw new Error("Element is obscured");
+  if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit)))
+    throw new Error("Element is obscured");
   let current = win;
   while (current !== current.top) {
     const frame = current.frameElement as HTMLElement | null;
@@ -33,16 +222,28 @@ export function prepareInput(this: HTMLElement) {
     if (frame.ownerDocument.elementFromPoint(x, y) !== frame) throw new Error("Frame is obscured");
     current = frame.ownerDocument.defaultView!;
   }
-  this.focus({ preventScroll: true });
+  // Pointer input must keep native mouseDown → focus → mouseUp → click ordering.
+  // Pre-focusing a menu/combobox option can blur its trigger and destroy the target.
+  // Fill focuses in prepareFill; only element-directed key input needs focus here.
+  if (action === "press" && !rootKey) element.focus({ preventScroll: true });
   return { x, y };
 }
-export function selectValues(this: HTMLSelectElement, values: string[]) {
-  if (!this.isConnected || this.matches(":disabled") || this.tagName !== "SELECT")
-    throw new Error("Select unavailable");
-  if (!this.multiple && values.length !== 1) throw new Error("Single select requires one value");
+/** Read-only validation is shared by preflight and the final page-local write. */
+export function validateSelect(this: Node, values: string[]): string | null {
+  if (this.nodeType !== 1 || (this as Element).tagName !== "SELECT")
+    return "select 只支持原生 SELECT；自定义下拉框请点击可见控件与选项";
+  const element = this as HTMLSelectElement;
+  if (!element.isConnected) return "下拉控件已离开页面，请重新观察";
+  if (element.matches(":disabled") || element.closest("[inert]")) return "下拉控件已禁用";
+  if (!element.multiple && values.length !== 1) return "单选控件必须提供一个选项值";
   for (const value of values)
-    if (![...this.options].some((option) => option.value === value && !option.matches(":disabled")))
-      throw new Error("Option unavailable");
+    if (![...element.options].some((option) => option.value === value && !option.matches(":disabled")))
+      return "选项不存在或已禁用，请重新观察并选择有效选项值";
+  return null;
+}
+export function selectValues(this: HTMLSelectElement, values: string[]) {
+  const refusal = validateSelect.call(this, values);
+  if (refusal) return refusal;
   for (const option of this.options) option.selected = values.includes(option.value);
   const win = this.ownerDocument.defaultView!;
   this.dispatchEvent(new win.Event("input", { bubbles: true }));

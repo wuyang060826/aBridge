@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
-import { prepareInput } from "../src/page-tools.ts";
+import {
+  prepareInput,
+  validateInput,
+  validateSelect,
+  selectValues,
+  scrollElement,
+} from "../src/page-tools.ts";
 function fixture() {
   const event = () => ({
     listeners: [],
@@ -90,8 +96,8 @@ function fixture() {
     removed,
     tabs,
     request,
-    advance: () => {
-      now += 10000;
+    advance: (milliseconds = 60000) => {
+      now += milliseconds;
     },
     rejectWrite: () => {
       rejectWrite = true;
@@ -506,8 +512,9 @@ test("observation keeps visible text once, actionable refs, link destinations an
   };
   const { result } = await f.request("observe");
   assert.equal(result.text, "Unread\nNotification title");
-  assert.equal(result.elements.length, 4);
-  assert.equal(result.truncated, false);
+  assert.ok(result.elements.length > 4);
+  assert.equal(result.truncated, true);
+  assert.equal(result.elements[4].role, "statictext");
   assert.equal(result.elements[0].url, "https://github.example/notifications?query=is%3Aunread");
   assert.equal(result.elements[0].selected, true);
   assert.equal(result.elements[1].checked, "mixed");
@@ -1165,7 +1172,7 @@ test("press, select, scroll and hover expose distinct native or semantic routes"
   );
   assert.equal(
     f.calls.filter((call) => call[0] === "Input.dispatchMouseEvent" && call[2].type === "mouseWheel").length,
-    1,
+    0,
   );
 });
 
@@ -1691,4 +1698,522 @@ test("disposing the browser runtime releases task resources and event subscripti
   assert.equal(result.error.code, "session_closed");
   assert.equal(f.tabs.size, 1);
   await f.bridge.dispose();
+});
+
+test("visible non-semantic text has a reference and query can focus its click target", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: [
+          { backendDOMNodeId: 401, role: { value: "StaticText" }, name: { value: "Open detail" } },
+          { backendDOMNodeId: 402, role: { value: "InlineTextBox" }, name: { value: "Open detail" } },
+        ],
+      };
+    return send(target, method, params);
+  };
+  const observation = (await f.request("observe", "s1", { query: "Open detail" })).result;
+  assert.equal(observation.elements.length, 1);
+  assert.equal(observation.elements[0].name, "Open detail");
+  const action = await f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "click", element_ref: observation.elements[0].element_ref },
+  });
+  assert.equal(action.result.executed, true);
+  assert.equal(f.calls.find((c) => c[0] === "DOM.resolveNode")[2].backendNodeId, 401);
+});
+
+test("readonly validation refuses before focus or input and keeps the session available", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = (await f.request("observe")).result;
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("validateInput"))
+      return { result: { value: "Readonly: use the page picker" } };
+    return send(target, method, params);
+  };
+  const before = f.calls.length;
+  const result = await f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "fill", element_ref: "e2", text: "2020-01-01" },
+  });
+  assert.equal(result.error.code, "invalid_action");
+  assert.equal(f.removed.length, 0);
+  assert.equal(f.calls.slice(before).filter((c) => c[0].startsWith("Input.")).length, 0);
+  assert.ok((await f.request("observe")).result.observation_id);
+});
+
+test("pure validation accepts root keyboard actions and rejects readonly without focusing", () => {
+  assert.equal(validateInput.call({ nodeType: 9 }, "press"), null);
+  assert.match(validateInput.call({ nodeType: 9 }, "click"), /根节点/);
+  assert.match(validateInput.call({ nodeType: 1, readOnly: true }, "fill"), /只读/);
+});
+
+test("text references target glyph bounds rather than a mixed container's center", () => {
+  const win = {
+    innerWidth: 1000,
+    innerHeight: 1000,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  win.top = win;
+  const parent = {
+    isConnected: true,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 400, height: 100 }),
+    matches: () => false,
+    closest: () => null,
+    contains: () => true,
+    focus() {},
+  };
+  const text = { nodeType: 3, parentElement: parent };
+  parent.ownerDocument = {
+    defaultView: win,
+    elementFromPoint: () => parent,
+    createRange: () => ({
+      selectNodeContents(node) {
+        assert.equal(node, text);
+      },
+      getBoundingClientRect: () => ({ x: 10, y: 20, width: 30, height: 10 }),
+    }),
+  };
+  assert.deepEqual(prepareInput.call(text, "click"), { x: 25, y: 25 });
+  assert.match(
+    validateInput.call({ nodeType: 3, parentElement: { isContentEditable: true } }, "fill"),
+    /文本引用/,
+  );
+});
+
+test("references tolerate model latency within 60s while expiry still refuses before writing", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  let obs = (await f.request("observe")).result;
+  assert.equal(obs.expires_in, 60);
+  f.advance(30000);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).result.executed,
+    true,
+  );
+  obs = (await f.request("observe")).result;
+  f.advance(61000);
+  const before = f.calls.length;
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).error.code,
+    "stale_observation",
+  );
+  assert.equal(f.calls.slice(before).filter((c) => c[0].startsWith("Input.")).length, 0);
+});
+
+test("pointer preparation preserves native focus ordering; targeted key input still focuses", () => {
+  let focused = 0;
+  const win = {
+    innerWidth: 100,
+    innerHeight: 100,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  win.top = win;
+  const target = {
+    isConnected: true,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    matches: () => false,
+    closest: () => null,
+    contains: () => false,
+    focus() {
+      focused++;
+    },
+  };
+  target.ownerDocument = { defaultView: win, elementFromPoint: () => target };
+  for (const action of ["click", "hover", "scroll", "fill"]) prepareInput.call(target, action);
+  assert.equal(focused, 0);
+  prepareInput.call(target, "press");
+  assert.equal(focused, 1);
+});
+
+test("neutral visual targets keep original DOM identity and reject malformed geometry", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression.includes("capturePointerTargets"))
+      return { result: { objectId: "pointer-root" } };
+    if (method === "Runtime.getProperties")
+      return params.objectId === "pointer-root"
+        ? { result: [{ name: "targets", value: { objectId: "pointer-array" } }] }
+        : {
+            result: [
+              { name: "0", value: { objectId: "original-icon" } },
+              { name: "1", value: { objectId: "bad-icon" } },
+              { name: "2", value: { objectId: "duplicate-icon" } },
+            ],
+          };
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("pointerTargetDetails"))
+      return {
+        result: {
+          value:
+            params.objectId === "bad-icon"
+              ? { name: "invalid", bounds: { x: -1, y: 0, width: 0, height: 10 } }
+              : { name: "Unlabelled clickable target", bounds: { x: 10, y: 20, width: 24, height: 24 } },
+        },
+      };
+    if (method === "DOM.describeNode" && params.objectId) return { node: { backendNodeId: 701 } };
+    if (method === "DOM.getNodeForLocation") throw Error("Must never rebind by coordinates");
+    return send(target, method, params);
+  };
+  const obs = (await f.request("observe")).result;
+  assert.equal(obs.elements[0].role, "button");
+  const visual = obs.elements.filter((e) => e.role === "visualtarget");
+  assert.equal(visual.length, 1);
+  assert.deepEqual(visual[0].bounds, { x: 10, y: 20, width: 24, height: 24 });
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.refs.get(visual[0].element_ref), 701);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: visual[0].element_ref },
+      })
+    ).result.executed,
+    true,
+  );
+  assert.equal(f.calls.filter((c) => c[0] === "DOM.resolveNode").at(-1)[2].backendNodeId, 701);
+  assert.ok(
+    f.calls.some(
+      (c) => c[0] === "Runtime.releaseObjectGroup" && c[2].objectGroup.startsWith("abridge-pointer-"),
+    ),
+  );
+});
+
+test("current visible occlusion is rejected without scroll, focus or native input", () => {
+  let mutations = 0;
+  const el = {
+    nodeType: 1,
+    isConnected: true,
+    tagName: "INPUT",
+    type: "text",
+    closest: () => null,
+    getBoundingClientRect: () => ({ x: 5, y: 5, width: 20, height: 20 }),
+    contains: () => false,
+    focus() {
+      mutations++;
+    },
+    scrollIntoView() {
+      mutations++;
+    },
+    ownerDocument: { defaultView: { innerWidth: 100, innerHeight: 100 }, elementFromPoint: () => ({}) },
+  };
+  assert.match(validateInput.call(el, "fill"), /覆盖/);
+  assert.equal(mutations, 0);
+});
+
+test("DOM scroll chooses the nearest scroll container, reports actual delta and does not center the page", () => {
+  const calls = [];
+  const page = {
+    scrollTop: 0,
+    scrollLeft: 0,
+    scrollBy(options) {
+      calls.push([this, options]);
+      this.scrollTop += options.top;
+      this.scrollLeft += options.left;
+    },
+  };
+  const box = {
+    parentElement: page,
+    scrollHeight: 2000,
+    clientHeight: 160,
+    scrollWidth: 300,
+    clientWidth: 300,
+    scrollTop: 0,
+    scrollLeft: 0,
+    scrollBy: page.scrollBy,
+  };
+  const doc = {
+    scrollingElement: page,
+    documentElement: page,
+    defaultView: {
+      getComputedStyle: (el) =>
+        el === box
+          ? { overflowY: "auto", overflowX: "hidden" }
+          : { overflowY: "visible", overflowX: "visible" },
+    },
+  };
+  const leaf = { nodeType: 1, ownerDocument: doc, parentElement: box, scrollHeight: 20, clientHeight: 20 };
+  const result = scrollElement.call(leaf, 0, 650);
+  assert.deepEqual(result, {
+    target: "element",
+    before: { x: 0, y: 0 },
+    after: { x: 0, y: 650 },
+    delta: { x: 0, y: 650 },
+  });
+  assert.equal(page.scrollTop, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].behavior, "instant");
+  assert.equal(scrollElement.call({ ...doc, nodeType: 9 }, 0, 100).delta.y, 100);
+  assert.equal(page.scrollTop, 100);
+});
+
+test("a semantic scroll failure is unknown and never falls back to a second wheel or scroll", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const obs = (await f.request("observe")).result;
+  const send = f.chrome.debugger.sendCommand;
+  let attempts = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("scrollElement")) {
+      attempts++;
+      return { exceptionDetails: { text: "execution interrupted" } };
+    }
+    return send(target, method, params);
+  };
+  const result = await f.request("act", "s1", {
+    observation_id: obs.observation_id,
+    action: { type: "scroll", element_ref: "e1", delta_y: 650 },
+  });
+  assert.equal(result.error.code, "outcome_unknown");
+  assert.equal(attempts, 1);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mouseWheel").length,
+    0,
+  );
+});
+
+test("nested scrollport clipping is allowed to reveal, while a real overlay stays a pure refusal", () => {
+  const port = {
+    clientLeft: 0,
+    clientTop: 0,
+    clientWidth: 100,
+    clientHeight: 100,
+    parentElement: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+  };
+  const win = {
+    innerWidth: 500,
+    innerHeight: 500,
+    getComputedStyle: () => ({ overflowX: "hidden", overflowY: "auto", transform: "none" }),
+  };
+  const target = {
+    nodeType: 1,
+    isConnected: true,
+    parentElement: port,
+    contains: () => false,
+    getBoundingClientRect: () => ({ x: 10, y: 150, width: 20, height: 20 }),
+    ownerDocument: { defaultView: win, elementFromPoint: () => ({}) },
+  };
+  assert.equal(validateInput.call(target, "click"), null);
+  assert.match(validateInput.call(target, "select"), /覆盖/);
+  target.getBoundingClientRect = () => ({ x: 10, y: 20, width: 20, height: 20 });
+  assert.match(validateInput.call(target, "click"), /覆盖/);
+  assert.equal(validateInput.call(target, "scroll"), null);
+});
+
+test("observation exposes current readonly and input type metadata without exposing protected values", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let readonly = true;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: [
+          { backendDOMNodeId: 801, role: { value: "textbox" }, name: { value: "Choose date" } },
+          {
+            backendDOMNodeId: 802,
+            role: { value: "textbox" },
+            name: { value: "Secret" },
+            value: { value: "private-value" },
+            properties: [{ name: "protected", value: { value: true } }],
+          },
+        ],
+      };
+    if (method === "DOM.describeNode")
+      return {
+        node: {
+          attributes:
+            params.backendNodeId === 801
+              ? [...(readonly ? ["readonly", ""] : []), "type", "date"]
+              : ["type", "password"],
+        },
+      };
+    return send(target, method, params);
+  };
+  const first = (await f.request("observe")).result;
+  assert.equal(first.elements[0].read_only, true);
+  assert.equal(first.elements[0].input_type, "date");
+  assert.equal(first.elements[1].read_only, false);
+  assert.equal(first.elements[1].input_type, "password");
+  assert.equal(first.elements[1].value, undefined);
+  assert.equal(JSON.stringify(first).includes("private-value"), false);
+  readonly = false;
+  const second = (await f.request("observe")).result;
+  assert.equal(second.elements[0].read_only, false);
+  assert.match(second.observation_id, /^obs_/);
+});
+
+test("select validation rejects wrong kinds and invalid options before mutation, with final revalidation", () => {
+  let events = 0;
+  const options = [
+    { value: "a", selected: true, matches: () => false },
+    { value: "b", selected: false, matches: () => false },
+    { value: "disabled", selected: false, matches: () => true },
+  ];
+  const select = {
+    nodeType: 1,
+    tagName: "SELECT",
+    isConnected: true,
+    multiple: false,
+    matches: () => false,
+    closest: () => null,
+    options,
+    ownerDocument: { defaultView: { Event: class {} } },
+    dispatchEvent() {
+      events++;
+    },
+    get selectedOptions() {
+      return options.filter((o) => o.selected);
+    },
+  };
+  assert.match(validateSelect.call({ nodeType: 1, tagName: "DIV" }, ["a"]), /原生 SELECT/);
+  for (const values of [["missing"], ["disabled"], [], ["a", "b"]]) {
+    assert.equal(typeof selectValues.call(select, values), "string");
+    assert.deepEqual(
+      options.map((o) => o.selected),
+      [true, false, false],
+    );
+    assert.equal(events, 0);
+  }
+  for (const changed of [{ isConnected: false }, { matches: () => true }, { closest: () => ({}) }])
+    assert.equal(typeof validateSelect.call({ ...select, ...changed }, ["b"]), "string");
+  assert.equal(validateSelect.call(select, ["b"]), null);
+  select.matches = () => true; // Became disabled after preflight.
+  assert.equal(typeof selectValues.call(select, ["b"]), "string");
+  assert.equal(events, 0);
+  select.matches = () => false;
+  assert.deepEqual(selectValues.call(select, ["b"]), ["b"]);
+  assert.equal(events, 2);
+  select.multiple = true;
+  assert.deepEqual(selectValues.call(select, ["a", "b"]), ["a", "b"]);
+});
+
+test("select final known refusal preserves the task and permits same-page recovery", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let refuse = true;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (
+      method === "Runtime.callFunctionOn" &&
+      params.functionDeclaration.includes("return (function selectValues")
+    )
+      return { result: { value: refuse ? "Option became disabled" : ["a"] } };
+    return send(target, method, params);
+  };
+  const invoke = (observation_id) =>
+    f.request("act", "s1", {
+      observation_id,
+      action: { type: "select", element_ref: "e1", values: ["a"] },
+      observe_after: false,
+    });
+  const refused = await invoke(opened.result.observation.observation_id);
+  assert.equal(refused.error.code, "invalid_action");
+  assert.equal(f.removed.length, 0);
+  assert.equal(f.calls.filter((c) => c[0].startsWith("Input.")).length, 0);
+  refuse = false;
+  const observation = (await f.request("observe")).result;
+  assert.equal((await invoke(observation.observation_id)).result.executed, true);
+  assert.equal(f.calls.filter((c) => c[0] === "create").length, 1);
+});
+
+test("serialized select write embeds its shared validator without extension-scope captures", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "select", element_ref: "e1", values: ["a"] },
+    observe_after: false,
+  });
+  const declaration = f.calls.find(
+    (c) =>
+      c[0] === "Runtime.callFunctionOn" &&
+      c[2].functionDeclaration.startsWith("function(values){const validateSelect="),
+  )[2].functionDeclaration;
+  const pageFunction = Function(`return (${declaration})`)();
+  assert.match(pageFunction.call({ nodeType: 1, tagName: "DIV" }, ["a"]), /原生 SELECT/);
+  let events = 0;
+  const option = { value: "a", selected: false, matches: () => false };
+  const select = {
+    nodeType: 1,
+    tagName: "SELECT",
+    isConnected: true,
+    matches: () => false,
+    closest: () => null,
+    options: [option],
+    multiple: false,
+    ownerDocument: { defaultView: { Event: class {} } },
+    dispatchEvent() {
+      events++;
+    },
+    get selectedOptions() {
+      return option.selected ? [option] : [];
+    },
+  };
+  assert.deepEqual(pageFunction.call(select, ["a"]), ["a"]);
+  assert.equal(events, 2);
+});
+
+test("select exception with a string result remains unknown after the write and never replays", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let writes = 0;
+  let selected = "a";
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (
+      method === "Runtime.callFunctionOn" &&
+      params.functionDeclaration.startsWith("function(values){const validateSelect=")
+    ) {
+      writes++;
+      selected = "b";
+      return {
+        result: { type: "string", value: "dispatch failed after selection" },
+        exceptionDetails: {
+          text: "Uncaught",
+          exception: { type: "string", value: "dispatch failed after selection" },
+        },
+      };
+    }
+    return send(target, method, params);
+  };
+  const request = {
+    id: "select-write-throws",
+    method: "act",
+    session_id: "s1",
+    params: {
+      observation_id: opened.result.observation.observation_id,
+      action: { type: "select", element_ref: "e1", values: ["b"] },
+      observe_after: false,
+    },
+  };
+  const failed = await f.bridge.dispatch(request);
+  assert.equal(selected, "b");
+  assert.equal(failed.status, "outcome_unknown");
+  assert.equal(failed.error.code, "outcome_unknown");
+  assert.equal(failed.error.cause.code, "action_failed");
+  assert.match(failed.error.cause.message, /dispatch failed after selection/);
+  assert.equal(failed.error.recovery.task_tab, "closed");
+  assert.deepEqual(f.removed, [2]);
+  assert.equal(f.bridge.sessionCount, 0);
+  assert.equal((await f.bridge.dispatch(request)).error.code, "duplicate_request");
+  assert.equal((await f.request("act", "s1", request.params)).error.code, "task_tab_missing");
+  assert.equal(writes, 1);
 });

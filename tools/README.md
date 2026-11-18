@@ -61,4 +61,5 @@
 
 `test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。
 
+`npm run test:browser:reliability:live` 使用独立真实 Chrome 和自有页面验证通用输入与恢复。`benchmark:miniwob -- --model-catalog /absolute/path/to/models.json` 固定实际模型元数据并记录其摘要，`--holdout` 单独运行额外 seed=2（非盲测）。[对照方法与边界](../docs/benchmarks/browser-reliability-v2.md)。
 原生回归：`apps/desktop/tests/native-*.test.ts` 覆盖电脑执行与真实 WebSocket/Shell 生命周期；`tools/tests/native-{contract,lifecycle,updater}.test.ts` 覆盖共享契约对齐、授权存储和原生更新器。macOS 上编译 Swift 6 fixture，其他平台跳过原生专属用例。`npm run check` 在 macOS 同时构建完整 App。
