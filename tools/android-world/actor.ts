@@ -31,7 +31,12 @@ if (!catalog.models.some((entry) => entry.slug === suite.model))
   throw Error("Catalog does not contain benchmark model");
 await mkdir(runDir, { recursive: true, mode: 0o700 });
 await chmod(runDir, 0o700);
-const app = await createServer({ dbPath: resolve(runDir, "server.db"), port: 0 });
+const emulatorHost = "10.0.2.2";
+const app = await createServer({
+  dbPath: resolve(runDir, "server.db"),
+  port: 0,
+  allowedHosts: [emulatorHost],
+});
 const tools = ["computer_observe", "computer_act"];
 const instruction = [
   "Complete the AndroidWorld task in the currently open Android app using only aBridge computer_observe and computer_act.",
@@ -43,7 +48,6 @@ const instruction = [
   "Check the returned state before sending another action. For edits, complete the app’s save flow and verify persistence by reopening or viewing the saved item. An editor displaying the new text alone does not establish persistence. Once the UI confirms completion, stop.",
 ].join(" ");
 
-let removeReverse: (() => void) | undefined;
 try {
   const url = await app.start();
   const user = await app.store.createUser("android-world-owner", randomUUID());
@@ -72,11 +76,9 @@ try {
     throw Error("Unexpected benchmark emulator profile");
   const pkg = "dev.abridge.android";
   const address = new URL(url);
-  const port = "tcp:" + address.port;
-  adbCall(["reverse", "--no-rebind", port, port]);
-  removeReverse = () => {
-    adbCall(["reverse", "--remove", port]);
-  };
+  // This is the emulator's alias for host loopback. The isolated Server remains bound to loopback.
+  // Do not tie device connectivity to an ADB reverse socket that disappears when the daemon restarts.
+  address.hostname = emulatorHost;
   const xml = (s: string) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   // Preserve the upstream service and explicitly re-enable ours after replacing bootstrap state.
   const enabled = adbCall(["shell", "settings", "get", "secure", "enabled_accessibility_services"]).trim();
@@ -205,8 +207,13 @@ try {
         actor: { tools, instruction },
       });
       await gateway.close();
-      await call("session_close", { session_id: sessionId });
-      cleanup = true;
+      try {
+        await call("session_close", { session_id: sessionId });
+        cleanup = true;
+      } catch {
+        // A disconnected device can close the session before the controller. Preserve the episode evidence.
+        console.error("Session cleanup could not be confirmed");
+      }
       if ((await hashCatalog()) !== catalogSha256) throw Error("Model catalog changed");
       const result = {
         exitCode: outcome.exitCode,
@@ -239,6 +246,5 @@ try {
     await app.close();
   } finally {
     clearTimeout(keepAlive);
-    removeReverse?.();
   }
 }

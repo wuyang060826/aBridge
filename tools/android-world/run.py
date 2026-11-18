@@ -64,6 +64,8 @@ def run_suite(args, env, output):
             for task_name in GROUPS[args.group]:
                 task_type = public[task_name]
                 for seed in SUITE["seeds"]:
+                    if actor.poll() is not None:
+                        raise RuntimeError("Actor disconnected before completing the plan. See actor.stderr.log")
                     record = {"task": task_name, "seed": seed, "reward": None, "success": False,
                               "outcome": "setup_error", "upstreamCleanup": False}
                     task = None
