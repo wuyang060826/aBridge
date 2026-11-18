@@ -6,16 +6,26 @@ from pathlib import Path
 import statistics
 
 BASE = Path(__file__).resolve().parent
-SUITE = json.loads((BASE / "suite.json").read_text())
+REGRESSION = json.loads((BASE / "suite.json").read_text())
+CHALLENGE = json.loads((BASE / "challenge.json").read_text())
 
 
 def merge(files_path, markor_path):
     shards = [json.loads(p.read_text()) for p in (files_path, markor_path)]
-    for label, shard in zip(("files", "markor"), shards, strict=True):
-        prefix = {"files": "Files", "markor": "Markor"}[label]
-        expected = [(task, seed) for task in SUITE["tasks"] if task.startswith(prefix) for seed in SUITE["seeds"]]
+    challenge = shards[0]["group"] == "challenge-a"
+    suite = CHALLENGE if challenge else REGRESSION
+    groups = suite.get("groups") or {
+        "files": [task for task in suite["tasks"] if task.startswith("Files")],
+        "markor": [task for task in suite["tasks"] if task.startswith("Markor")],
+    }
+    all_tasks = [task for tasks in groups.values() for task in tasks]
+    if sorted(all_tasks) != sorted(suite["tasks"]):
+        raise ValueError("Groups must partition the frozen tasks")
+    for (label, tasks), shard in zip(groups.items(), shards, strict=True):
+        expected = ([(task, seed) for seed in suite["seeds"] for task in tasks] if challenge
+                    else [(task, seed) for task in tasks for seed in suite["seeds"]])
         measured = [(case["task"], case["seed"]) for case in shard["episodes"]]
-        if shard["group"] != label or shard["protocol"] != SUITE or shard["workingTreeDirty"] or expected != measured:
+        if shard["group"] != label or shard["protocol"] != suite or shard["workingTreeDirty"] or expected != measured:
             raise ValueError(f"{label} results do not match the fixed plan and clean source")
         if shard["summary"]["total"] != len(measured):
             raise ValueError(f"{label} results are incomplete")
@@ -33,7 +43,7 @@ def merge(files_path, markor_path):
     passed = sum(e["success"] for e in episodes)
     elapsed = [e["elapsedMs"] for e in episodes if "elapsedMs" in e]
     return {
-        "protocol": SUITE,
+        "protocol": suite,
         "sourceCommit": shards[0]["sourceCommit"],
         "catalogSha256": shards[0]["catalogSha256"],
         "fingerprint": shards[0]["fingerprint"],

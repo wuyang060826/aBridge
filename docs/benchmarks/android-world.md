@@ -55,3 +55,44 @@ The measured combination includes semantic Android actions, batched native click
 | Two-emulator infrastructure run | An ADB reset removed port forwarding and invalidated the sessions              | Use the emulator's host loopback alias with an explicitly allowlisted Host on the isolated benchmark Server.                          |
 
 Development interruptions, failures, and raw logs are retained in separate run directories. The final score uses exactly one complete run over the registered plan.
+
+## Challenge suite
+
+The original 15 episodes serve as a two-app regression set. The [challenge manifest](../../tools/android-world/challenge.json) fixes **10 new public tasks, seeds 3–5, and 30 episodes** before any scoring. The task IDs, parameters, and graders come from the same upstream revision. The suite spans seven apps. Five tasks require information to move between apps, including receipt transcription and expense or recipe entry from an image or a note.
+
+| Public challenge                            | Upstream complexity | What the task adds                                                    |
+| ------------------------------------------- | ------------------: | --------------------------------------------------------------------- |
+| `ExpenseAddMultipleFromMarkor`              |                   6 | Read several entries in Markor and record them in Pro Expense         |
+| `ExpenseAddMultipleFromGallery`             |                   6 | Extract expense details from images and enter several records         |
+| `RecipeAddMultipleRecipesFromMarkor`        |                   6 | Transfer several structured recipes from notes into Broccoli          |
+| `RecipeAddMultipleRecipesFromImage`         |                   6 | Read recipes from an image and populate structured fields             |
+| `MarkorTranscribeReceipt`                   |                 1.8 | Read a receipt in Gallery and save its content in Markor              |
+| `MarkorMergeNotes`                          |                 7.8 | Consolidate content from several notes and verify the resulting files |
+| `SimpleCalendarAddRepeatingEvent`           |                 3.4 | Configure and save a recurring calendar event                         |
+| `VlcCreateTwoPlaylists`                     |                 4.8 | Build two playlists with distinct contents                            |
+| `RetroSavePlaylist`                         |                   5 | Save a playback queue as a playlist                                   |
+| `RecipeDeleteMultipleRecipesWithConstraint` |                   4 | Delete the recipes that match the public task's constraints           |
+
+The mean of the upstream complexity values is **5.08** for these ten tasks and **1.64** for the regression tasks. The upstream values are task metadata. The measured success rate still comes from the public grader.
+
+The challenge uses the same model and two-tool boundary. Every episode gets **600 seconds and 75 action units**, fixed before the run. The longer budget accommodates multi-app and multi-record tasks. This makes the challenge score and the regression score separate measurements. Each group runs seed 3 across all five assigned tasks, then seeds 4 and 5. The controller opens the first declared app and lets the Agent switch apps through the launcher when needed.
+
+Use the same two AVDs and model catalog as the regression run. Run each setup command first to install and initialize the public apps for its group. Start the two scoring commands only after setup has finished on both emulators.
+
+```sh
+python tools/android-world/run.py --setup --group challenge-a \
+  --adb /absolute/path/to/adb --out .local/android/challenge/setup-a
+python tools/android-world/run.py --setup --group challenge-b --port 5564 --grpc 8556 \
+  --adb /absolute/path/to/adb --out .local/android/challenge/setup-b
+
+python tools/android-world/run.py --group challenge-a --adb /absolute/path/to/adb \
+  --model-catalog /absolute/path/to/model-catalog.json --out .local/android/challenge/a
+python tools/android-world/run.py --group challenge-b --port 5564 --grpc 8556 \
+  --adb /absolute/path/to/adb --model-catalog /absolute/path/to/model-catalog.json \
+  --out .local/android/challenge/b
+
+python tools/android-world/merge-results.py .local/android/challenge/a/results.json \
+  .local/android/challenge/b/results.json --out .local/android/challenge/results.json
+```
+
+The 80% acceptance threshold is 24/30, and 90% is 27/30. The merger requires all 30 registered pairs, with a common product revision, catalog and emulator image. Intermediate results are progress records.

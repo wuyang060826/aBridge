@@ -7,15 +7,18 @@ import { createInterface } from "node:readline";
 import { createServer } from "../../apps/server/src/server.js";
 import { runCodexAgent } from "../bench/codex-agent.js";
 import { createAgentGateway } from "../bench/gateway.js";
-import suite from "./suite.json" with { type: "json" };
+import regression from "./suite.json" with { type: "json" };
+import challenge from "./challenge.json" with { type: "json" };
 
-const [adb, serial, output, modelCatalog, avdName] = process.argv.slice(2);
+const [adb, serial, output, modelCatalog, avdName, suiteName = "regression"] = process.argv.slice(2);
+const suite = suiteName === "challenge" ? challenge : regression;
 if (
   !adb ||
   !serial ||
   !/^emulator-[0-9]+$/.test(serial) ||
   !output ||
   !modelCatalog ||
+  (suiteName !== "regression" && suiteName !== "challenge") ||
   (avdName !== "AndroidWorldAvd" && avdName !== "AndroidWorldAvdMarkor")
 )
   throw Error("Expected ADB path, emulator serial, results directory, and model catalog");
@@ -39,7 +42,9 @@ const app = await createServer({
 });
 const tools = ["computer_observe", "computer_act"];
 const instruction = [
-  "Complete the AndroidWorld task in the currently open Android app using only aBridge computer_observe and computer_act.",
+  suiteName === "challenge"
+    ? "Complete the AndroidWorld task using only aBridge computer_observe and computer_act. If the task spans apps, use the Android home screen and launcher to switch apps as needed."
+    : "Complete the AndroidWorld task in the currently open Android app using only aBridge computer_observe and computer_act.",
   "Start with computer_observe(desktop=true,screenshot=true). Use the UI tree and the screenshot together.",
   "Prefer the latest observation’s element_ref for click and long_press. Each action returns the updated UI elements by default. Reuse that observation and request a screenshot only when the UI tree is insufficient.",
   "Click is a tap. For an element with long_clickable=false, prefer visible selection controls. Android lists may reject simulated touch long presses. Use click_refs with element_refs for several independent clickable toggles on the same unchanged list, then verify the returned selection. Each step revalidates its target and reports applied refs.",
