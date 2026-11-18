@@ -4,6 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { format as prettier, resolveConfig } from "prettier";
+import androidRegression from "../docs/benchmarks/android-world-results.json" with { type: "json" };
+import androidChallenge from "../docs/benchmarks/android-world-challenge-results.json" with { type: "json" };
 import suite from "./bench/agent-suite.json" with { type: "json" };
 import manifest from "./bench/miniwob-agent-source.json" with { type: "json" };
 import { summarizeAgent, type AgentEpisode } from "./bench/agent-metrics.js";
@@ -266,11 +268,33 @@ for (const report of reports) {
     if (content !== (await readFile(file, "utf8"))) throw Error(`Case report stale: ${report.name}`);
   } else await writeFile(file, content);
 }
+function androidScore(run: typeof androidRegression | typeof androidChallenge) {
+  const passed = run.episodes.filter((episode) => episode.success).length;
+  const total = run.episodes.length;
+  if (total === 0 || passed !== run.summary.passed || total !== run.summary.total)
+    throw Error("Inconsistent AndroidWorld summary");
+  return `${passed}/${total}（${((100 * passed) / total).toFixed(0)}%）`;
+}
+
+const coverage = [
+  "<!-- benchmark:coverage:start -->",
+  "",
+  "| 客户端 | 公开 Agent 任务 | 已验证的范围 | 证据 |",
+  "| --- | --- | --- | --- |",
+  `| **Chrome 扩展** | MiniWoB++ **${total.succeeded}/${total.episodes}** | 实际 Chrome 扩展，${suite.tasks.length} 类网页任务 | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json) |`,
+  `| **Android 预览** | AndroidWorld 回归 **${androidScore(androidRegression)}**；挑战 **${androidScore(androidChallenge)}** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务 | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |`,
+  "| **macOS App** | 暂无公开任务分数 | 原生 App 构建、设备连接与执行回归 | [原生验证](tools/README.md) |",
+  "| **Linux CLI** | 暂无公开任务分数 | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md) |",
+  "",
+  "<!-- benchmark:coverage:end -->",
+].join("\n");
+
 const path = resolve(root, "README.md");
 const original = await readFile(path, "utf8");
 const block = /<!-- benchmark:miniwob:start -->[\s\S]*?<!-- benchmark:miniwob:end -->/;
-if (!block.test(original)) throw Error("README benchmark markers missing");
-const updated = await prettier(original.replace(block, content), {
+const coverageBlock = /<!-- benchmark:coverage:start -->[\s\S]*?<!-- benchmark:coverage:end -->/;
+if (!block.test(original) || !coverageBlock.test(original)) throw Error("README benchmark markers missing");
+const updated = await prettier(original.replace(coverageBlock, coverage).replace(block, content), {
   ...(await resolveConfig(path)),
   filepath: path,
 });
@@ -282,7 +306,9 @@ if (values.check) {
   const chart = await readFile(resolve(root, "docs/benchmarks/miniwob-v2-comparison.svg"), "utf8");
   if (!chart.includes(`abridge-input-sha256:${digest.digest("hex")}`))
     throw Error("Benchmark chart is stale; run tools/bench-plot.py after formatting the result snapshots");
-  console.log(`Verified README and chart against ${snapshot.episodes.length} real-agent episodes`);
+  console.log(
+    `Verified README against ${snapshot.episodes.length} Chrome and ${androidRegression.episodes.length + androidChallenge.episodes.length} Android real-agent episodes`,
+  );
 } else {
   for (const name of ["miniwob-v2-baseline.json", "miniwob-v2-results.json", "miniwob-v2-extra.json"]) {
     const file = resolve(root, "docs/benchmarks", name);

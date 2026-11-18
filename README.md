@@ -1,26 +1,29 @@
 # aBridge
 
-**通过 MCP，让 Agent 操作你授权的电脑、Android 手机和浏览器。**
+**自托管的 MCP 服务，让 Agent 在你授权的设备和浏览器中执行任务。**
 
-[快速开始](#快速开始) · [客户端](#3-连接设备) · [GitHub Releases](https://github.com/xerrors/aBridge/releases/latest) · [Agent Benchmark](#agent-benchmark) · [Yuxi 集成](#与-yuxi-一起使用) · [文档](#文档)
+[快速开始](#快速开始) · [选择客户端](#选择客户端) · [评测与验证](#评测与验证) · [Yuxi 集成](#与-yuxi-一起使用) · [开发与文档](#开发与文档) · [下载](https://github.com/xerrors/aBridge/releases/latest)
 
-## 解决什么问题
+aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MCP 入口和授权管理，客户端在对应设备或 Chrome Profile 上执行操作。你可以为每个 Agent 单独指定设备、能力和有效期。
 
-aBridge 把设备上的应用、文件和浏览器会话接入 MCP。你可以按 Agent 分配设备和能力：
+## 选择客户端
 
-- **操作 OA 与业务系统**：复用浏览器 Profile 的登录态，查找信息和填写网页表单。
-- **处理桌面与服务器任务**：在 Mac 上观察并操作桌面，或在已授权的 Mac 和 Linux 设备上运行 Shell、读写文件。
-- **操作 Android 应用**：通过预览版观察屏幕、点按、滑动和输入文本，在授权目录中读写文件。
+| 想完成的任务                           | 客户端                                                           | 环境                     |
+| -------------------------------------- | ---------------------------------------------------------------- | ------------------------ |
+| 在已登录的业务系统里查资料、填表       | **浏览器扩展** · 观察、导航和操作网页，复用所选 Profile 的登录态 | Chrome 116+              |
+| 查看桌面窗口、操作原生应用或处理文件   | **macOS App** · 屏幕、键鼠、Shell、UTF-8 文件                    | Apple Silicon，macOS 14+ |
+| 在开发机或服务器上执行 Shell、读写文件 | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行         | Linux amd64 / arm64      |
+| 操作 Android 应用、读写授权目录        | **Android 预览** · 屏幕、点按、滑动、文本输入和目录读写          | Android 13+，从源码构建  |
 
 ## 工作方式
 
 ![Agent 通过 MCP 连接 aBridge Server，macOS、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
 
-Server 提供 MCP、账户、设备授权和会话管理。各客户端独立安装、授权并直接连接 Server。每个浏览器 Profile 对应一个设备，扩展在该 Profile 中为任务创建独立标签页。
+各客户端独立安装、授权并直接连接 Server。桌面和浏览器可以分别接入。一个 Chrome Profile 对应一个浏览器设备，扩展在该 Profile 内为任务创建独立标签页。
 
 ## 快速开始
 
-独立使用按以下四步完成：**部署 Server → 创建账户 → 连接设备 → 配置 Agent**。已有 Yuxi 的用户可先看 [Yuxi 集成](#与-yuxi-一起使用)。
+准备一个支持 Streamable HTTP 的 MCP 客户端，按以下步骤部署 Server 并让 Agent 列出第一台设备。已有 Yuxi 的用户可先看 [Yuxi 集成](#与-yuxi-一起使用)。
 
 ### 1. 部署 Server
 
@@ -55,7 +58,7 @@ docker run -d --name abridge --restart unless-stopped \
 
 ### 2. 创建账户
 
-首次启动会生成实例管理员 Token。使用上面的 Docker 示例时，在本机终端获取管理员链接：
+使用 `--web` 启动时，浏览器会打开实例管理员链接。使用上述 Docker 命令时，在本机终端获取该链接：
 
 ```sh
 docker exec abridge node -e '
@@ -65,35 +68,46 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 '
 ```
 
-该链接包含管理员凭据，请勿分享。打开链接，在“实例管理”中创建普通账户，再以普通账户登录管理台，管理自己的设备和 Agent 连接。**实例管理员身份不代替普通账户，也不授予设备操作权限。**
+该链接包含管理员凭据，请勿分享。在“实例管理”中创建普通账户，再以普通账户登录管理台，进行设备绑定和 Agent 授权。
 
 ### 3. 连接设备
 
 按需安装客户端，并填写设备可以访问的 Server 地址。
 
-| 客户端           | 能力与要求                                                    | 安装与连接                                                                                                                                                                          |
-| ---------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **浏览器扩展**   | 网页观察、导航、点击、填表、执行浏览器代码。Chrome 116+。     | 从 [Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) 安装扩展，通过浏览器授权。                                      |
-| **macOS App**    | 屏幕观察、键鼠、Shell、UTF-8 文件。Apple Silicon，macOS 14+。 | 从 [GitHub Release](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) 下载 macOS ZIP，通过浏览器授权，并在系统设置授予所需权限。                                             |
-| **Linux CLI**    | Shell、UTF-8 文件、systemd 后台运行。Linux amd64 / arm64。    | 从 [GitHub Release](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) 下载对应架构的包，用管理台签发的 Device Token 绑定。[安装说明](apps/linux-client/README.md#安装与绑定) |
-| **Android 预览** | 屏幕观察、触摸、文本输入、授权目录读写。Android 13+。         | 从当前源码构建 APK 和配套 Server，用 Device Key 绑定并在 Android 设置开启无障碍。[构建与绑定](apps/android/README.md)                                                               |
+- **浏览器扩展**。在想授权的 Profile 中安装扩展并完成浏览器授权。[Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) · [源码安装](docs/browser-profile-design.md)
+- **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。0.4.18 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与权限](docs/deployment.md#macos-app)
+- **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
+- **Android 预览**。从同一份源码构建 APK 和配套 Server，以支持设备时间握手。用 Device Key 绑定，在 Android 设置开启无障碍。[构建与绑定](apps/android/README.md)
 
-0.4.18 的 macOS ZIP 使用 ad hoc 签名。Android 预览已合入 main，请从同一份源码构建 APK 和支持设备时间握手的 Server。[macOS 安装](docs/deployment.md#macos-app) · [扩展源码安装](docs/browser-profile-design.md)
+完成后，在管理台确认设备已上线。
 
-### 4. 配置 Agent
+### 4. 连接 Agent 并验证
 
-在管理台创建 **Agent 连接**，选择允许访问的设备、能力与有效期。将生成的 **Agent Key** 配入支持 Streamable HTTP 的 MCP 客户端；Codex、OpenCode、ZCode 等客户端的具体配置入口以各自文档为准。
+在管理台创建 **Agent 连接**，选择刚上线的设备、所需能力与有效期，保存生成的 **Agent Key**。使用「复制接入参数」获取 MCP 端点和请求头。端点以 `/mcp` 结尾，请求头为 `Authorization: Bearer <AGENT_KEY>`。远程 Agent 应使用它能访问的 Server 地址。
 
-以下是 MCP 连接参数；不同客户端的外层配置格式可能不同：
+以本机的 Codex CLI 为例，将 Agent Key 通过私有环境变量 `ABRIDGE_AGENT_KEY` 提供给 Codex 进程，再添加 MCP Server 并启动新会话。[Codex MCP 配置](https://developers.openai.com/codex/mcp/)
 
-```json
-{
-  "url": "http://127.0.0.1:8765/mcp",
-  "headers": { "Authorization": "Bearer <AGENT_KEY>" }
-}
+```sh
+codex mcp add abridge --url http://127.0.0.1:8765/mcp \
+  --bearer-token-env-var ABRIDGE_AGENT_KEY
+codex
 ```
 
-云端 Agent 需将示例地址换成它可以访问的 Server 地址。连接后按 `devices_list` → `session_open` → 工具操作 → `session_close` 使用。
+> 请调用 aBridge 的 `devices_list`，列出已授权设备的名称、在线状态和当前可用的能力。
+
+看到刚绑定的设备，就验证了 MCP 接入和设备授权。`devices_list` 只读取设备信息。执行任务时，Agent 用 `session_open` 为目标设备申请所需能力，执行后用 `session_close` 结束会话。
+
+<details>
+<summary>连接失败或看不到设备</summary>
+
+| 现象                       | 检查                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| MCP 连接超时或返回 404     | 从 Agent 所在机器检查 Server 是否可达，确认 MCP 地址包含 `/mcp`。                                    |
+| MCP 返回 401               | 确认 MCP 客户端拿到了有效的 Agent Key。使用 Codex 时，检查启动它的环境是否包含 `ABRIDGE_AGENT_KEY`。 |
+| 设备列表为空或缺少目标设备 | 确认设备出现在当前账户的管理台中，并且该 Agent 连接的授权范围包含它。                                |
+| 设备可见，但能力不可用     | 查看设备是否在线、是否已在本机恢复访问，并检查 Agent 授权、客户端能力开关和系统权限。                |
+
+</details>
 
 ## 与 Yuxi 一起使用
 
@@ -108,7 +122,23 @@ aBridge 可以与 [Yuxi](https://github.com/xerrors/Yuxi) 一起部署，复用 
 
 OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接作为 MCP 访问令牌。平台连接仍受用户设备授权、本机开关与系统权限限制。部署参数、回调地址及容器内认证请求配置见 [OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)。
 
-## Agent Benchmark
+## 评测与验证
+
+评测结果按客户端和任务集记录。各套件使用自己的任务、种子和预算，完整数据与测量版本见报告。
+
+<!-- benchmark:coverage:start -->
+
+| 客户端           | 公开 Agent 任务                                            | 已验证的范围                                            | 证据                                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chrome 扩展**  | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                          | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
+| **Android 预览** | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务       | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
+| **macOS App**    | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                       | [原生验证](tools/README.md)                                                                                                                                          |
+| **Linux CLI**    | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
+
+<!-- benchmark:coverage:end -->
+
+<details>
+<summary>Chrome MiniWoB++ 逐题结果、耗时与复现</summary>
 
 <!-- benchmark:miniwob:start -->
 
@@ -145,22 +175,11 @@ npm run benchmark:miniwob
 
 <!-- benchmark:miniwob:end -->
 
+</details>
+
 ### AndroidWorld
 
-**15/15（100%）**，在两台 Pixel 6 / Android 13 模拟器上实测。Agent 的截图和输入经 aBridge 客户端执行，AndroidWorld 负责生成数据与判分。
-
-| 公开任务             |  严格成功 |
-| -------------------- | --------: |
-| 移动文件             |       3/3 |
-| 删除文件             |       3/3 |
-| 创建笔记             |       3/3 |
-| 编辑笔记             |       3/3 |
-| 添加笔记标题并重命名 |       3/3 |
-| **合计**             | **15/15** |
-
-固定 gpt-6.1-sol / medium、seed 0–2 和每例 360 秒 / 45 个操作预算单位。完整运行零剔除、无逐例重试。279 次 MCP 调用，Agent 耗时中位数 146.7 秒。独立的直接文件 API 验收 **3/3**。[方法、限制与历史失败](docs/benchmarks/android-world.md) · [逐例数据](docs/benchmarks/android-world-results.json)
-
-挑战集覆盖 7 个应用、10 类任务，**15/30（50%）**。其中 9 例未达目标、6 例超时，低于 80% 目标。挑战集采用独立的 600 秒 / 75 个操作预算单位。[挑战集逐例数据](docs/benchmarks/android-world-challenge-results.json)
+两台 Pixel 6 / Android 13 模拟器负责运行公开任务。Agent 通过 Android 客户端观察和操作，AndroidWorld 生成数据并独立判分。回归集覆盖文件管理与笔记编辑，挑战集增加了跨应用录入和长流程任务。独立的直接文件接口验收 **3/3**，单列于 [AndroidWorld 报告](docs/benchmarks/android-world.md)。
 
 ## 授权与安全边界
 
@@ -169,7 +188,16 @@ npm run benchmark:miniwob
 - **沿用用户的执行环境**：浏览器脚本具有当前站点登录用户的页面权限；Shell 与文件工具在已授权设备上执行。请按任务分配所需能力。
 - **未知操作不盲目重放**：断连或超时可能发生在副作用之后；应查询原操作状态、重新观察，再决定下一步。撤销权限不能回滚已执行的操作。
 
-## 文档
+## 开发与文档
+
+从源码开发需要 Node.js 22.13+（22.x）、23.4+ 或更新版本。安装依赖并运行完整检查：
+
+```sh
+npm ci
+npm run check
+```
+
+检查覆盖格式、架构、类型、自动化测试、打包和评测报告一致性。启动开发版 Server 可使用 `npm run build` 和 `npm start -- --web`。
 
 | 文档                                           | 内容                                             |
 | ---------------------------------------------- | ------------------------------------------------ |
