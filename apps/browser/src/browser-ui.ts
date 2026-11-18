@@ -25,6 +25,7 @@ export function formatTime(value: number | undefined) {
 export function renderDiagnostics(container: HTMLElement, state: BrowserStatus) {
   const history = state.connection_history || {};
   const rows = [
+    ["扩展版本", chrome.runtime.getManifest().version],
     ["Server", state.server || "尚未配置"],
     ["设备 ID", state.device_id || "尚未注册"],
     ["后台启动", formatTime(history.worker_started_at)],

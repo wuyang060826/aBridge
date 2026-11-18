@@ -17,6 +17,20 @@ private final class StatusTextField: NSTextField {
     }
 }
 
+private final class ApplicationDragIcon: NSImageView, NSDraggingSource {
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseDragged(with event: NSEvent) {
+        let item = NSDraggingItem(pasteboardWriter: Bundle.main.bundleURL as NSURL)
+        item.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .copy
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate {
     private var item: NSStatusItem!
@@ -86,14 +100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
-        if runtime["runtime_mode"] == "bundled", let resources = Bundle.main.resourceURL {
-            runtime["node_path"] = resources.appendingPathComponent("runtime/node").path
-            runtime["cli_path"] = resources.appendingPathComponent("runtime/cli.js").path
+        runtime["cli_path"] = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-desktop").path
+        if runtime["state_dir"] == nil {
             runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/aBridge").path
         }
         let savedDirectories = UserDefaults.standard.dictionary(forKey: "aBridgeStateDirectories") as? [String: String] ?? [:]
-        if runtime["runtime_mode"] == "bundled", let saved = savedDirectories[Bundle.main.bundleURL.path] {
+        if let saved = savedDirectories[Bundle.main.bundleURL.path] {
             runtime["state_dir"] = saved
         }
         if let index = CommandLine.arguments.firstIndex(of: "--state-dir"),
@@ -210,8 +223,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let menu = NSMenu()
         menu.delegate = self
         menu.autoenablesItems = false
-        let title = menu.addItem(withTitle: "aBridge", action: nil, keyEquivalent: "")
-        title.isEnabled = false
         menuStatus = menu.addItem(withTitle: "尚未连接", action: nil, keyEquivalent: "")
         menuStatus.isEnabled = false
         menuActivity = menu.addItem(withTitle: "当前没有执行中的操作", action: nil, keyEquivalent: "")
@@ -483,6 +494,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         permissionButtons["screen"] = addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: access)
         addDivider(to: access)
         permissionButtons["input"] = addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: access)
+        addDivider(to: access)
+        let appIcon = ApplicationDragIcon(frame: .zero)
+        appIcon.image = NSWorkspace.shared.icon(forFile: Bundle.main.bundleURL.path)
+        appIcon.imageScaling = .scaleProportionallyUpOrDown
+        appIcon.toolTip = Bundle.main.bundleURL.path
+        appIcon.setAccessibilityLabel("aBridge 应用，可拖入系统设置的权限列表")
+        NSLayoutConstraint.activate([
+            appIcon.widthAnchor.constraint(equalToConstant: 32),
+            appIcon.heightAnchor.constraint(equalToConstant: 32),
+        ])
+        let dragInstructions = verticalStack(spacing: 2)
+        dragInstructions.addArrangedSubview(textLabel("拖入系统设置的权限列表"))
+        let permissionHint = textLabel("再开启对应权限")
+        permissionHint.font = .systemFont(ofSize: 11)
+        permissionHint.textColor = .secondaryLabelColor
+        dragInstructions.addArrangedSubview(permissionHint)
+        let revealApp = actionButton("在 Finder 中显示", action: #selector(revealApplication))
+        revealApp.setContentHuggingPriority(.required, for: .horizontal)
+        let dragRow = NSStackView(views: [appIcon, dragInstructions, NSView(), revealApp])
+        dragRow.spacing = 10
+        dragRow.alignment = .centerY
+        addFullWidth(dragRow, to: access)
 
         let updates = addSettingsGroup("软件更新", to: root)
         updateLabel.stringValue = "当前版本 \(appVersion)"
@@ -515,7 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         addFullWidth(diagnosticsBox, to: diagnostics)
         diagnosticsContent.isHidden = true
         diagnosticsBox.isHidden = true
-        addEnvironmentRow("runtime", title: "Node.js", to: diagnosticsContent)
+        addEnvironmentRow("runtime", title: "原生客户端", to: diagnosticsContent)
         addEnvironmentRow("driver", title: "Cua Driver", to: diagnosticsContent)
         addEnvironmentRow("execution", title: "执行权限", to: diagnosticsContent)
         addDivider(to: diagnosticsContent)
@@ -1004,6 +1037,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }
 
+    @objc private func revealApplication() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
     @objc private func requestInput() {
         guard !AXIsProcessTrusted() else { return }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -1088,12 +1125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func runUpdater(_ arguments: [String], completion: @escaping ([String: Any]) -> Void) {
-        guard let node = runtime["node_path"], let cli = runtime["cli_path"] else {
-            completion(["error": "运行时文件缺失"]); return
-        }
         let process = Process(), output = Pipe()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [URL(fileURLWithPath: cli).deletingLastPathComponent().appendingPathComponent("updater.mjs").path] + arguments
+        process.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-updater")
+        process.arguments = arguments
         process.standardOutput = output
         process.standardError = errorLog()
         updateProcess = process
@@ -1197,14 +1231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func runtimeProcess(arguments: [String]) -> Process? {
-        guard let node = runtime["node_path"], let cli = runtime["cli_path"],
-              node.hasPrefix("/"), cli.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: node),
-              FileManager.default.fileExists(atPath: cli)
+        guard let cli = runtime["cli_path"], cli.hasPrefix("/"),
+              FileManager.default.isExecutableFile(atPath: cli)
         else { return nil }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [cli] + arguments
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: cli).deletingLastPathComponent()
         var environment = ProcessInfo.processInfo.environment
         environment["ABRIDGE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
@@ -1352,10 +1384,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func renderEnvironment(_ report: [String: Any]) {
         guard !report.isEmpty else { return }
-        let node = report["runtime"] as? [String: Any] ?? [:]
-        let version = node["node"] as? String ?? ""
-        environmentLabels["runtime"]?.stringValue = node["ready"] as? Bool == true
-            ? "\(version) · 已就绪" : "Node.js 不可用"
+        let native = report["runtime"] as? [String: Any] ?? [:]
+        let version = native["version"] as? String ?? appVersion
+        environmentLabels["runtime"]?.stringValue = native["ready"] as? Bool == true
+            ? "\(version) · 已就绪" : "原生客户端不可用"
         let driver = report["driver"] as? [String: Any] ?? [:]
         if driver["installed"] == nil {
             environmentLabels["driver"]?.stringValue = "尚未检查"

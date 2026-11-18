@@ -1,6 +1,7 @@
 import { normalizeDeviceServer, deviceIdentitySchema } from "@abridge/protocol";
 import { authorizeBrowser } from "./authorization.js";
 import { BrowserBridge } from "./bridge.js";
+import { browserPlatform, type BrowserIdentity } from "./browser-brand.js";
 import {
   BROWSER_AUTH_CALLBACK_PATH,
   PROTOCOL_VERSION,
@@ -91,6 +92,7 @@ export function serverURL(value: string, confirmedHttpOrigin?: string) {
 }
 
 export interface BrowserDeviceClientOptions {
+  navigator?: BrowserIdentity;
   chrome: typeof chrome;
   WebSocket: typeof WebSocket;
   fetch?: typeof fetch;
@@ -101,6 +103,7 @@ export interface BrowserDeviceClientOptions {
 
 /** Owns one extension worker lifetime, independently of binding and task lifetimes. */
 export class BrowserDeviceClient {
+  private readonly identity: BrowserIdentity;
   private readonly chrome: typeof chrome;
   private readonly WebSocket: typeof WebSocket;
   private readonly fetch: typeof fetch;
@@ -113,12 +116,18 @@ export class BrowserDeviceClient {
   private ready?: Promise<void>;
   private closing?: Promise<void>;
   constructor(options: BrowserDeviceClientOptions) {
+    this.identity = options.navigator ?? globalThis.navigator ?? {};
     this.chrome = options.chrome;
     this.WebSocket = options.WebSocket;
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
     this.crypto = options.crypto ?? globalThis.crypto;
-    this.timers = options.timers ?? globalThis;
+    this.timers = options.timers ?? {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      setInterval: globalThis.setInterval.bind(globalThis),
+      clearInterval: globalThis.clearInterval.bind(globalThis),
+    };
   }
   start(): Promise<void> {
     if (this.disposed) return Promise.reject(fail("client_closed", "浏览器客户端已关闭"));
@@ -578,7 +587,7 @@ export class BrowserDeviceClient {
                 instance_id: this.profile.instance_id,
                 capabilities: { browser: true },
                 paused: !!this.profile.paused,
-                platform: "Browser extension",
+                platform: browserPlatform(this.identity),
                 version: this.chrome.runtime.getManifest().version,
               }),
             );

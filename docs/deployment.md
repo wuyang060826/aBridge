@@ -2,7 +2,7 @@
 
 ## 环境与分发
 
-当前为 0.4 开发候选。运行环境支持 Node 22.x（最低 22.13.0）、23.x（最低 23.4.0）及 24 以上版本；源码构建需要 npm。两个最低补丁版本均来自内置 `node:sqlite` 取消实验启动参数的版本，22.0–22.12 和 23.0–23.3 不在支持范围内。[Node 22 官方说明](https://nodejs.org/en/blog/release/v22.13.0) · [Node 23 官方说明](https://nodejs.org/en/blog/release/v23.4.0) macOS App 目标为 Apple Silicon、macOS 14+，原生编译另需 Xcode Command Line Tools。Server 不需要桌面 SDK、Chrome 或图形环境。
+当前为 0.4 开发候选。Server 运行环境支持 Node 22.x（最低 22.13.0）、23.x（最低 23.4.0）及 24 以上版本；源码构建需要 npm。两个最低补丁版本均来自内置 `node:sqlite` 取消实验启动参数的版本，22.0–22.12 和 23.0–23.3 不在支持范围内。[Node 22 官方说明](https://nodejs.org/en/blog/release/v22.13.0) · [Node 23 官方说明](https://nodejs.org/en/blog/release/v23.4.0) macOS App 目标为 Apple Silicon、macOS 14+，原生编译另需 Xcode Command Line Tools。Server 不需要桌面 SDK、Chrome 或图形环境。
 
 Server、管理台和扩展从同一套 TypeScript 源码构建。用户运行预构建 JavaScript，管理台作为静态资源随 Server 提供，不启动 Vite 等开发服务器。管理台脚本入口为 `apps/web/src/app/main.tsx`，样式入口为 `apps/web/src/styles/index.css`；构建分别产出 `web/app.js` 和 `web/app.css`。候选 npm 包尚未公开发布，不能把示例包名当作已可执行的公共 `npx` 入口。
 
@@ -91,23 +91,22 @@ npm run desktop:install
 open "$HOME/Applications/aBridge.app"
 ```
 
-安装器获取并校验固定的官方 Node 可搬移发行物，再把 Node、已构建桌面 CLI 和锁文件对应的桌面依赖闭包复制到当前用户的独立运行目录，并保留 Node 发行许可证。Swift 壳引用该目录的 Node 与 CLI，不依赖原源码目录或 npm 临时缓存。自定义 Node 路径也必须通过版本、平台、可搬移链接与许可证检查。官方 `@trycua/cua-driver@0.47.8` 只在桌面运行时按需加载，Server 分发不包含它。
+App 使用 Swift 原生客户端和原生更新器，直接加载锁定的 Cua Driver 0.47.8 dylib。构建时从锁文件固定的 SDK 包提取 arm64 原生库并签名，分发不包含 Node、JavaScript 或 npm 依赖树。安装器将完整 App 复制到目标目录；运行不依赖源码目录、开发工具或 npm 缓存。Server 分发不包含桌面 SDK。
 
 | 内容                 | 默认位置                                                        |
 | -------------------- | --------------------------------------------------------------- |
 | App                  | `~/Applications/aBridge.app`                                    |
-| 运行时               | `~/Library/Application Support/aBridge/runtime/`                |
+| 原生客户端与更新器   | `aBridge.app/Contents/MacOS/`                                   |
+| Cua 原生库           | `aBridge.app/Contents/Frameworks/`                              |
 | 设备凭据             | `~/Library/Application Support/aBridge/credentials/device.json` |
 | 配置、暂停与操作日志 | `~/Library/Application Support/aBridge/`                        |
 | 客户端日志           | `~/Library/Application Support/aBridge/logs/client.log`         |
 
-原生构建比较 Swift、资源、运行时路径和签名配置的指纹，未变化时复用已验证的 App。底层构建入口接受明确的 Node 与 CLI 路径：
+原生构建比较 Swift、共享契约、SDK、资源和签名配置的指纹，未变化时复用已验证的 App。先运行 `npm run build` 生成共享契约，再使用底层构建入口：
 
 ```sh
 node --import tsx tools/build-native.ts \
-  --output /absolute/path/to/aBridge.app \
-  --node /absolute/path/to/node \
-  --cli /absolute/path/to/cli.js
+  --output /absolute/path/to/aBridge.app
 ```
 
 使用 `--signing-identity` 或 `ABRIDGE_SIGNING_IDENTITY` 指定本机已有证书；默认 ad hoc 签名。原生代码或签名变化后，macOS 可能要求重新授予屏幕录制或辅助功能权限。应用内更新使用 GitHub Latest 正式 Release；候选构建成功不能代表真实安装和系统权限验收已通过。
@@ -121,13 +120,15 @@ node --import tsx tools/build-native.ts \
 
 连接范围、能力和期限可以编辑，修改策略不更换现有 Key。密钥轮换是单独操作，旧 Key 立即失效。连接预览显示已授权设备数量和每台设备的实际可用状态；设备在线不代表已加入该连接。
 
-菜单与设置提供暂停/恢复、停止、能力开关、重连、环境检查和日志。恢复只能由本机操作者执行；重连不解除暂停。环境检查只刷新 Node、驱动与权限状态，不自动下载依赖或重置授权。运行文件缺失时，退出 App 后从完整源码目录重新安装。
+菜单与设置提供暂停/恢复、停止、能力开关、重连、环境检查和日志。恢复只能由本机操作者执行；重连不解除暂停。环境检查只刷新原生运行时、驱动与权限状态，不自动下载依赖或重置授权。运行文件缺失时，退出 App 后从完整源码目录重新安装。
+
+设置的“系统权限”提供当前运行 App 的可拖拽图标，以及“在 Finder 中显示”入口。先打开对应系统权限设置，将图标拖入支持添加应用的权限列表，或使用列表的添加按钮选择同一个 App，再由用户开启权限；拖拽本身不等于授权。权限状态仍以系统检测为准。[Apple 辅助功能说明](https://support.apple.com/guide/mac-help/allow-accessibility-apps-to-access-your-mac-mh43185/mac) · [Apple 屏幕录制说明](https://support.apple.com/guide/mac-help/control-access-screen-system-audio-recording-mchld6aa7d23/mac)
 
 可使用已安装运行时的 CLI 读取状态，或从构建目录诊断：
 
 ```sh
-node dist/desktop/cli.js status
-node dist/desktop/cli.js diagnose
+dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop status
+dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop diagnose
 ```
 
 自定义状态目录使用 `--state-dir`，日志相应位于 `<state-dir>/logs/client.log`。终端诊断的权限责任链不等于 App 的责任链；实际窗口截图和输入需在 App 环境中用自有目标核对。
@@ -154,7 +155,7 @@ npm run build
 
 ## 发布与便携 App
 
-tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成内置 Node 的便携 App ZIP；未配置 Developer ID 时文件名明确标注 unsigned，不能将其视为已公证版本。
+tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成无需 Node 的便携原生 App ZIP；未配置 Developer ID 时文件名明确标注 unsigned，不能将其视为已公证版本。
 
 ## 可选 OIDC 登录与平台 MCP 委托
 
@@ -196,7 +197,7 @@ ABRIDGE_ALLOW_INSECURE_HTTP=true
 
 在 macOS 菜单选择“检查更新…”，或在设置的“软件更新”中检查。发现正式新版后，依次点击“下载更新”和“安装并重启”。下载期间可以继续使用；安装会结束当前执行，保留设备绑定、能力开关、暂停状态和数据目录。应用必须位于可写的本机目录；从磁盘镜像或 App Translocation 启动时先移入 Applications。
 
-更新器读取 `xerrors/aBridge` 的 GitHub Latest 正式 Release，优先选择公证的 Apple Silicon ZIP，否则选择现有 unsigned 包。下载校验 GitHub 提供的 SHA-256 和大小，再核对 Bundle ID、版本与代码签名；已使用团队签名的应用拒绝换成其他团队或 ad hoc 包。应用在原安装路径替换，收到新版壳及 Node 状态命令的启动确认后才清理旧版；启动失败恢复并重新打开旧版，错误写入数据目录的 `logs/update-error.log` 并在设置显示。
+更新器读取 `xerrors/aBridge` 的 GitHub Latest 正式 Release，优先选择公证的 Apple Silicon ZIP，否则选择现有 unsigned 包。下载校验 GitHub 提供的 SHA-256 和大小，再核对 Bundle ID、版本与代码签名；已使用团队签名的应用拒绝换成其他团队或 ad hoc 包。应用在原安装路径替换，收到新版 App 及原生客户端的启动确认后才清理旧版；启动失败恢复并重新打开旧版，错误写入数据目录的 `logs/update-error.log` 并在设置显示。
 
 Bundle ID、安装路径和用户状态保持稳定，更新器不重置系统权限。ad hoc 签名绑定具体代码版本，更新仍可能触发录屏/辅助功能重新授权；要稳定延续签名身份，应持续使用同一 Developer ID 签名，不能靠放宽代码要求规避系统校验。自定义数据目录在更新重启后按安装路径保存在 macOS 偏好中，后续从 Finder 打开仍使用该目录。
 

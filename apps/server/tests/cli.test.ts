@@ -6,8 +6,7 @@ import { tmpdir } from "node:os";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import product from "../../../package.json" with { type: "json" };
-const serverCli = resolve("dist/server/cli.js"),
-  desktopCli = resolve("dist/desktop/cli.js");
+const serverCli = resolve("dist/server/cli.js");
 function launch(
   args: string[],
   cwd: string,
@@ -58,7 +57,7 @@ async function stop(child: ChildProcess): Promise<void> {
   clearTimeout(timer);
   assert.equal(code, 0);
 }
-test("version and desktop status are pure commands, no default database or native loading", async () => {
+test("version is a pure command without default database initialization", async () => {
   const dir = await mkdtemp(join(tmpdir(), "abridge-cli-pure-"));
   try {
     const result = spawnSync(process.execPath, [serverCli, "--version"], {
@@ -69,12 +68,6 @@ test("version and desktop status are pure commands, no default database or nativ
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), product.version);
     assert.deepEqual(await readdir(dir), []);
-    const status = spawnSync(process.execPath, [desktopCli, "--state-dir", join(dir, "desktop"), "status"], {
-      cwd: dir,
-      encoding: "utf8",
-    });
-    assert.equal(status.status, 0, status.stderr);
-    assert.equal(JSON.parse(status.stdout).connection, "offline");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

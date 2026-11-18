@@ -10,7 +10,7 @@
 
 ## 实现
 
-- 产品代码统一使用 strict TypeScript；Swift 只负责 macOS 壳与系统权限 UI。运行、构建和开发命令以根 `package.json` 为准。
+- Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 6 原生运行时与 AppKit UI，通过版本化 C ABI 调用 Cua 原生 SDK。运行、构建和开发命令以根 `package.json` 为准。
 - 修改模块职责或执行流程前读 [架构](docs/architecture.md)；安装与打包改动读 [部署](docs/deployment.md)，浏览器改动读 [浏览器客户端](docs/browser-profile-design.md)。
 - 根目录保留项目入口与工具约定配置；协作说明归 `.github/`，文档及品牌源归 `docs/`，测试目标和工具配置归 `tools/`。
 - 可运行产品归 `apps/`，共享包归 `packages/`；运行依赖归所属应用，根目录只声明开发工具。跨 workspace 使用具名 exports，执行 `npm run architecture:check` 核对依赖职责。

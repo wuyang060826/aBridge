@@ -1,33 +1,22 @@
+import { tmpdir } from "node:os";
 /** Exercise the real App's startup receipt, without hardware permissions or a Server. */
 import assert from "node:assert/strict";
 import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { applyUpdate } from "../apps/desktop/src/updater.js";
-import { buildNative } from "./build-native.js";
 import { run } from "./lib/process.js";
 
 if (process.platform !== "darwin") throw Error("Requires macOS");
 const root = resolve(import.meta.dirname, "..");
-const work = await mkdtemp(join(root, ".local/updater-startup-"));
+const work = await mkdtemp(join(tmpdir(), "abridge-updater-startup-"));
 const version = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version as string;
-const cli = join(work, "cli.mjs");
+const template = join(root, "dist/desktop/aBridge.app");
+const updater = join(template, "Contents/MacOS/abridge-updater");
 try {
-  // Only status/startup-check use the product CLI. Environment diagnosis is stubbed
-  // so this test cannot request permissions or load the desktop driver.
-  await writeFile(
-    cli,
-    `import {execFileSync} from 'node:child_process';
-import {appendFileSync,existsSync} from 'node:fs';
-const args=process.argv.slice(2),state=args[args.indexOf('--state-dir')+1];
-appendFileSync(state+'/runtime-invocations',args.at(-1)+'\\n');
-if(existsSync(state+'/broken-runtime')){console.log('invalid JSON');process.exit(1)}
-if(args.includes('status')||args.includes('startup-check'))process.stdout.write(execFileSync(process.execPath,[${JSON.stringify(join(root, "dist/desktop/cli.js"))},...args]));
-else console.log('{}');
-`,
-  );
-  const template = join(work, "template.app");
-  await buildNative({ output: template, node: process.execPath, cli, stateDir: work, signingIdentity: "-" });
+  const brokenSource = join(work, "broken.swift"),
+    brokenRuntime = join(work, "broken-runtime-helper");
+  await writeFile(brokenSource, 'import Darwin\nprint("invalid JSON")\nexit(1)\n');
+  await run("/usr/bin/swiftc", [brokenSource, "-o", brokenRuntime]);
   for (const [name, error, broken] of [
     ["empty error", "", false],
     ["server unavailable", "Server connection unavailable", false],
@@ -35,7 +24,7 @@ else console.log('{}');
   ] as const) {
     const dir = join(work, name.replaceAll(" ", "-"));
     const state = join(dir, "state"),
-      staging = join(dir, "staging");
+      staging = join(dir, ".abridge-update-fixture");
     const app = join(dir, "aBridge.app"),
       candidate = join(staging, "aBridge.app");
     await mkdir(state, { recursive: true, mode: 0o700 });
@@ -43,9 +32,14 @@ else console.log('{}');
     await writeFile(join(state, "status.json"), JSON.stringify({ connection: "connected", error }), {
       mode: 0o600,
     });
-    if (broken) await writeFile(join(state, "broken-runtime"), "");
     await cp(template, app, { recursive: true });
     await cp(template, candidate, { recursive: true });
+    if (broken) {
+      const executable = join(candidate, "Contents/MacOS/abridge-desktop");
+      await cp(brokenRuntime, executable);
+      await run("/usr/bin/codesign", ["--force", "--sign", "-", executable]);
+      await run("/usr/bin/codesign", ["--force", "--sign", "-", candidate]);
+    }
     await run("/usr/libexec/PlistBuddy", [
       "-c",
       "Set :CFBundleShortVersionString 0.0.0",
@@ -66,16 +60,13 @@ else console.log('{}');
       }),
     );
     try {
-      await applyUpdate(plan);
+      await run(updater, ["apply", plan], { timeout: 45000 });
       const installed = await run("/usr/libexec/PlistBuddy", [
         "-c",
         "Print :CFBundleShortVersionString",
         join(app, "Contents/Info.plist"),
       ]);
       assert.equal(installed, broken ? "0.0.0" : version, name);
-      assert.ok(
-        (await readFile(join(state, "runtime-invocations"), "utf8")).split("\n").includes("startup-check"),
-      );
       // The restored App consumes update-error.log, so it is not a stable rollback assertion.
       if (!broken) await assert.rejects(access(join(state, "logs/update-error.log")));
       console.log(`PASS real App startup: ${name}${broken ? " rolls back" : " keeps the update"}`);
@@ -98,7 +89,8 @@ else console.log('{}');
     `import Foundation
 let defaults = UserDefaults(suiteName: "dev.abridge.client")!
 if let saved = defaults.dictionary(forKey: "aBridgeStateDirectories") as? [String:String] {
-    defaults.set(saved.filter { !$0.key.hasPrefix(${JSON.stringify(work)}) }, forKey: "aBridgeStateDirectories")
+    let prefix = URL(fileURLWithPath: ${JSON.stringify(work)}).resolvingSymlinksInPath().path
+    defaults.set(saved.filter { !URL(fileURLWithPath: $0.key).resolvingSymlinksInPath().path.hasPrefix(prefix) }, forKey: "aBridgeStateDirectories")
 }`,
   ]);
   await rm(work, { recursive: true, force: true });

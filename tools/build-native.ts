@@ -1,13 +1,11 @@
 /** Build a signed AppKit shell; unchanged inputs preserve its existing signature. */
-import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, cp, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { constants } from "node:fs";
+import { access, chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./lib/process.js";
-import { signBundledRuntime } from "./lib/sign-runtime.js";
+import { resolvePackageDirectory } from "./lib/native-sdk.js";
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 const ICONS = [
   "AppIcon.icns",
@@ -19,33 +17,25 @@ const ICONS = [
 ] as const;
 export type NativeBuildOptions = {
   output: string;
-  node: string;
-  cli: string;
   stateDir?: string;
   force?: boolean;
   signingIdentity: string;
-  bundledRuntime?: string;
 };
 export function parseNativeBuildOptions(args: string[]): NativeBuildOptions {
   const parsed = parseArgs({
     args,
     options: {
       output: { type: "string" },
-      node: { type: "string" },
-      cli: { type: "string" },
       "state-dir": { type: "string" },
       force: { type: "boolean" },
       "signing-identity": { type: "string" },
     },
     strict: true,
   });
-  for (const key of ["output", "node", "cli"] as const)
-    if (!parsed.values[key]) throw Error(`--${key} is required`);
+  for (const key of ["output"] as const) if (!parsed.values[key]) throw Error(`--${key} is required`);
   return {
     output: resolve(parsed.values.output!),
-    node: resolve(parsed.values.node!),
-    cli: resolve(parsed.values.cli!),
-    stateDir: resolve(parsed.values["state-dir"] ?? join(homedir(), "Library/Application Support/aBridge")),
+    stateDir: parsed.values["state-dir"] ? resolve(parsed.values["state-dir"]) : undefined,
     force: parsed.values.force ?? false,
     signingIdentity: parsed.values["signing-identity"] ?? process.env.ABRIDGE_SIGNING_IDENTITY ?? "-",
   };
@@ -108,20 +98,23 @@ export async function nativeBuildInputs(
     NSScreenCaptureUsageDescription: "aBridge 仅在你启用截图后向已授权的 Agent 提供屏幕画面。",
     NSAccessibilityUsageDescription: "aBridge 仅在你启用桌面输入后执行已授权 Agent 的鼠标和键盘操作。",
   };
-  const runtime: Record<string, string> = options.bundledRuntime
-      ? { runtime_mode: "bundled" }
-      : {
-          node_path: resolve(options.node),
-          cli_path: resolve(options.cli),
-          state_dir: resolve(options.stateDir ?? join(homedir(), "Library/Application Support/aBridge")),
-        },
+  const runtime: Record<string, string> = {
+      runtime_mode: "native",
+      ...(options.stateDir ? { state_dir: resolve(options.stateDir) } : {}),
+    },
     target = "arm64-apple-macosx14.0";
+  const nativeSources = (await readdir(join(root, "apps/desktop/native/runtime")))
+    .filter((name) => !name.startsWith(".") && /\.(swift|h)$/.test(name))
+    .sort();
   const files = [
     "apps/desktop/native/aBridge.swift",
+    ...nativeSources.map((name) => "apps/desktop/native/runtime/" + name),
+    "dist/desktop/desktop-contract.json",
     "docs/third-party-notices.md",
     "LICENSE",
     "tools/build-native.ts",
     "tools/lib/process.ts",
+    "tools/lib/native-sdk.ts",
     ...ICONS.map((name) => "apps/desktop/native/assets/" + name),
   ];
   const hashes = Object.fromEntries(
@@ -131,6 +124,7 @@ export async function nativeBuildInputs(
     fingerprint: sha256(
       canonical({
         hashes,
+        sdk: sha256(await readFile(await nativeLibrary(root))),
         info,
         runtime,
         target,
@@ -143,17 +137,37 @@ export async function nativeBuildInputs(
     target,
   };
 }
+/** npm supplies only the pinned build-time SDK artifact; no JS runtime enters the App. */
+async function nativeLibrary(root: string): Promise<string> {
+  const desktop = join(root, "apps/desktop");
+  const metadata = JSON.parse(await readFile(join(desktop, "package.json"), "utf8")) as {
+    optionalDependencies: Record<string, string>;
+  };
+  const native = await resolvePackageDirectory("@trycua/cua-driver-darwin-arm64", desktop);
+  const installed = JSON.parse(await readFile(join(native, "package.json"), "utf8")) as { version: string };
+  if (installed.version !== metadata.optionalDependencies["@trycua/cua-driver"])
+    throw Error("Installed native SDK does not match the pinned product dependency");
+  return join(native, "libcua_driver_sdk.dylib");
+}
+async function removeAppleDouble(path: string): Promise<void> {
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    if (entry.name.startsWith("._")) await rm(child, { force: true });
+    else if (entry.isDirectory()) await removeAppleDouble(child);
+  }
+}
+async function clearBuildMetadata(directory: string): Promise<void> {
+  await removeAppleDouble(directory);
+  await run("/usr/bin/xattr", ["-cr", directory]);
+  await removeAppleDouble(directory);
+}
 export async function buildNative(
   options: NativeBuildOptions,
   root = PROJECT_ROOT,
 ): Promise<{ app: string; fingerprint: string; reused: boolean; executable_sha256: string }> {
   if (process.platform !== "darwin" || process.arch !== "arm64")
     throw Error("Native builds require Apple Silicon macOS 14+");
-  await access(options.node, constants.X_OK);
-  await access(options.cli, constants.R_OK);
   if (!options.signingIdentity) throw Error("A signing identity is required");
-  if (options.bundledRuntime && !options.force)
-    throw Error("Bundled runtime builds require force to include current runtime bytes");
   const app = resolve(options.output);
   if (!app.endsWith(".app")) throw Error("--output must end in .app");
   if (await existing(app)) {
@@ -200,6 +214,59 @@ export async function buildNative(
       ],
       { env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: "14.0" } },
     );
+    const native = join(root, "apps/desktop/native/runtime"),
+      frameworks = join(staging, "Contents/Frameworks");
+    await mkdir(frameworks, { recursive: true });
+    const library = join(frameworks, "libcua_driver_sdk.dylib");
+    await run("/usr/bin/lipo", [await nativeLibrary(root), "-thin", "arm64", "-output", library]);
+    await run("/usr/bin/install_name_tool", ["-id", "@rpath/libcua_driver_sdk.dylib", library]);
+    const sources = (await readdir(native))
+      .filter((name) => !name.startsWith(".") && name.endsWith(".swift") && !name.startsWith("Updater"))
+      .sort();
+    await run("/usr/bin/swiftc", [
+      "-swift-version",
+      "6",
+      "-O",
+      "-target",
+      inputs.target,
+      "-import-objc-header",
+      join(native, "cua_driver_abi.h"),
+      ...sources.map((name) => join(native, name)),
+      "-L",
+      frameworks,
+      "-lcua_driver_sdk",
+      "-Xlinker",
+      "-rpath",
+      "-Xlinker",
+      "@executable_path/../Frameworks",
+      "-o",
+      join(macos, "abridge-desktop"),
+      "-framework",
+      "ApplicationServices",
+    ]);
+    await run("/usr/bin/swiftc", [
+      "-swift-version",
+      "6",
+      "-O",
+      "-target",
+      inputs.target,
+      join(native, "Updater.swift"),
+      join(native, "UpdaterMain.swift"),
+      "-o",
+      join(macos, "abridge-updater"),
+    ]);
+    await clearBuildMetadata(staging);
+    for (const binary of [library, join(macos, "abridge-desktop"), join(macos, "abridge-updater")]) {
+      await chmod(binary, 0o755);
+      await run("/usr/bin/codesign", [
+        ...(options.signingIdentity === "-" ? [] : ["--options", "runtime", "--timestamp"]),
+        "--force",
+        "--sign",
+        options.signingIdentity,
+        binary,
+      ]);
+    }
+    await cp(join(root, "dist/desktop/desktop-contract.json"), join(resources, "desktop-contract.json"));
     await chmod(join(macos, "aBridge"), 0o755);
     await writeFile(join(staging, "Contents/Info.plist"), plist(inputs.info));
     for (const name of ICONS) await cp(join(root, "apps/desktop/native/assets", name), join(resources, name));
@@ -210,10 +277,7 @@ export async function buildNative(
       join(resources, "native-build.json"),
       JSON.stringify({ fingerprint: inputs.fingerprint }, null, 2) + "\n",
     );
-    if (options.bundledRuntime) {
-      await cp(options.bundledRuntime, join(resources, "runtime"), { recursive: true });
-      await signBundledRuntime(join(resources, "runtime"), options.signingIdentity);
-    }
+    await clearBuildMetadata(staging);
     await run("/usr/bin/codesign", [
       ...(options.signingIdentity === "-" ? [] : ["--options", "runtime", "--timestamp"]),
       "--force",
@@ -223,6 +287,7 @@ export async function buildNative(
       "dev.abridge.client",
       staging,
     ]);
+    await removeAppleDouble(staging);
     await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staging]);
     if (await existing(app)) {
       await rename(app, backup);

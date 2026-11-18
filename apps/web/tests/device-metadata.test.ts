@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { platformIcon, platformName } from "../src/components/icons.js";
 import { deviceViewSchema } from "@abridge/protocol";
+import { existsSync } from "node:fs";
 
 const device = {
   id: "fixture-device",
@@ -39,5 +40,20 @@ test("offline platforms retain their label without inventing a browser brand", (
     });
     assert.equal(platformName(browser.platform), "浏览器扩展");
     assert.equal(platformIcon(browser.platform), undefined);
+  }
+});
+
+test("Chrome keeps its label and shipped icon online and offline", () => {
+  for (const status of ["online", "offline"]) {
+    const browser = deviceViewSchema.parse({
+      ...device,
+      kind: "browser",
+      capabilities: ["browser"],
+      status,
+      platform: "chrome",
+    });
+    assert.equal(platformName(browser.platform), "Chrome");
+    assert.equal(platformIcon(browser.platform), "chrome");
+    assert.ok(existsSync(new URL("../../../docs/assets/brand/platforms/chrome.svg", import.meta.url)));
   }
 });

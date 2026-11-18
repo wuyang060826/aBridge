@@ -2,13 +2,13 @@
 
 ## 组成与职责
 
-aBridge 使用统一 TypeScript 代码实现 Server、桌面运行时、浏览器扩展与管理台，Swift 只负责 macOS 壳与系统权限 UI。Server 和两种客户端分别部署：App 提供桌面、Shell 和文件，扩展提供浏览器，两者不互为运行前提。
+Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信。Server 和两种客户端分别部署：App 提供桌面、Shell 和文件，扩展提供浏览器，两者不互为运行前提。
 
 ```text
 MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 管理台（预构建 Preact） ─ /api ────────┤ Fastify Server
                                        │ SQLite + 内存连接/结果缓存
-                                       ├─ /ws/device ─ Node 桌面客户端
+                                       ├─ /ws/device ─ Swift 原生客户端
                                        │                ├ 官方 Cua SDK：screen / input
                                        │                ├ Shell
                                        │                └ UTF-8 文件
@@ -18,36 +18,36 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 
 可运行产品位于 `apps/`；`packages/` 只包含共享代码。各应用拥有自己的依赖声明、源码与测试，根目录的 npm scripts 协调构建。跨应用共享代码通过 workspace 的具名 exports 引用，生产构建将内部包内联，分发不要求消费者执行 TypeScript 或安装 workspace。
 
-| 模块                                   | 职责                                  |
-| -------------------------------------- | ------------------------------------- |
-| `apps/server/src/cli.ts`               | Server 唯一命令入口                   |
-| `apps/server/src/server.ts`            | HTTP、管理认证、MCP 与 WebSocket 组合 |
-| `apps/server/src/control.ts`           | 连接、会话和操作状态的唯一所有者      |
-| `apps/server/src/store.ts`             | SQLite schema、事务与操作元信息       |
-| `apps/server/src/browser-execution.ts` | 浏览器脚本独占、步骤进度与取消协调    |
-| `apps/server/src/mcp.ts`               | 工具与原生内容编码                    |
-| `apps/server/src/transport.ts`         | 有界 WebSocket 发送与关闭             |
-| `apps/desktop/src/cli.ts`              | Desktop 唯一命令入口                  |
-| `apps/desktop/src/runtime.ts`          | 配置绑定、离线状态与进程生命周期      |
-| `apps/desktop/src/local-control.ts`    | 本机 Socket、JSON framing 与资源清理  |
-| `apps/desktop/src/client.ts`           | 设备连接、执行调度与授权状态          |
-| `apps/desktop/src/computer.ts`         | 观察引用及桌面动作契约                |
-| `apps/desktop/src/native.ts`           | 官方 SDK 按需同进程适配               |
-| `apps/desktop/src/executor.ts`         | 桌面、Shell 和文件执行                |
-| `apps/desktop/native/`                 | Swift 壳、权限 UI 与原生资源          |
-| `apps/browser/src/worker.ts`           | 扩展入口，创建并启动设备客户端        |
-| `apps/browser/src/client.ts`           | 设备绑定、连接、操作日志与本机控制    |
-| `apps/browser/src/task-tabs.ts`        | 自有任务标签、调试器与资源清理        |
-| `apps/browser/src/bridge.ts`           | 浏览器工具编排、观察、读取与输入      |
-| `apps/web/`                            | Preact 管理台                         |
-| `packages/protocol/`                   | 共享 schema、能力与协议常量           |
-| `packages/shared/`                     | Node 数据目录约定                     |
+| 模块                                             | 职责                                  |
+| ------------------------------------------------ | ------------------------------------- |
+| `apps/server/src/cli.ts`                         | Server 唯一命令入口                   |
+| `apps/server/src/server.ts`                      | HTTP、管理认证、MCP 与 WebSocket 组合 |
+| `apps/server/src/control.ts`                     | 连接、会话和操作状态的唯一所有者      |
+| `apps/server/src/store.ts`                       | SQLite schema、事务与操作元信息       |
+| `apps/server/src/browser-execution.ts`           | 浏览器脚本独占、步骤进度与取消协调    |
+| `apps/server/src/mcp.ts`                         | 工具与原生内容编码                    |
+| `apps/server/src/transport.ts`                   | 有界 WebSocket 发送与关闭             |
+| `apps/desktop/native/runtime/Main.swift`         | Desktop 唯一命令入口                  |
+| `apps/desktop/native/runtime/Storage.swift`      | 配置绑定、离线状态与进程生命周期      |
+| `apps/desktop/native/runtime/LocalControl.swift` | 本机 Socket、JSON framing 与资源清理  |
+| `apps/desktop/native/runtime/Client.swift`       | 设备连接、执行调度与授权状态          |
+| `apps/desktop/native/runtime/Computer.swift`     | 观察引用及桌面动作契约                |
+| `apps/desktop/native/runtime/NativeDriver.swift` | 官方 SDK 按需同进程适配               |
+| `apps/desktop/native/runtime/Executor.swift`     | 桌面、Shell 和文件执行                |
+| `apps/desktop/native/`                           | AppKit UI、权限入口与原生运行时       |
+| `apps/browser/src/worker.ts`                     | 扩展入口，创建并启动设备客户端        |
+| `apps/browser/src/client.ts`                     | 设备绑定、连接、操作日志与本机控制    |
+| `apps/browser/src/task-tabs.ts`                  | 自有任务标签、调试器与资源清理        |
+| `apps/browser/src/bridge.ts`                     | 浏览器工具编排、观察、读取与输入      |
+| `apps/web/`                                      | Preact 管理台                         |
+| `packages/protocol/`                             | 共享 schema、能力与协议常量           |
+| `packages/shared/`                               | Node 数据目录约定                     |
 
 源码中的领域名统一为 `AgentConnection`（Agent 的持久授权连接）、`DeviceConnection`（设备当前传输连接）、`ControlSession`（控制会话）和 `Operation`（一次操作）。管理接口使用 `/api/agent-connections`，列表字段为 `connections`，操作及会话通过 `agent_connection_id` 引用授权连接；设备派发中的 `device_credential_version` 表示 Device Key 版本，不表示 Agent 连接策略版本。`operation_status` 与 `operation_cancel` 面向所有操作，包括 Shell 和浏览器代码。
 
 工具参数由协议包的 `toolArgumentSchemas` 定义，`DeviceToolRequest` 关联工具名与参数类型。MCP 使用同一字段定义，Server 和执行端在各自输入边界解析；默认值、范围及跨字段约束保持单源。执行时仍独立核对授权、取消、连接代次、观察引用和当前目标。管理 API 的公共视图及输入契约位于 `packages/protocol/src/management.ts`，Server 构造与 Web 解析共用类型；数据库实体及本地界面状态不是公共视图。
 
-共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，包内使用 strict TypeScript 和未使用声明检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。
+共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，TypeScript 包使用严格类型与未使用声明检查，原生运行时使用 Swift 6 严格并发检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。原生客户端使用协议包生成的 `desktop-contract.json` 校验消息、参数与默认值；跨字段约束由共享可移植规则表达，回归测试对照 Zod 和 Swift 的接受结果与规范化值。
 
 Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状态按请求隔离，设备操作会话由 `ControlService` 管理，二者不是同一个生命周期。管理台是预构建 Preact 11 静态产物，正常运行不启动前端开发服务器。
 
@@ -101,7 +101,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `device_get`、`devices_list` 一致的设备详情。渲染端可直接读取 `device.name`、`device.kind`（`computer` 或 `browser`）和 `device.platform`（客户端上报的平台字符串，如 `darwin`、`win32` 或 `Browser extension`），无需再次查询设备。
 
-设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展使用通用的 `Browser extension`，不代表探测到具体浏览器品牌或宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
+设备的 `platform` 与 `version` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启不清空，后续成功连接更新。`platform` 是客户端自报的平台字符串；浏览器扩展优先读取浏览器声明的品牌列表，缺失时读取 User-Agent；Chrome 及声明为 Chrome 的衍生浏览器上报 `chrome`，无法确认的品牌使用 `Browser extension`，不推断宿主系统。`version` 是 aBridge 客户端或扩展版本，不是操作系统或浏览器版本。两者去除首尾空白，分别限制为 80、30 字符；缺失、`null` 或空串统一为 `null`，界面将未知平台显示为“未知平台”，不按 `computer` 推断 macOS。失败、过期连接或撤销凭据的迟到握手不能覆盖元信息。元信息不参与能力与授权判断，在线状态仍由当前连接及心跳判定。
 
 有效能力取连接对该设备的策略、设备授权、会话请求、本机开关及实际就绪状态的交集。设备列举、执行和保留结果访问复用同一策略判定。每次执行重新核对所有者、密钥、撤销与过期状态、会话、能力和当前连接代次。收紧策略会终止不再满足要求的会话并请求取消在途操作；不会恢复本机暂停，也不能回滚已发生的副作用。桌面输入会话在同一设备上独占，浏览器任务分别持有自建标签页。
 
@@ -160,9 +160,9 @@ Shell 完整 JSON 默认返回预算 `output_limit_chars=6000`，可设为 1024�
 
 ## 运行环境与打包
 
-运行环境按根 `package.json` 的 `engines` 约定：Node.js 22.x 最低 22.13.0，23.x 最低 23.4.0，支持 24 及以上主版本。23.0–23.3 的 SQLite 仍需实验启动参数，故不在支持范围内。Server 分发不携带桌面原生 SDK；桌面运行时按需动态加载官方 `@trycua/cua-driver@0.47.8`，通过显式构造入口并核对 embedded 模式与空 socket 路径，避免意外转为独立 daemon。当前 Swift App 目标为 Apple Silicon/macOS 14+。
+Server 的运行环境按根 `package.json` 的 `engines` 约定：Node.js 22.x 最低 22.13.0，23.x 最低 23.4.0，支持 24 及以上主版本。macOS App 目标为 Apple Silicon/macOS 14+，无需 Node、npm 或 Python。`NativeDriver.swift` 直接使用 Cua Driver 0.47.8 的版本化 C ABI（1.1），按需创建同进程实例并验证 embedded 模式与空 socket 路径。原生会话维持 standard 权限上限，不开启 unrestricted 或浏览器 profile 授权。Server 分发不携带该 SDK。
 
-App 安装器复制固定 Node、构建后的 CLI 和所需依赖到当前用户的稳定私有目录，Swift 壳只引用该目录的 Node 与 CLI 路径，不指向 npm 临时执行缓存。Node 负责设备连接和执行，Swift 负责权限 UI 与接管监视。原生代码或签名变化可能影响系统权限，构建和协议测试不能证明实际已安装 App 的截图或输入可用。
+App 包内包含 AppKit 主程序、Swift 设备客户端、独立 Swift 更新器、共享契约资源及裁剪到 arm64 的 Cua dylib；不分发 Node、JavaScript 桌面程序或 npm 依赖树。Foundation 负责 WebSocket/HTTP，系统 SQLite 保存操作去重日志，POSIX 进程组实现 Shell 取消，文件操作使用系统 API。凭据、暂停与本机状态保留在 App Bundle 外的私有目录。原生代码或签名变化可能影响系统权限，构建和协议测试不能证明实际已安装 App 的截图或输入可用。
 
 桌面接管保护只覆盖在途输入，读取和普通鼠标移动不触发暂停。手动暂停持久保存，远程请求不能解除。依赖及许可见 [第三方说明](third-party-notices.md)。
 
@@ -170,7 +170,7 @@ App 安装器复制固定 Node、构建后的 CLI 和所需依赖到当前用户
 
 ### macOS 更新
 
-`apps/desktop/src/updater.ts` 负责正式版本选择、校验、暂存和回滚；独立 `updater.mjs` 只依赖 Node 内置模块，不经 Agent/Server 控制接口开放。Swift 壳只负责用户更新入口、停止设备进程和启动确认。安装辅助进程复制到应用旁的私有暂存目录，等待壳退出后原路径替换，确认新壳和 Node 可运行后清理备份。启动确认使用独立的 `startup-check`，不依赖服务器连接、设备授权或系统权限状态；这些业务状态不能触发安装回滚。设备绑定与状态始终位于 App Bundle 外。
+`apps/desktop/native/runtime/Updater.swift` 负责正式版本选择、校验、暂存和回滚；独立 `abridge-updater` 使用 Foundation/CryptoKit，不经 Agent/Server 控制接口开放。AppKit 主程序负责用户更新入口、停止设备进程和启动确认。更新辅助程序复制到应用旁的私有暂存目录，等待主程序退出后原路径替换，确认新版 App 和原生客户端可运行后清理备份。启动确认使用独立的 `startup-check`，不依赖服务器连接、设备授权或系统权限状态；这些业务状态不能触发安装回滚。设备绑定与状态始终位于 App Bundle 外。
 
 ### 手动设备绑定和 HTTP 确认
 

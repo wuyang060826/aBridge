@@ -3,7 +3,7 @@
 The application uses the packages pinned in `package-lock.json`. Package names,
 versions and bundled license files remain authoritative for the actual build.
 The server distribution does not include the desktop SDK. Desktop installation
-retains the official SDK packages and the license for its copied Node.js runtime.
+retains the Cua Driver native library and its MIT notice; it includes no Node.js runtime.
 
 | Component                                         | Use                                                       | License recorded by the installed package                               |
 | ------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
@@ -17,9 +17,9 @@ retains the official SDK packages and the license for its copied Node.js runtime
 | Geist Sans                                        | Self-hosted management console font                       | SIL Open Font License 1.1, retained in `apps/web/public/fonts/OFL.txt`  |
 | ws                                                | Device WebSocket connections                              | MIT                                                                     |
 | Zod                                               | Runtime contract validation, including the browser bundle | MIT                                                                     |
-| `@trycua/cua-driver` 0.47.8                       | Optional desktop-only official Node SDK                   | MIT                                                                     |
+| `@trycua/cua-driver` 0.47.8                       | Build-time source of the desktop native C ABI library     | MIT                                                                     |
 | quickjs-emscripten / QuickJS                      | Isolated browser code execution on Server                 | MIT (package and engine notices retained in installed dependencies)     |
-| Node.js                                           | Server runtime and copied desktop runtime                 | Node.js distribution LICENSE, including its third-party notices         |
+| Node.js                                           | Server runtime                                            | Node.js distribution LICENSE, including its third-party notices         |
 
 Sources: [Fastify](https://github.com/fastify/fastify),
 [MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk),
@@ -33,8 +33,7 @@ Sources: [Fastify](https://github.com/fastify/fastify),
 
 Installed npm dependencies retain their own LICENSE and NOTICE files. The
 following original MIT notices are also included for code bundled into browser
-assets and for the desktop SDK. The copied Node.js license is retained alongside
-the private runtime as `Node-LICENSE`. aBridge itself is licensed under Apache-2.0; see the root LICENSE.
+assets and for the desktop SDK. aBridge itself is licensed under Apache-2.0; see the root LICENSE.
 
 ## Cua Driver
 
