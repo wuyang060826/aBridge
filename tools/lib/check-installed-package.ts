@@ -33,13 +33,15 @@ export async function checkInstalledPackage(tarball: string, name: string, versi
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
+      "--no-update-notifier",
       "--no-save",
     ]);
     const install = spawnSync(invocation.command, invocation.args, {
       cwd: directory,
       env,
       encoding: "utf8",
-      timeout: 60000,
+      // A cold Windows cache can take over a minute to unpack the bundled tree.
+      timeout: 120000,
       windowsHide: true,
     });
     assert.equal(
