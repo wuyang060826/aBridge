@@ -149,12 +149,21 @@ await writeFile(
 );
 await cp(join(root, "LICENSE"), join(app, "LICENSE"));
 await cp(join(root, "docs/third-party-notices.md"), join(app, "THIRD_PARTY_NOTICES.md"));
+await cp(join(root, "docs/windows-client.md"), join(stage, "README.md"));
+const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", windowsHide: true });
+const changes = spawnSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+  cwd: root,
+  encoding: "utf8",
+  windowsHide: true,
+});
 await writeFile(
   join(app, "runtime-manifest.json"),
   JSON.stringify(
     {
       version: metadata.version,
       platform: "win32",
+      source_commit: revision.status === 0 ? revision.stdout.trim() : null,
+      source_dirty: changes.status === 0 ? changes.stdout.trim().length > 0 : null,
       arch: "x64",
       node: nodeVersion,
       dotnetSdk: sdkVersion,
@@ -234,6 +243,9 @@ try {
 } finally {
   closeSync(descriptor);
 }
+const checksum = createHash("sha256");
+for await (const chunk of createReadStream(output)) checksum.update(chunk);
+await writeFile(output + ".sha256", `${checksum.digest("hex")}  ${relative(dist, output)}\n`);
 console.log(
   `Packaged unsigned Windows x64 ${metadata.version}, embedded Node ${probe.stdout.trim()}: ${output}`,
 );

@@ -37,6 +37,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "package:windows": "node --import tsx tools/package-windows.ts",
+    "package:windows:check": "node --import tsx tools/check-windows-package.ts",
     "desktop:windows": ".local\\release\\windows\\aBridge\\aBridge.exe"
   },
   "devDependencies": {
@@ -49,6 +50,7 @@
     "esbuild": "0.28.2",
     "fflate": "0.8.3",
     "prettier": "3.10.1",
+    "tar": "7.5.23",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitepress": "^1.6.4",

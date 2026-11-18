@@ -267,4 +267,4 @@ HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式�
 
 ## Windows PC 客户端
 
-独立 Windows x64 客户端的源码构建、便携包安装、现有设备绑定与验证范围见 [Windows 客户端](https://github.com/xerrors/aBridge/blob/main/apps/windows/README.md)。更新只替换本机程序目录并保留私有状态目录，不需要更新 Server。
+独立 Windows x64 客户端的源码构建、便携包安装、现有设备绑定与验证范围见 [Windows 客户端](windows-client.md)。更新只替换本机程序目录并保留私有状态目录，不需要更新 Server。

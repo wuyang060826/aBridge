@@ -98,7 +98,7 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 Windows PC 客户端位于 `apps/windows/`，使用独立 TypeScript 运行时与 WPF 托盘壳，直接连接 Server。`windows-native.ts`、`windows-uia.ts` 与 `windows-script.ts` 提供 Win32/UIA；壳与运行时通过私有 stdio 通信。本机权限、焦点、遮挡、暂停及操作去重仍由客户端检查。其构建输出为 `dist/windows/`，不改变 Swift macOS、Rust Linux 或 Kotlin Android 客户端。
 
-Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](https://github.com/xerrors/aBridge/blob/main/apps/windows/README.md)。
+Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](windows-client.md)。
 
 ## 身份与授权
 

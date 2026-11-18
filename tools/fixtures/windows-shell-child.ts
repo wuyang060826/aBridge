@@ -45,44 +45,50 @@ if (process.argv.includes("authorize")) {
 } else if (process.argv.includes("run")) {
   await event("run-start");
   const control = await listenLocalControl(stateDir, async (request) => {
-    const config = await loadConfig(stateDir);
-    if (request.command === "status")
-      return {
-        connection: "online",
-        url: config.url,
-        paused: config.paused,
-        capabilities: config.capabilities,
-      };
-    if (request.command === "shutdown") {
-      await event("shutdown-start");
-      while (await exists("hold-shutdown")) await delay(20);
-      setTimeout(() => {
-        void control.close().then(() => process.exit(0));
-      }, 50);
-      return { shutdown_requested: true };
+    try {
+      const config = await loadConfig(stateDir);
+      if (request.command === "status")
+        return {
+          connection: "online",
+          url: config.url,
+          paused: config.paused,
+          capabilities: config.capabilities,
+        };
+      if (request.command === "shutdown") {
+        await event("shutdown-start");
+        while (await exists("hold-shutdown")) await delay(20);
+        setTimeout(() => {
+          void control.close().then(() => process.exit(0));
+        }, 50);
+        return { shutdown_requested: true };
+      }
+      if (request.command === "unbind") {
+        await saveConfig(stateDir, { ...config, revoked: true });
+        return { unbound: true };
+      }
+      if (request.command === "pause" || request.command === "resume") {
+        await saveConfig(stateDir, { ...config, paused: request.command === "pause" });
+        await event(String(request.command));
+        return { paused: request.command === "pause" };
+      }
+      if (
+        request.command === "capability" &&
+        typeof request.capability === "string" &&
+        typeof request.enabled === "boolean"
+      ) {
+        await saveConfig(stateDir, {
+          ...config,
+          capabilities: { ...config.capabilities, [request.capability]: request.enabled },
+        });
+        await event(`capability:${request.capability}:${request.enabled}`);
+        return {};
+      }
+      throw Error("Unsupported fixture command");
+    } catch (error) {
+      // This fixture has synthetic state only; preserve the cause in test failures.
+      await event(`fixture-error:${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
-    if (request.command === "unbind") {
-      await saveConfig(stateDir, { ...config, revoked: true });
-      return { unbound: true };
-    }
-    if (request.command === "pause" || request.command === "resume") {
-      await saveConfig(stateDir, { ...config, paused: request.command === "pause" });
-      await event(String(request.command));
-      return { paused: request.command === "pause" };
-    }
-    if (
-      request.command === "capability" &&
-      typeof request.capability === "string" &&
-      typeof request.enabled === "boolean"
-    ) {
-      await saveConfig(stateDir, {
-        ...config,
-        capabilities: { ...config.capabilities, [request.capability]: request.enabled },
-      });
-      await event(`capability:${request.capability}:${request.enabled}`);
-      return {};
-    }
-    throw Error("Unsupported fixture command");
   });
   await event("run-ready");
 } else throw Error("Unknown fixture mode");

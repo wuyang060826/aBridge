@@ -123,19 +123,23 @@ async function setup(bound = false) {
     closed,
     ownedPids,
     async close() {
-      await unlink(join(stateDir, "hold-shutdown")).catch(() => {});
-      await unlink(join(stateDir, "hold-commit")).catch(() => {});
-      if (host.exitCode === null && host.signalCode === null) {
-        await invoke("cancel").catch(() => {});
-        await invoke("quit").catch(() => {});
-      }
+      // Bound teardown before awaiting IPC; a hung host must not hold CI forever.
       const timer = setTimeout(() => host.kill(), 10000);
-      await closed;
-      clearTimeout(timer);
-      // Only PIDs recorded by this isolated fixture CLI can be cleaned up.
-      for (const pid of await ownedPids()) if (alive(pid)) process.kill(pid);
-      await waitChildren();
-      await rm(dir, { recursive: true, force: true });
+      try {
+        await unlink(join(stateDir, "hold-shutdown")).catch(() => {});
+        await unlink(join(stateDir, "hold-commit")).catch(() => {});
+        if (host.exitCode === null && host.signalCode === null) {
+          await invoke("cancel").catch(() => {});
+          await invoke("quit").catch(() => {});
+        }
+        await closed;
+        // Only PIDs recorded by this isolated fixture CLI can be cleaned up.
+        for (const pid of await ownedPids()) if (alive(pid)) process.kill(pid);
+        await waitChildren();
+        await rm(dir, { recursive: true, force: true });
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
   try {
@@ -248,7 +252,8 @@ test("Windows host forwards pause/resume/capability and rejects replayed request
     assert.equal((await loadConfig(fixture.stateDir)).paused, true, "Reused ID cannot dispatch a new write");
     assert.equal((await fixture.invoke("capability", { capability: "input", enabled: true })).ok, true);
     assert.equal((await loadConfig(fixture.stateDir)).capabilities.input, true);
-    assert.equal((await fixture.invoke("resume")).ok, true);
+    const resumed = await fixture.invoke("resume");
+    assert.equal(resumed.ok, true, JSON.stringify({ resumed, events: await fixture.events() }));
     assert.equal((await loadConfig(fixture.stateDir)).paused, false);
     await until(
       async () => fixture.notifications.some((message) => message.event === "status"),
