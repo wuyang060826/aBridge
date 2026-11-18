@@ -324,7 +324,9 @@ actor NativeDriver: DesktopNativeDriver {
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success,
               let hit else { return false }
-        return CFEqual(focused, hit) || attribute(hit, kAXWindowAttribute).map { CFEqual(focused, $0) } == true
+        if CFEqual(focused, hit) { return true }
+        guard let hitWindow = attribute(hit, kAXWindowAttribute) else { return false }
+        return CFEqual(focused, hitWindow)
     }
 
     private func checkForegroundPoint(_ action: JSONObject, target: JSONObject) throws {
