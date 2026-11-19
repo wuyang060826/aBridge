@@ -572,15 +572,13 @@ impl App {
                 }
             }
             60 => self.reveal(),
-            61 => {
-                if !self.quitting {
-                    self.quitting = true;
-                    self.frames.show(false);
-                    if self.host.running() {
-                        self.send("quit", json!({}), 0);
-                    } else {
-                        self.exit();
-                    }
+            61 if !self.quitting => {
+                self.quitting = true;
+                self.frames.show(false);
+                if self.host.running() {
+                    self.send("quit", json!({}), 0);
+                } else {
+                    self.exit();
                 }
             }
             _ => {}
