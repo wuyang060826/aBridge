@@ -84,9 +84,9 @@ jobs:
       - name: Diagnose Windows command startup on failure
         if: failure()
         run: powershell -NoProfile -File tools/ci-windows.ps1 -Task diagnose
-      - run: npm run windows:shell:check
-      - run: npm run package:windows
-      - run: npm run package:windows:check
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task windows:shell:check
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task package:windows
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task package:windows:check
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: windows-client-unsigned

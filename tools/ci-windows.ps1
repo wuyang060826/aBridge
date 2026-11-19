@@ -2,7 +2,7 @@
 # Administrators group. Use the actual user's SID for files created by this
 # verification process and its children, as in a normal desktop login.
 # This changes only our process token, never machine policy or existing files.
-param([ValidateSet('check', 'package:windows', 'package:windows:check', 'diagnose')][string]$Task = 'check')
+param([ValidateSet('check', 'windows:shell:check', 'package:windows', 'package:windows:check', 'diagnose')][string]$Task = 'check')
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
