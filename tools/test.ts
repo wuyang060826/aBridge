@@ -11,7 +11,9 @@ const files = [
 if (!files.length) throw new Error("No tests found");
 const result = spawnSync(
   process.execPath,
-  ["--import", "tsx", "--test", ...(process.platform === "win32" ? ["--test-concurrency=4"] : []), ...files],
+  // Windows suites launch PowerShell and native helpers. Run files serially so
+  // cold startup on hosted runners does not compete with other suites' startup.
+  ["--import", "tsx", "--test", ...(process.platform === "win32" ? ["--test-concurrency=1"] : []), ...files],
   { stdio: "inherit" },
 );
 process.exitCode = result.status ?? 1;
