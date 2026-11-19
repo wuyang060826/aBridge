@@ -2,6 +2,7 @@ use super::{
     driver::Driver,
     executor::{check, string, Cancel, ExecError, Result},
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -24,9 +25,33 @@ pub struct Computer {
     observations: HashMap<String, Observation>,
     targets: HashMap<String, Value>,
     closed: HashSet<String>,
-    sequence: u64,
+    sequence: Option<u64>,
 }
 impl Computer {
+    fn next_observation_id(&mut self) -> Result<String> {
+        // Match the shared reference generator: an OS-random 48-bit starting point,
+        // monotonic across sessions, with no wrapping into previously issued references.
+        let next = if let Some(next) = self.sequence {
+            next
+        } else {
+            let mut bytes = [0u8; 8];
+            getrandom::fill(&mut bytes[2..]).map_err(|_| {
+                ExecError::new("random_unavailable", "System random source unavailable")
+            })?;
+            u64::from_be_bytes(bytes)
+        };
+        if next >= 1 << 48 {
+            return Err(ExecError::new(
+                "references_exhausted",
+                "Observation references exhausted; restart the client",
+            ));
+        }
+        self.sequence = Some(next + 1);
+        Ok(format!(
+            "obs_{}",
+            URL_SAFE_NO_PAD.encode(&next.to_be_bytes()[2..])
+        ))
+    }
     fn focus(&mut self, cancel: &Cancel) -> Result<String> {
         let apps = self.driver.call("apps", json!({}), cancel)?;
         let active: Vec<_> = apps
@@ -308,8 +333,7 @@ impl Computer {
                 ));
             }
         }
-        self.sequence += 1;
-        let id = format!("obs_{}_{}", std::process::id(), self.sequence);
+        let id = self.next_observation_id()?;
         let mut observation = Observation {
             id: id.clone(),
             created: Instant::now(),
@@ -657,5 +681,56 @@ impl Computer {
         for id in self.targets.keys().cloned().collect::<Vec<_>>() {
             self.close_session(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn generated_observations_are_accepted_by_shared_action_contract() {
+        let mut computer = Computer::default();
+        let first = computer.next_observation_id().unwrap();
+        computer.invalidate("session-one");
+        let second = computer.next_observation_id().unwrap();
+        assert_ne!(first, second);
+        for id in [first, second] {
+            super::super::protocol::parse(
+                "computer_act",
+                json!({
+                    "observation_id": id,
+                    "action": {"type":"click", "element_ref":"e1"}
+                }),
+            )
+            .unwrap();
+        }
+        assert!(super::super::protocol::parse(
+            "computer_act",
+            json!({
+                "observation_id":"obs_33064_1",
+                "action":{"type":"click","element_ref":"e1"}
+            })
+        )
+        .is_err());
+    }
+    #[test]
+    fn observation_reference_exhaustion_never_wraps() {
+        let mut computer = Computer {
+            sequence: Some((1u64 << 48) - 1),
+            ..Default::default()
+        };
+        let last = computer.next_observation_id().unwrap();
+        super::super::protocol::parse(
+            "computer_act",
+            json!({
+                "observation_id":last,
+                "action":{"type":"click","element_ref":"e1"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            computer.next_observation_id().unwrap_err().code,
+            "references_exhausted"
+        );
     }
 }
