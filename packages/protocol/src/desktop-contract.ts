@@ -6,9 +6,6 @@ export function desktopContract() {
     operation: p.operationFrameSchema,
     welcome: p.deviceWelcomeSchema,
     deviceBindingInput: p.deviceBindingInputSchema,
-    windowsShellRequest: p.windowsShellRequestSchema,
-    deviceAuthorizationRequest: p.deviceAuthorizationRequestSchema,
-    deviceAuthorizationTokenRequest: p.deviceAuthorizationTokenRequestSchema,
     deviceAuthorizationStart: p.deviceAuthorizationStartSchema,
     deviceAuthorizationToken: p.deviceAuthorizationTokenSchema,
     deviceIdentity: p.deviceIdentitySchema,
@@ -27,7 +24,6 @@ export function desktopContract() {
     limits: {
       messageBytes: p.MAX_MESSAGE_BYTES,
       imageBytes: p.MAX_IMAGE_BYTES,
-      desktopObservationSeconds: p.DESKTOP_OBSERVATION_SECONDS,
       operations: p.MAX_DEVICE_OPERATIONS,
       leaseSeconds: p.DEVICE_LEASE_SECONDS,
       heartbeatSeconds: p.HEARTBEAT_SECONDS,
@@ -38,5 +34,28 @@ export function desktopContract() {
     schemas: Object.fromEntries(
       Object.entries(schemas).map(([name, schema]) => [name, z.toJSONSchema(schema, { io: "input" })]),
     ),
+  };
+}
+
+/** Windows host-only schemas must not enlarge other native clients' packaged contract. */
+export function windowsDesktopContract() {
+  const common = desktopContract();
+  const windowsSchemas = {
+    windowsShellRequest: p.windowsShellRequestSchema,
+    deviceAuthorizationRequest: p.deviceAuthorizationRequestSchema,
+    deviceAuthorizationTokenRequest: p.deviceAuthorizationTokenRequestSchema,
+  };
+  return {
+    ...common,
+    limits: { ...common.limits, desktopObservationSeconds: p.DESKTOP_OBSERVATION_SECONDS },
+    schemas: {
+      ...common.schemas,
+      ...Object.fromEntries(
+        Object.entries(windowsSchemas).map(([name, schema]) => [
+          name,
+          z.toJSONSchema(schema, { io: "input" }),
+        ]),
+      ),
+    },
   };
 }

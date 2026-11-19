@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { desktopContract } from "@abridge/protocol/desktop-contract";
+import { windowsDesktopContract } from "@abridge/protocol/desktop-contract";
 import { WINDOWS_SCRIPT } from "../../apps/windows/src/windows-script.js";
 import { windowsCommand } from "../../apps/windows/src/windows-command.js";
 
@@ -22,5 +22,5 @@ export function writeWindowsContract(root: string, output: string): void {
     "Native Shell wrapper drifted from its reference",
   );
   mkdirSync(dirname(output), { recursive: true });
-  writeFileSync(output, JSON.stringify(desktopContract()) + "\n");
+  writeFileSync(output, JSON.stringify(windowsDesktopContract()) + "\n");
 }
