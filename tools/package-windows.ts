@@ -40,6 +40,7 @@ function runCargo(args: string[]): string {
     throw Error(
       `Rust Windows build failed: ${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`,
     );
+  if (result.stderr) process.stderr.write(result.stderr);
   return result.stdout;
 }
 // Reuse the canonical 256px PNG already exported in the macOS icon set.
@@ -90,8 +91,37 @@ const stage = resolve(root, ".local/release/windows/aBridge");
 const releaseRoot = resolve(root, ".local/release/windows");
 if (dirname(stage) !== releaseRoot || !stage.startsWith(root + sep)) throw Error("Unsafe staging path.");
 Object.assign(cargoEnv, { ABRIDGE_ICON: icon });
-runCargo(["build", "--manifest-path", manifestPath, "--release", "--locked", "--target", target]);
-const nativeBundle = join(cargoEnv.CARGO_TARGET_DIR, target, "release/naui-winappsdk");
+const buildMessages = runCargo([
+  "build",
+  "--manifest-path",
+  manifestPath,
+  "--release",
+  "--locked",
+  "--target",
+  target,
+  "--message-format=json-render-diagnostics",
+])
+  .trim()
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map(
+    (line) =>
+      JSON.parse(line) as {
+        reason: string;
+        package_id?: string;
+        features?: string[];
+        out_dir?: string;
+      },
+  );
+const winuiMessages = buildMessages.filter((message) => message.package_id?.endsWith("#naui-winui3@0.15.0"));
+if (!winuiMessages.some((message) => message.features?.includes("self-contained")))
+  throw Error("Cargo did not build the pinned WinUI projection with its self-contained feature.");
+const winuiOutput = winuiMessages.find((message) => message.reason === "build-script-executed")?.out_dir;
+if (!winuiOutput) throw Error("Cargo did not report the pinned WinUI runtime build output.");
+// The dependency's authoritative bundle lives in its reported OUT_DIR. Cargo's
+// intermediate directory layout need not match the dependency's profile guesses.
+const nativeBundle = join(winuiOutput, "naui-winappsdk");
+console.log(`Native WinUI bundle from Cargo build output: ${nativeBundle}`);
 for (const required of [
   "naui-winappsdk.manifest",
   "Microsoft.UI.Xaml.dll",
@@ -99,7 +129,8 @@ for (const required of [
   "WindowsAppSDK-LICENSE.txt",
   "WindowsAppSDK-NOTICE.txt",
 ])
-  if (!existsSync(join(nativeBundle, required))) throw Error(`Incomplete native WinUI bundle: ${required}`);
+  if (!existsSync(join(nativeBundle, required)))
+    throw Error(`Incomplete native WinUI bundle: ${join(nativeBundle, required)}`);
 // The first build assembles the checked SDK bundle. Embed its registration data
 // on the second build so Windows 10 does not depend on installed WinRT packages.
 Object.assign(cargoEnv, { ABRIDGE_WINUI_MANIFEST: join(nativeBundle, "naui-winappsdk.manifest") });
