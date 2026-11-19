@@ -23,6 +23,9 @@ const cargoEnv = {
   ...process.env,
   ABRIDGE_VERSION: metadata.version,
   CARGO_TARGET_DIR: join(buildDirectory, "target"),
+  // Cargo may keep build-script output separate from executable artifacts.
+  NAUI_WINAPPSDK_TARGET_DIR: join(buildDirectory, "target"),
+  ABRIDGE_WINUI_MANIFEST: undefined,
 };
 function runCargo(args: string[]): string {
   const result = spawnSync(cargo, args, {
