@@ -6,6 +6,9 @@ export function desktopContract() {
     operation: p.operationFrameSchema,
     welcome: p.deviceWelcomeSchema,
     deviceBindingInput: p.deviceBindingInputSchema,
+    windowsShellRequest: p.windowsShellRequestSchema,
+    deviceAuthorizationRequest: p.deviceAuthorizationRequestSchema,
+    deviceAuthorizationTokenRequest: p.deviceAuthorizationTokenRequestSchema,
     deviceAuthorizationStart: p.deviceAuthorizationStartSchema,
     deviceAuthorizationToken: p.deviceAuthorizationTokenSchema,
     deviceIdentity: p.deviceIdentitySchema,
@@ -24,6 +27,7 @@ export function desktopContract() {
     limits: {
       messageBytes: p.MAX_MESSAGE_BYTES,
       imageBytes: p.MAX_IMAGE_BYTES,
+      desktopObservationSeconds: p.DESKTOP_OBSERVATION_SECONDS,
       operations: p.MAX_DEVICE_OPERATIONS,
       leaseSeconds: p.DEVICE_LEASE_SECONDS,
       heartbeatSeconds: p.HEARTBEAT_SECONDS,

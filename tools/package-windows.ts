@@ -1,31 +1,28 @@
 /** Portable Windows candidate. No installer, global settings, or production credentials. */
-import { createReadStream, closeSync, existsSync, openSync, writeSync } from "node:fs";
+import { createReadStream, closeSync, openSync, writeSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Zip, ZipDeflate } from "fflate";
-import { copyDependencyClosure, externalPackages } from "./lib/dependency-closure.js";
+import { writeWindowsContract } from "./lib/windows-native-contract.js";
 
 if (process.platform !== "win32" || process.arch !== "x64")
   throw Error("Build the Windows x64 package on Windows x64.");
 const root = resolve(import.meta.dirname, "..");
 const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string };
-// Pin the official distribution and its published SHASUMS256.txt digest.
-const nodeVersion = "24.22.3";
-const nodeDigest = "e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f";
 const cargo = process.env.CARGO ?? "cargo";
 const buildDirectory = join(root, ".local/release/windows/build");
 await mkdir(buildDirectory, { recursive: true });
+const contractFile = join(buildDirectory, "contract.json");
+writeWindowsContract(root, contractFile);
 const manifestPath = join(root, "apps/windows/windows-native-shell/Cargo.toml");
 const target = "x86_64-pc-windows-msvc";
 const cargoEnv = {
   ...process.env,
   ABRIDGE_VERSION: metadata.version,
+  ABRIDGE_CONTRACT_PATH: contractFile,
   CARGO_TARGET_DIR: join(buildDirectory, "target"),
-  // Cargo may keep build-script output separate from executable artifacts.
-  NAUI_WINAPPSDK_TARGET_DIR: join(buildDirectory, "target"),
-  ABRIDGE_WINUI_MANIFEST: undefined,
 };
 function runCargo(args: string[]): string {
   const result = spawnSync(cargo, args, {
@@ -64,80 +61,13 @@ iconHeader.writeUInt32LE(iconPng.length, 14);
 iconHeader.writeUInt32LE(22, 18);
 const icon = join(buildDirectory, "app.ico");
 await writeFile(icon, Buffer.concat([iconHeader, iconPng]));
-const downloads = join(root, ".local/downloads");
-await mkdir(downloads, { recursive: true });
-const nodeArchive = join(downloads, `node-v${nodeVersion}-win-x64.zip`);
-if (!existsSync(nodeArchive)) {
-  const response = await fetch(`https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-win-x64.zip`, {
-    signal: AbortSignal.timeout(120000),
-  });
-  if (!response.ok) throw Error(`Node download failed: HTTP ${response.status}`);
-  await writeFile(nodeArchive, new Uint8Array(await response.arrayBuffer()));
-}
-if (
-  createHash("sha256")
-    .update(await readFile(nodeArchive))
-    .digest("hex") !== nodeDigest
-)
-  throw Error("Official Node archive checksum mismatch; remove the invalid cached download.");
-const unpack = spawnSync("tar.exe", ["-xf", nodeArchive, "-C", downloads], {
-  encoding: "utf8",
-  windowsHide: true,
-  timeout: 60000,
-});
-if (unpack.status !== 0) throw Error(`Cannot unpack Node: ${unpack.stderr}`);
-const nodeSource = join(downloads, `node-v${nodeVersion}-win-x64`);
 const stage = resolve(root, ".local/release/windows/aBridge");
 const releaseRoot = resolve(root, ".local/release/windows");
 if (dirname(stage) !== releaseRoot || !stage.startsWith(root + sep)) throw Error("Unsafe staging path.");
 Object.assign(cargoEnv, { ABRIDGE_ICON: icon });
-const buildMessages = runCargo([
-  "build",
-  "--manifest-path",
-  manifestPath,
-  "--release",
-  "--locked",
-  "--target",
-  target,
-  "--message-format=json-render-diagnostics",
-])
-  .trim()
-  .split(/\r?\n/)
-  .filter(Boolean)
-  .map(
-    (line) =>
-      JSON.parse(line) as {
-        reason: string;
-        package_id?: string;
-        features?: string[];
-        out_dir?: string;
-      },
-  );
-const winuiMessages = buildMessages.filter((message) => message.package_id?.endsWith("#naui-winui3@0.15.0"));
-if (!winuiMessages.some((message) => message.features?.includes("self-contained")))
-  throw Error("Cargo did not build the pinned WinUI projection with its self-contained feature.");
-const winuiOutput = winuiMessages.find((message) => message.reason === "build-script-executed")?.out_dir;
-if (!winuiOutput) throw Error("Cargo did not report the pinned WinUI runtime build output.");
-// The dependency's authoritative bundle lives in its reported OUT_DIR. Cargo's
-// intermediate directory layout need not match the dependency's profile guesses.
-const nativeBundle = join(winuiOutput, "naui-winappsdk");
-console.log(`Native WinUI bundle from Cargo build output: ${nativeBundle}`);
-for (const required of [
-  "naui-winappsdk.manifest",
-  "Microsoft.UI.Xaml.dll",
-  "resources.pri",
-  "WindowsAppSDK-LICENSE.txt",
-  "WindowsAppSDK-NOTICE.txt",
-])
-  if (!existsSync(join(nativeBundle, required)))
-    throw Error(`Incomplete native WinUI bundle: ${join(nativeBundle, required)}`);
-// The first build assembles the checked SDK bundle. Embed its registration data
-// on the second build so Windows 10 does not depend on installed WinRT packages.
-Object.assign(cargoEnv, { ABRIDGE_WINUI_MANIFEST: join(nativeBundle, "naui-winappsdk.manifest") });
 runCargo(["build", "--manifest-path", manifestPath, "--release", "--locked", "--target", target]);
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
-await cp(nativeBundle, stage, { recursive: true });
 await cp(join(cargoEnv.CARGO_TARGET_DIR, target, "release/aBridge.exe"), join(stage, "aBridge.exe"));
 const cargoMetadata = JSON.parse(
   runCargo([
@@ -179,32 +109,6 @@ await writeFile(join(stage, "Rust-THIRD-PARTY-NOTICES.txt"), notices);
 await cp(join(root, "apps/desktop/native/assets/AppIcon.png"), join(stage, "icon.png"));
 const app = join(stage, "runtime");
 await mkdir(app, { recursive: true });
-await cp(join(nodeSource, "node.exe"), join(app, "node.exe"));
-await cp(join(nodeSource, "LICENSE"), join(app, "Node-LICENSE"));
-for (const file of ["cli.js", "windows-host.mjs"])
-  await cp(join(root, "dist/windows", file), join(app, file));
-const metafile = JSON.parse(await readFile(join(root, "dist/windows/cli.meta.json"), "utf8"));
-const hostMetafile = JSON.parse(await readFile(join(root, "dist/windows/windows-host.meta.json"), "utf8"));
-const dependencies = [...new Set([...externalPackages(metafile), ...externalPackages(hostMetafile)])].filter(
-  (name) => name !== "@trycua/cua-driver",
-);
-if (dependencies.some((name) => name !== "ws" && name !== "zod"))
-  throw Error("Review the Windows runtime dependency boundary before packaging.");
-const closure = await copyDependencyClosure(root, join(app, "node_modules"), dependencies);
-await writeFile(
-  join(app, "package.json"),
-  JSON.stringify(
-    {
-      name: "abridge-desktop",
-      version: metadata.version,
-      private: true,
-      type: "module",
-      main: "windows-host.mjs",
-    },
-    null,
-    2,
-  ) + "\n",
-);
 await cp(join(root, "LICENSE"), join(app, "LICENSE"));
 await cp(join(root, "docs/third-party-notices.md"), join(app, "THIRD_PARTY_NOTICES.md"));
 await cp(join(root, "docs/windows-client.md"), join(stage, "README.md"));
@@ -223,32 +127,22 @@ await writeFile(
       source_commit: revision.status === 0 ? revision.stdout.trim() : null,
       source_dirty: changes.status === 0 ? changes.stdout.trim().length > 0 : null,
       arch: "x64",
-      node: nodeVersion,
-      shell: "Rust + WinUI 3",
-      dependencies: closure,
+      shell: "Rust + Win32",
+      runtime: "native",
+      max_installed_bytes: 10_000_000,
     },
     null,
     2,
   ) + "\n",
 );
-const probe = spawnSync(
-  join(app, "node.exe"),
-  ["-e", "require('node:sqlite'); process.stdout.write(process.versions.node)"],
-  {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 30000,
-  },
-);
-if (probe.status !== 0) throw Error("Packaged Node runtime cannot load node:sqlite.");
-const cliProbe = spawnSync(join(app, "node.exe"), [join(app, "cli.js"), "--help"], {
+const cliProbe = spawnSync(join(stage, "aBridge.exe"), ["--help"], {
   cwd: stage,
   encoding: "utf8",
   windowsHide: true,
   timeout: 30000,
 });
 if (cliProbe.status !== 0 || !cliProbe.stdout.includes("state-dir"))
-  throw Error("Packaged Desktop CLI failed its startup probe.");
+  throw Error("Packaged native CLI failed its startup probe.");
 // Deployment-specific paths and credentials are deliberately absent from this package.
 await writeFile(
   join(stage, "Start-aBridge.ps1"),
@@ -268,6 +162,18 @@ if ($StateDir) {
 }
 `,
 );
+async function installedSize(directory: string): Promise<number> {
+  let bytes = 0;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isSymbolicLink()) throw Error("No external package dependencies are permitted.");
+    bytes += entry.isDirectory() ? await installedSize(path) : (await stat(path)).size;
+  }
+  return bytes;
+}
+const installedBytes = await installedSize(stage);
+if (installedBytes >= 10_000_000)
+  throw Error(`Native installation exceeds the 10 MB limit: ${installedBytes} bytes`);
 const dist = join(root, "dist/releases");
 await mkdir(dist, { recursive: true });
 const output = join(dist, `aBridge-${metadata.version}-windows-x64-unsigned.zip`);
@@ -304,6 +210,6 @@ const checksum = createHash("sha256");
 for await (const chunk of createReadStream(output)) checksum.update(chunk);
 await writeFile(output + ".sha256", `${checksum.digest("hex")}  ${relative(dist, output)}\n`);
 console.log(
-  `Packaged unsigned Windows x64 ${metadata.version}, embedded Node ${probe.stdout.trim()}: ${output}\n` +
+  `Packaged unsigned Windows x64 ${metadata.version}, native runtime, installed ${installedBytes} bytes: ${output}\n` +
     `ZIP ${((await stat(output)).size / 1024 / 1024).toFixed(2)} MiB; shell ${((await stat(join(stage, "aBridge.exe"))).size / 1024 / 1024).toFixed(2)} MiB`,
 );

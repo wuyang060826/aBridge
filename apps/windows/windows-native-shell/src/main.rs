@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 mod frames;
 mod host;
+mod runtime;
 mod ui;
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, ptr::null_mut};
@@ -69,6 +70,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             path.pop();
         }
         state = PathBuf::from(&path);
+        let arguments: Vec<String> = std::env::args().skip(1).collect();
+        if arguments.iter().any(|arg| arg == "--native-host") {
+            let parent = arguments
+                .iter()
+                .position(|arg| arg == "--parent-pid")
+                .and_then(|index| arguments.get(index + 1))
+                .ok_or("Missing native host parent PID")?
+                .parse::<u32>()?;
+            if parent == 0 {
+                return Err("Invalid native host parent PID".into());
+            }
+            return runtime::run_host(state, parent).map_err(Into::into);
+        }
         let identity = format!(
             "{:X}",
             Sha256::digest(invariant_lowercase(&path)?.as_bytes())
@@ -104,8 +118,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         result
     }
 }
+fn cli_mode(arguments: &[String]) -> bool {
+    if arguments.iter().any(|arg| arg == "--native-host") {
+        return false;
+    }
+    let mut arguments = arguments.iter();
+    while let Some(arg) = arguments.next() {
+        match arg.as_str() {
+            "--state-dir" | "--capability" | "--enabled" | "--name" => {
+                arguments.next();
+            }
+            "--help" | "-h" | "--version" => return true,
+            other if !other.starts_with('-') => return true,
+            _ => {}
+        }
+    }
+    false
+}
 fn main() {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if cli_mode(&arguments) {
+        if let Err(error) = runtime::run_cli(&arguments) {
+            println!("{}", serde_json::json!({"error":error.to_string()}));
+            std::process::exit(1);
+        }
+        return;
+    }
     if run().is_err() {
+        if arguments.iter().any(|arg| arg == "--native-host") {
+            eprintln!("Native host failed to start");
+            std::process::exit(1);
+        }
         unsafe {
             MessageBoxW(
                 null_mut(),
@@ -167,6 +210,17 @@ fn invariant_lowercase(value: &str) -> Result<String, Box<dyn std::error::Error>
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_options_may_precede_commands_without_opening_gui() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(super::cli_mode(&args(&["--state-dir", "state", "status"])));
+        assert!(!super::cli_mode(&args(&["--state-dir", "state"])));
+        assert!(!super::cli_mode(&args(&[
+            "--native-host",
+            "--state-dir",
+            "state"
+        ])));
+    }
     #[test]
     fn legacy_invariant_casing_is_not_contextual_or_expanding() {
         assert_eq!(super::invariant_lowercase("D:İΟΣ").unwrap(), "d:İοσ");

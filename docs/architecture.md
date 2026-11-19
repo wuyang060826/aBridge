@@ -96,11 +96,11 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 ## Windows 客户端
 
-Windows PC 客户端位于 `apps/windows/`，TypeScript 运行时直接连接 Server；Rust 外壳使用 WinUI 3 设置界面与 Win32 托盘及活动边框。`windows-native.ts`、`windows-uia.ts` 与 `windows-script.ts` 提供 Win32/UIA；壳与运行时通过私有 stdio 通信。本机权限、焦点、遮挡、暂停及操作去重仍由客户端检查。其构建输出为 `dist/windows/`，不改变 Swift macOS、Rust Linux 或 Kotlin Android 客户端。
+Windows PC 客户端位于 `apps/windows/windows-native-shell/`，Rust 原生运行时直接连接 Server，Win32 实现设置、托盘与活动边框。同一个 `aBridge.exe` 通过 `--native-host` 启动独立运行时，私有 stdio 保留窗口命令和事件契约。`runtime/` 管理授权、会话、SQLite 去重、操作调度、Shell 和文件；嵌入的 PowerShell/UIA 驱动检查本机权限、焦点、遮挡和人工输入。`apps/windows/src/` 保留此前 TypeScript 行为参考及驱动源，不作为运行依赖分发。
 
 Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](windows-client.md)。
 
-Rust 外壳仅负责设置窗口、托盘、暂停快捷键、桌面活动边框和子进程生命周期。它以私有 stdin/stdout 启动包内 `windows-host.mjs`，传入状态目录及外壳 PID，沿用原 JSON 请求、响应和事件；设备绑定、权限、会话、去重和工具执行仍由 Node/TypeScript/PowerShell 运行时维护。活动边框属于外壳进程，保持分屏物理坐标、鼠标穿透、不激活和工具窗口样式，供原驱动识别与排除。
+外壳仅负责设置窗口、托盘、暂停快捷键、桌面活动边框和子进程生命周期；运行时保留原状态文件、SQLite 表及私有控制管道格式，使用协议包生成的契约校验外部输入。暂停、撤销和能力关闭优先于网络重连与执行，未知写操作不重放。活动边框属于外壳进程，保持分屏物理坐标、鼠标穿透、不激活和工具窗口样式，供驱动识别与排除。便携包不依赖 Node、WinUI 或外置下载运行时；构建和仓库外验包将完整程序目录严格限制在 10,000,000 字节以内。
 
 ## 身份与授权
 

@@ -1,10 +1,10 @@
 # Windows PC 客户端
 
-Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力，直接连接现有 aBridge Server。完整源码位于 `apps/windows/`：`src/` 是 TypeScript 运行时，`windows-native-shell/` 是 Rust + WinUI 3 界面，`tests/` 是回归测试。无需修改或重新部署 Server。
+Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力，直接连接现有 aBridge Server。`apps/windows/windows-native-shell/` 包含 Rust 原生运行时和 Win32 界面；`src/` 保留此前 TypeScript 实现及驱动参考，供行为对照测试使用，不随包分发。无需修改或重新部署 Server。
 
 ## 普通用户：下载、解压、启动
 
-当前提供**未签名便携 ZIP**，不是 MSI/Setup 安装器，也没有自动更新。需要 Windows 10/11 x64、可交互且未锁定的桌面；ARM64 尚未验证。运行包已包含 Node 和原生 Windows App SDK；设置界面使用 WinUI 3，外壳为原生 Rust EXE，不分发 .NET，用户不必安装开发工具，也不需要管理员权限。
+当前提供**未签名便携 ZIP**，不是 MSI/Setup 安装器，也没有自动更新。需要 Windows 10/11 x64、系统自带的 Windows PowerShell 5.1、可交互且未锁定的桌面；ARM64 尚未验证。界面和运行时均为 Rust 原生程序，不分发或下载 Node、.NET、WinUI 3 或 Windows App SDK。用户不必安装开发工具，也不需要管理员权限。完整解压程序目录须小于 **10,000,000 字节**；构建和验包都强制检查此上限，许可与文档也计入其中。用户状态、操作日志及用户创建的文件单独存放，不属于静态程序包。
 
 1. 在提供该代码分支的 GitHub 仓库进入 **Actions → CI**，选择与你要安装的提交号一致、**Windows client** 检查成功的运行。
 2. 下载页面底部的 **windows-client-unsigned** artifact（需要登录 GitHub）。先解开 artifact 外层 ZIP，得到 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。Actions 产物会过期；这不是官方 Release 已发布的承诺。
@@ -36,7 +36,7 @@ npm run package:windows:check
 npm run desktop:windows
 ```
 
-打包器从 PATH（或 `CARGO` 环境变量）查找 Cargo，使用锁定的 crate 依赖构建 Rust/WinUI 3 外壳，下载并校验固定版本的 Node 24.22.3。首次构建需要访问 npm、crates.io、nuget.org 和 nodejs.org。WinUI 原生运行库从固定版本的 Microsoft NuGet 包提取并校验，随便携包分发，不要求用户安装 Windows App Runtime。输出位于 `dist/releases/`，版本单源为根 `package.json`。构建产物不提交到 Git；CI artifact 或本地构建包才包含可运行二进制。包内附带本文、运行时清单及第三方许可，不包含私有部署配置或凭据。
+打包器从 PATH（或 `CARGO` 环境变量）查找 Cargo，生成协议包定义的契约，再使用锁定的 crate 依赖构建原生 EXE。首次构建需要访问 npm 和 crates.io；Node 只用于开发构建和验证。SQLite 编译进程序，TLS 使用 Windows 系统实现，桌面驱动使用内嵌脚本调用系统 PowerShell。输出位于 `dist/releases/`，版本单源为根 `package.json`。构建产物不提交到 Git；CI artifact 或本地构建包才包含可运行二进制。包内附带本文、运行时清单及第三方许可，不包含私有部署配置或凭据。
 
 ## 能力边界和排障
 
@@ -50,11 +50,13 @@ npm run desktop:windows
 ```powershell
 npm run check
 npm run windows:shell:check
-node --import tsx --test --test-concurrency=4 apps/windows/tests/*.test.ts
+node --import tsx --test --test-concurrency=1 apps/windows/tests/*.test.ts
 npm run package:windows
 npm run package:windows:check
 ```
 
 测试使用虚构身份和自有 fixture。真实桌面输入用例需要显式设置 `ABRIDGE_WINDOWS_LIVE=1`，并使用专用测试窗口；CI 不连接真实账号、桌面或服务。单元测试和包启动检查不能代替多显示器、UAC、真实输入或 Yuxi 截图端到端验收。
 
-外壳升级对照可使用 `$env:ABRIDGE_WINDOWS_LIVE='1'; npm run test:windows:shell:live -- <旧包解压目录> <新包解压目录>`。此检查先核对两包运行时文件一致，再用隔离状态目录验证关闭隐藏、跨版本互斥与激活、快捷键只暂停、原外观偏好保留。它不验证浏览器绑定、托盘菜单退出或实际桌面输入；这些行为须用同一 Server 和运行时从解压 EXE 另行对照，记录响应与失败提示。
+`package:windows:check` 在仓库外解压包，检查完整目录大小、原生 PE、许可和 SHA-256，并通过自有回环 Server 验证浏览器授权、Token 绑定、Shell/文件效果、重复写入不重放、暂停、能力关闭、解绑及退出。新旧客户端的运行时实现不同，验收比较协议、状态和操作结果。
+
+外壳升级对照可使用 `$env:ABRIDGE_WINDOWS_LIVE='1'; npm run test:windows:shell:live -- <旧包解压目录> <新包解压目录>`。使用隔离状态目录验证关闭隐藏、跨版本互斥与激活、快捷键只暂停、原外观偏好保留。托盘菜单和真实桌面输入须从解压 EXE 另行对照，记录响应与失败提示。

@@ -4,10 +4,6 @@ use crate::{
     host::{Host, Message, Pending},
     text, wide,
 };
-use naui_winui3::Microsoft::UI::Xaml::{
-    self as xaml, Controls::*, ElementTheme, FrameworkElement, Markup::XamlReader,
-    RoutedEventHandler, UIElement, Visibility, Window,
-};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -15,21 +11,19 @@ use std::{
     ptr::{null, null_mut},
     time::{Duration, Instant},
 };
-use windows::Foundation::{IPropertyValue, IReference, PropertyValue};
-use windows_core::{Interface, HSTRING};
 use windows_sys::Win32::{
     Foundation::*,
-    System::{LibraryLoader::*, Threading::*},
+    Graphics::{Dwm::*, Gdi::*},
+    System::{LibraryLoader::*, Registry::*, Threading::*},
     UI::{Controls::*, HiDpi::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
 };
 const HOST_TIMER: usize = 0xAB42;
+type LayoutState = ([i32; 4], [bool; 5], bool);
 const CAPS: [&str; 4] = ["screen", "input", "shell", "files"];
 struct App {
-    exiting: bool,
     hwnd: HWND,
-    window: Window,
-    root: FrameworkElement,
-    controls: HashMap<u16, FrameworkElement>,
+    destroyed: bool,
+    controls: HashMap<u16, HWND>,
     host: Host,
     frames: Frames,
     activation: HANDLE,
@@ -43,139 +37,387 @@ struct App {
     quitting: bool,
     has_status: bool,
     heartbeat: Instant,
+    sections: [bool; 5],
     theme: i32,
-    status_appearance: Option<(bool, ElementTheme)>,
+    dark: bool,
+    background: HBRUSH,
+    input: HBRUSH,
+    font: HFONT,
+    title_font: HFONT,
+    status_font: HFONT,
+    scroll: i32,
+    content_height: i32,
     status_error: String,
     transport_error: String,
     tray: NOTIFYICONDATAW,
     taskbar_created: u32,
     tray_callback: u32,
+    layout_state: Option<LayoutState>,
+    online_color: bool,
 }
-// Status arrives periodically. Do not replace XAML content or invalidate layout
-// when its displayed value is unchanged (notably Button.Content recreates content).
-fn label(c: FrameworkElement, s: &str) {
-    let value = HSTRING::from(s);
-    if let Ok(c) = c.cast::<TextBlock>() {
-        if c.Text().ok().as_ref() != Some(&value) {
-            let _ = c.SetText(&value);
-        }
-    } else if let Ok(c) = c.cast::<TextBox>() {
-        if c.Text().ok().as_ref() != Some(&value) {
-            let _ = c.SetText(&value);
-        }
-    } else if let Ok(c) = c.cast::<PasswordBox>() {
-        if c.Password().ok().as_ref() != Some(&value) {
-            let _ = c.SetPassword(&value);
-        }
-    } else if let Ok(c) = c.cast::<Button>() {
-        let current = c
-            .Content()
-            .and_then(|v| v.cast::<IPropertyValue>())
-            .and_then(|v| v.GetString());
-        if current.ok().as_ref() != Some(&value) {
-            if let Ok(v) = PropertyValue::CreateString(&value) {
-                let _ = c.SetContent(&v);
-            }
-        }
+unsafe fn label(hwnd: HWND, s: &str) {
+    if read(hwnd) != s {
+        SetWindowTextW(hwnd, wide(s).as_ptr());
     }
 }
-fn visible(c: FrameworkElement, value: Visibility) {
-    if c.Visibility().ok() != Some(value) {
-        let _ = c.SetVisibility(value);
+unsafe fn read(hwnd: HWND) -> String {
+    let mut b = vec![0; GetWindowTextLengthW(hwnd) as usize + 1];
+    let n = GetWindowTextW(hwnd, b.as_mut_ptr(), b.len() as i32);
+    String::from_utf16_lossy(&b[..n as usize])
+}
+unsafe fn enabled(hwnd: HWND, value: i32) {
+    if (IsWindowEnabled(hwnd) != 0) != (value != 0) {
+        EnableWindow(hwnd, value);
     }
 }
-fn read(c: FrameworkElement) -> String {
-    if let Ok(c) = c.cast::<TextBlock>() {
-        c.Text().unwrap_or_default().to_string()
-    } else if let Ok(c) = c.cast::<TextBox>() {
-        c.Text().unwrap_or_default().to_string()
-    } else if let Ok(c) = c.cast::<PasswordBox>() {
-        c.Password().unwrap_or_default().to_string()
-    } else {
-        String::new()
-    }
-}
-fn enabled(c: FrameworkElement, enabled: i32) {
-    if let Ok(c) = c.cast::<Control>() {
-        if c.IsEnabled().ok() != Some(enabled != 0) {
-            let _ = c.SetIsEnabled(enabled != 0);
-        }
-    }
-}
-fn focused(c: FrameworkElement) -> bool {
-    c.cast::<Control>()
-        .and_then(|c| c.FocusState())
-        .is_ok_and(|s| s != xaml::FocusState::Unfocused)
-}
-fn send_control(c: FrameworkElement, msg: u32, w: usize, _l: isize) -> isize {
-    match msg {
-        BM_GETCHECK => c
-            .cast::<CheckBox>()
-            .and_then(|c| c.IsChecked())
-            .and_then(|v| v.Value())
-            .unwrap_or(false) as isize,
-        BM_SETCHECK => {
-            if let Ok(c) = c.cast::<CheckBox>() {
-                if c.IsChecked().and_then(|v| v.Value()).ok() == Some(w != 0) {
-                    return 0;
-                }
-                let v: IReference<bool> = PropertyValue::CreateBoolean(w != 0)
-                    .unwrap()
-                    .cast()
-                    .unwrap();
-                let _ = c.SetIsChecked(&v);
-            }
-            0
-        }
-        CB_GETCURSEL => c
-            .cast::<ComboBox>()
-            .and_then(|c| c.SelectedIndex())
-            .unwrap_or(0) as isize,
-        _ => 0,
+unsafe fn checked(hwnd: HWND, value: usize) {
+    if SendMessageW(hwnd, BM_GETCHECK, 0, 0) as usize != value {
+        SendMessageW(hwnd, BM_SETCHECK, value, 0);
     }
 }
 impl App {
-    fn h(&self, id: u16) -> FrameworkElement {
-        self.controls[&id].clone()
-    }
-    unsafe fn error(&self, s: &str) {
-        label(self.h(9), s);
-        visible(
-            self.h(9),
-            if s.is_empty() {
-                Visibility::Collapsed
-            } else {
-                Visibility::Visible
-            },
+    unsafe fn control(&mut self, id: u16, class: &str, title: &str, style: u32) {
+        let h = CreateWindowExW(
+            if class == "EDIT" { WS_EX_CLIENTEDGE } else { 0 },
+            wide(class).as_ptr(),
+            wide(title).as_ptr(),
+            WS_CHILD | WS_VISIBLE | style,
+            0,
+            0,
+            1,
+            1,
+            self.hwnd,
+            id as usize as HMENU,
+            GetModuleHandleW(null()),
+            null(),
         );
+        SendMessageW(h, WM_SETFONT, self.font as usize, 1);
+        self.controls.insert(id, h);
+    }
+    fn h(&self, id: u16) -> HWND {
+        self.controls[&id]
+    }
+    unsafe fn error(&mut self, s: &str) {
+        if self.destroyed {
+            return;
+        }
+        let changed = read(self.h(9)) != s;
+        label(self.h(9), s);
+        if changed && !s.is_empty() {
+            self.layout();
+            let mut bounds = RECT::default();
+            let mut client = RECT::default();
+            GetWindowRect(self.h(9), &mut bounds);
+            GetClientRect(self.hwnd, &mut client);
+            let mut origin = POINT { x: 0, y: 0 };
+            ClientToScreen(self.hwnd, &mut origin);
+            let bottom = bounds.bottom - origin.y;
+            let dpi = GetDpiForWindow(self.hwnd);
+            if dpi != 0 && bottom > client.bottom - 12 {
+                self.scroll += (bottom - client.bottom + 12) * 96 / dpi as i32;
+                self.layout();
+            }
+        }
     }
     unsafe fn reveal(&self) {
         ShowWindow(self.hwnd, SW_RESTORE);
         SetForegroundWindow(self.hwnd);
     }
-    unsafe fn layout(&self) {
-        visible(
-            self.h(25),
-            if self.binding {
-                Visibility::Visible
-            } else {
-                Visibility::Collapsed
-            },
+    unsafe fn create(&mut self) {
+        self.control(1, "STATIC", "aBridge", 0);
+        SendMessageW(self.h(1), WM_SETFONT, self.title_font as usize, 1);
+        self.control(2, "STATIC", "正在启动…", 0);
+        SendMessageW(self.h(2), WM_SETFONT, self.status_font as usize, 1);
+        self.control(3, "STATIC", "", 0);
+        self.control(15, "STATIC", "设备名称", 0);
+        self.control(10, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL as u32);
+        SendMessageW(self.h(10), EM_SETLIMITTEXT, 120, 0);
+        for (id, s) in [
+            (11, "保存名称"),
+            (12, "暂停"),
+            (13, "停止当前任务"),
+            (14, "重新连接"),
+            (20, "连接"),
+            (22, "使用 Device Token"),
+            (24, "连接并授权"),
+            (25, "取消授权"),
+            (26, "解绑设备"),
+            (30, "本机能力"),
+            (40, "偏好设置"),
+            (50, "运行诊断"),
+        ] {
+            self.control(id, "BUTTON", s, WS_TABSTOP | BS_OWNERDRAW as u32);
+        }
+        self.control(27, "STATIC", "服务端网址", 0);
+        self.control(21, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL as u32);
+        SendMessageW(self.h(21), EM_SETLIMITTEXT, 8192, 0);
+        self.control(28, "STATIC", "Device Token", 0);
+        self.control(
+            23,
+            "EDIT",
+            "",
+            WS_TABSTOP | ES_PASSWORD as u32 | ES_AUTOHSCROLL as u32,
         );
+        SendMessageW(self.h(23), EM_SETLIMITTEXT, 4096, 0);
+
+        for (i, s) in ["屏幕观察", "键鼠控制", "终端", "文件"].iter().enumerate() {
+            self.control(
+                31 + i as u16,
+                "BUTTON",
+                s,
+                WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+            );
+            SendMessageW(self.h(31 + i as u16), BM_SETCHECK, BST_CHECKED as usize, 0);
+        }
+        self.control(
+            41,
+            "COMBOBOX",
+            "",
+            WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+        );
+        for s in ["跟随系统", "浅色", "深色"] {
+            SendMessageW(self.h(41), CB_ADDSTRING, 0, wide(s).as_ptr() as isize);
+        }
+        SendMessageW(self.h(41), CB_SETCURSEL, self.theme as usize, 0);
+        self.control(42, "STATIC", "外观", 0);
+        self.control(43, "STATIC", "暂停快捷键  Ctrl + Alt + Shift + P", 0);
+        self.control(51, "STATIC", "", 0);
+        self.control(9, "STATIC", "", 0);
+        self.apply_theme();
+        self.refresh();
+        self.layout();
+        if RegisterHotKey(
+            self.hwnd,
+            1,
+            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
+            0x50,
+        ) == 0
+        {
+            self.error("暂停快捷键已被其他程序占用。");
+        }
+        self.tray = std::mem::zeroed();
+        self.tray.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        self.tray.hWnd = self.hwnd;
+        self.tray.uID = 1;
+        self.tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        self.tray.uCallbackMessage = self.tray_callback;
+        self.tray.hIcon = LoadIconW(GetModuleHandleW(null()), std::ptr::without_provenance(1));
+        if self.tray.hIcon.is_null() {
+            self.tray.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        }
+        let tip = wide("aBridge · 正在启动");
+        self.tray.szTip[..tip.len()].copy_from_slice(&tip);
+        Shell_NotifyIconW(NIM_ADD, &self.tray);
+        SetTimer(self.hwnd, HOST_TIMER, 100, None);
+        self.send("status", json!({}), 0);
+    }
+    unsafe fn place(&self, id: u16, x: i32, y: i32, w: i32, h: i32, visible: bool) {
+        let scale = GetDpiForWindow(self.hwnd) as f64 / 96.;
+        let p = |n: i32| (n as f64 * scale).round() as i32;
+        ShowWindow(self.h(id), if visible { SW_SHOWNA } else { SW_HIDE });
+        MoveWindow(self.h(id), p(x), p(y - self.scroll), p(w), p(h), 1);
+    }
+    unsafe fn layout(&mut self) {
+        if self.destroyed {
+            return;
+        }
+        let mut r = std::mem::zeroed();
+        GetClientRect(self.hwnd, &mut r);
+        let key = (
+            [
+                r.right,
+                r.bottom,
+                GetDpiForWindow(self.hwnd) as i32,
+                self.scroll,
+            ],
+            self.sections,
+            self.binding,
+        );
+        if self.layout_state == Some(key) {
+            return;
+        }
+        self.layout_state = Some(key);
+        let scale = GetDpiForWindow(self.hwnd) as f64 / 96.;
+        let width = (r.right as f64 / scale) as i32;
+        let w = (width - 52).max(300);
+        self.place(1, 26, 20, w, 42, true);
+        self.place(2, 26, 78, w, 30, true);
+        self.place(3, 26, 112, w, 24, true);
+        self.place(15, 26, 140, w, 20, true);
+        self.place(10, 26, 162, w - 106, 32, true);
+        self.place(11, 26 + w - 98, 162, 98, 32, true);
+        self.place(12, 26, 206, 72, 34, true);
+        self.place(13, 106, 206, 140, 34, true);
+        self.place(14, 254, 206, 108, 34, true);
+        for (i, id) in [20, 22, 30, 40, 50].iter().enumerate() {
+            let title = match id {
+                20 => "连接",
+                22 => "使用 Device Token",
+                30 => "本机能力",
+                40 => "偏好设置",
+                _ => "运行诊断",
+            };
+            label(
+                self.h(*id),
+                &format!("{}  {}", if self.sections[i] { "▾" } else { "▸" }, title),
+            );
+        }
+        let mut y = 262;
+        self.place(20, 26, y, w, 30, true);
+        y += 38;
+        self.place(27, 26, y, w, 22, self.sections[0]);
+        self.place(21, 26, y + 25, w, 32, self.sections[0]);
+        self.place(22, 26, y + 67, w, 28, self.sections[0]);
+        let token = self.sections[0] && self.sections[1];
+        self.place(28, 26, y + 102, w, 22, token);
+        self.place(23, 26, y + 128, w, 32, token);
+        let actions = y + if self.sections[1] { 170 } else { 105 };
+        self.place(24, 26, actions, 122, 34, self.sections[0]);
+        self.place(25, 156, actions, 108, 34, self.sections[0] && self.binding);
+        self.place(
+            26,
+            if self.binding { 272 } else { 156 },
+            actions,
+            108,
+            34,
+            self.sections[0],
+        );
+        if self.sections[0] {
+            y = actions + 50;
+        }
+        self.place(30, 26, y, w, 30, true);
+        y += 38;
+        for i in 0..4 {
+            self.place(
+                31 + i,
+                26 + i as i32 * (w / 4),
+                y,
+                w / 4,
+                30,
+                self.sections[2],
+            );
+        }
+        if self.sections[2] {
+            y += 46;
+        }
+        self.place(40, 26, y, w, 30, true);
+        y += 38;
+        self.place(42, 26, y, w, 22, self.sections[3]);
+        self.place(41, 26, y + 28, 160, 180, self.sections[3]);
+        self.place(43, 26, y + 70, w, 24, self.sections[3]);
+        if self.sections[3] {
+            y += 110;
+        }
+        self.place(50, 26, y, w, 30, true);
+        y += 38;
+        self.place(51, 26, y, w, 140, self.sections[4]);
+        if self.sections[4] {
+            y += 154;
+        }
+        self.place(9, 26, y, w, 100, true);
+        self.content_height = y + 126;
+        let page = (r.bottom as f64 / scale) as u32;
+        let clamped = self
+            .scroll
+            .clamp(0, (self.content_height - page as i32 + 1).max(0));
+        if self.scroll != clamped {
+            self.scroll = clamped;
+            self.layout();
+            return;
+        }
+        let info = SCROLLINFO {
+            cbSize: std::mem::size_of::<SCROLLINFO>() as u32,
+            fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0,
+            nMax: self.content_height,
+            nPage: page,
+            nPos: self.scroll,
+            nTrackPos: 0,
+        };
+        SetScrollInfo(self.hwnd, SB_VERT, &info, 1);
+        InvalidateRect(self.hwnd, null(), 1);
+    }
+    unsafe fn fonts(&mut self) {
+        let dpi = GetDpiForWindow(self.hwnd) as i32;
+        let make = |size: i32, weight: i32| {
+            CreateFontW(
+                -size * dpi / 96,
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                0,
+                0,
+                CLEARTYPE_QUALITY as u32,
+                0,
+                wide("Microsoft YaHei UI").as_ptr(),
+            )
+        };
+        let old = [self.font, self.title_font, self.status_font];
+        self.font = make(14, 400);
+        self.title_font = make(30, 700);
+        self.status_font = make(22, 600);
+        for (&id, &h) in &self.controls {
+            SendMessageW(
+                h,
+                WM_SETFONT,
+                match id {
+                    1 => self.title_font,
+                    2 => self.status_font,
+                    _ => self.font,
+                } as usize,
+                1,
+            );
+        }
+        for font in old {
+            DeleteObject(font);
+        }
     }
     unsafe fn apply_theme(&mut self) {
-        let _ = self.root.SetRequestedTheme(match self.theme {
-            1 => ElementTheme::Light,
-            2 => ElementTheme::Dark,
-            _ => ElementTheme::Default,
-        });
-    }
-    unsafe fn exit(&mut self) {
-        self.exiting = true;
-        let _ = self.window.Close();
-        if let Ok(app) = xaml::Application::Current() {
-            let _ = app.Exit();
+        let mut light = 1u32;
+        let mut size = 4;
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize").as_ptr(),
+            wide("AppsUseLightTheme").as_ptr(),
+            RRF_RT_REG_DWORD,
+            null_mut(),
+            (&mut light as *mut u32).cast(),
+            &mut size,
+        );
+        self.dark = self.theme == 2 || (self.theme == 0 && light == 0);
+        let dark = self.dark as i32;
+        let _ = DwmSetWindowAttribute(
+            self.hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            (&dark as *const i32).cast(),
+            4,
+        );
+        if !self.background.is_null() {
+            DeleteObject(self.background);
         }
+        if !self.input.is_null() {
+            DeleteObject(self.input);
+        }
+        self.background = CreateSolidBrush(if self.dark { 0x00202020 } else { 0x00fafafa });
+        self.input = CreateSolidBrush(if self.dark { 0x002d2d2d } else { 0x00ffffff });
+        // The light visual-style checkbox ignores WM_CTLCOLOR text colors. Keep
+        // the native checkbox semantics, but use its classic painter in dark mode.
+        let empty = wide("");
+        let theme = if self.dark { empty.as_ptr() } else { null() };
+        for id in 31..=34 {
+            SetWindowTheme(self.h(id), theme, theme);
+        }
+        RedrawWindow(
+            self.hwnd,
+            null(),
+            null_mut(),
+            RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_ERASE,
+        );
     }
     unsafe fn refresh(&self) {
         for id in [21, 23, 24] {
@@ -205,7 +447,7 @@ impl App {
                 }
                 if action == "quit" {
                     if !self.host.running() {
-                        self.exit();
+                        DestroyWindow(self.hwnd);
                     } else {
                         self.quitting = false;
                         self.error("退出尚未完成，客户端仍在运行。请等待当前操作清理后重试。");
@@ -227,57 +469,33 @@ impl App {
             "正在启动…".into()
         };
         label(self.h(2), &s);
-        let online = self.healthy && !self.paused && text(&self.status, "connection") == "online";
-        // Include ActualTheme so automatic system-theme changes still refresh the
-        // theme foreground, without allocating a fresh brush on every heartbeat.
-        let appearance = (
-            online,
-            self.root.ActualTheme().unwrap_or(ElementTheme::Default),
-        );
-        if self.status_appearance != Some(appearance) {
-            if let Ok(status) = self.h(2).cast::<TextBlock>() {
-                let brush = if online {
-                    xaml::Media::SolidColorBrush::CreateInstanceWithColor(windows::UI::Color {
-                        A: 255,
-                        R: 0,
-                        G: 102,
-                        B: 221,
-                    })
-                    .and_then(|b| b.cast::<xaml::Media::Brush>())
-                } else {
-                    self.h(52).cast::<TextBlock>().and_then(|c| c.Foreground())
-                };
-                if brush.and_then(|b| status.SetForeground(&b)).is_ok() {
-                    self.status_appearance = Some(appearance);
-                }
-            }
-        }
+        let mut tooltip = [0; 128];
         let tip = wide(&format!("aBridge · {s}"));
-        let mut next_tip = [0u16; 128];
         let n = tip.len().min(127);
-        next_tip[..n].copy_from_slice(&tip[..n]);
-        if self.tray.szTip != next_tip {
-            self.tray.szTip = next_tip;
+        tooltip[..n].copy_from_slice(&tip[..n]);
+        if self.tray.szTip != tooltip {
+            self.tray.szTip = tooltip;
             Shell_NotifyIconW(NIM_MODIFY, &self.tray);
         }
+        let online = self.healthy && !self.paused && text(&self.status, "connection") == "online";
+        if online != self.online_color {
+            self.online_color = online;
+            InvalidateRect(self.h(2), null(), 1);
+        }
     }
-
     unsafe fn apply_status(&mut self, v: Value) {
         self.status = v;
         let bound = flag(&self.status, "bound");
         if !self.has_status || bound != self.bound {
-            let _ = self
-                .h(20)
-                .cast::<Expander>()
-                .and_then(|e| e.SetIsExpanded(!bound));
+            self.sections[0] = !bound;
         }
         self.has_status = true;
         self.bound = bound;
         self.paused = flag(&self.status, "paused");
-        if !focused(self.h(10)) {
+        if GetFocus() != self.h(10) {
             label(self.h(10), &text(&self.status, "device_name"));
         }
-        if self.bound && !focused(self.h(21)) {
+        if self.bound && GetFocus() != self.h(21) {
             label(self.h(21), &text(&self.status, "url"));
         }
         label(
@@ -303,15 +521,13 @@ impl App {
                 &self.status["capabilities"]
             };
             for (i, key) in CAPS.iter().enumerate() {
-                send_control(
+                checked(
                     self.h(31 + i as u16),
-                    BM_SETCHECK,
                     if flag(caps, key) {
                         BST_CHECKED as usize
                     } else {
                         0
                     },
-                    0,
                 );
             }
         }
@@ -323,9 +539,9 @@ impl App {
         label(
             self.h(51),
             &format!(
-                "版本  {}\r\nNode  {}\r\n桌面驱动  {}\r\n连接  {}\r\n设备  {}\r\n{}",
+                "版本  {}\r\n内核  {}\r\n桌面驱动  {}\r\n连接  {}\r\n设备  {}\r\n{}",
                 text(&self.status, "version"),
-                self.status["runtime"]["node"].as_str().unwrap_or("未启动"),
+                "Rust 原生",
                 if flag(&self.status["driver"], "ready") {
                     "已就绪"
                 } else {
@@ -366,7 +582,7 @@ impl App {
                 if ok {
                     self.host.graceful();
                 }
-                self.exit();
+                DestroyWindow(self.hwnd);
             } else {
                 self.quitting = false;
                 self.error("退出尚未完成，客户端仍在运行。请等待当前操作清理后重试。");
@@ -401,6 +617,9 @@ impl App {
         }
     }
     unsafe fn tick(&mut self) {
+        if self.destroyed {
+            return;
+        }
         if WaitForSingleObject(self.activation, 0) == WAIT_OBJECT_0 {
             self.reveal();
         }
@@ -410,6 +629,9 @@ impl App {
                     let pending = std::mem::take(&mut self.host.pending);
                     for (_, p) in pending {
                         self.finish(p, Some(json!({"ok":false,"error":"本机连接已关闭。"})));
+                        if self.destroyed {
+                            return;
+                        }
                     }
                     self.lose("本机内核已退出，请退出后重新打开 aBridge。");
                 }
@@ -464,9 +686,17 @@ impl App {
                     }
                 }
             }
+            // A quit response synchronously destroys the window. Do not process
+            // the queued pipe closure or any later status using its dead HWND.
+            if self.destroyed {
+                return;
+            }
         }
         for p in self.host.expired() {
             self.finish(p, None);
+            if self.destroyed {
+                return;
+            }
         }
         if self.healthy && self.heartbeat.elapsed() > Duration::from_secs(2) {
             self.lose("本机状态暂时不可用。");
@@ -486,6 +716,17 @@ impl App {
                 self.send("stop", json!({}), 13);
             }
             14 => self.send("connect", json!({}), 14),
+            20 | 22 | 30 | 40 | 50 => {
+                let index = match id {
+                    20 => 0,
+                    22 => 1,
+                    30 => 2,
+                    40 => 3,
+                    _ => 4,
+                };
+                self.sections[index] = !self.sections[index];
+                self.layout();
+            }
             24 => {
                 if self.binding || self.bound {
                     return;
@@ -505,7 +746,7 @@ impl App {
                 let mut args = json!({"url":url.as_str(),"capabilities":{}});
                 for (i, key) in CAPS.iter().enumerate() {
                     args["capabilities"][key] = json!(
-                        send_control(self.h(31 + i as u16), BM_GETCHECK, 0, 0)
+                        SendMessageW(self.h(31 + i as u16), BM_GETCHECK, 0, 0)
                             == BST_CHECKED as isize
                     );
                 }
@@ -539,7 +780,7 @@ impl App {
             31..=34 => {
                 if self.bound && !self.binding {
                     let enabled =
-                        send_control(self.h(id), BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+                        SendMessageW(self.h(id), BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                     if id == 32 && !enabled {
                         self.frames.show(false);
                     }
@@ -551,7 +792,7 @@ impl App {
                 }
             }
             41 if notification == CBN_SELCHANGE as u16 => {
-                self.theme = send_control(self.h(41), CB_GETCURSEL, 0, 0) as i32;
+                self.theme = SendMessageW(self.h(41), CB_GETCURSEL, 0, 0) as i32;
                 self.apply_theme();
                 let result = (|| -> std::io::Result<()> {
                     std::fs::create_dir_all(self.preferences.parent().unwrap())?;
@@ -578,7 +819,7 @@ impl App {
                 if self.host.running() {
                     self.send("quit", json!({}), 0);
                 } else {
-                    self.exit();
+                    DestroyWindow(self.hwnd);
                 }
             }
             _ => {}
@@ -613,66 +854,36 @@ impl App {
         }
         PostMessageW(self.hwnd, WM_NULL, 0, 0);
     }
-    unsafe fn initialize_tray(&mut self) {
-        if RegisterHotKey(
-            self.hwnd,
-            1,
-            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT,
-            0x50,
-        ) == 0
-        {
-            self.error("暂停快捷键已被其他程序占用。");
-        }
-        self.tray = std::mem::zeroed();
-        self.tray.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        self.tray.hWnd = self.hwnd;
-        self.tray.uID = 1;
-        self.tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        self.tray.uCallbackMessage = self.tray_callback;
-        self.tray.hIcon = LoadIconW(GetModuleHandleW(null()), std::ptr::without_provenance(1));
-        if self.tray.hIcon.is_null() {
-            self.tray.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
-        }
-        let tip = wide("aBridge · 正在启动");
-        self.tray.szTip[..tip.len()].copy_from_slice(&tip);
-        Shell_NotifyIconW(NIM_ADD, &self.tray);
-        SetTimer(self.hwnd, HOST_TIMER, 100, None);
-        self.send("status", json!({}), 0);
-    }
 }
-
-unsafe extern "system" fn proc(
-    hwnd: HWND,
-    msg: u32,
-    w: WPARAM,
-    l: LPARAM,
-    _id: usize,
-    data: usize,
-) -> LRESULT {
-    let app = &mut *(data as *mut App);
+unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
+    if ptr.is_null() {
+        return DefWindowProcW(hwnd, msg, w, l);
+    }
+    let app = &mut *ptr;
     if msg == app.taskbar_created {
         Shell_NotifyIconW(NIM_ADD, &app.tray);
         return 0;
     }
     match msg {
-        WM_CLOSE if !app.exiting => {
+        WM_CLOSE => {
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
-        WM_NCDESTROY => {
-            RemoveWindowSubclass(hwnd, Some(proc), 1);
-        }
         WM_DESTROY => {
+            app.destroyed = true;
             KillTimer(hwnd, HOST_TIMER);
             UnregisterHotKey(hwnd, 1);
             app.frames.show(false);
             Shell_NotifyIconW(NIM_DELETE, &app.tray);
+            PostQuitMessage(0);
+            return 0;
         }
         WM_TIMER if w == HOST_TIMER => {
             app.tick();
             return 0;
         }
-        WM_COMMAND if matches!((w & 65535) as u16, 11..=14 | 24..=26 | 31..=34 | 41 | 60 | 61) => {
+        WM_COMMAND => {
             app.command((w & 65535) as u16, (w >> 16) as u16);
             return 0;
         }
@@ -689,10 +900,29 @@ unsafe extern "system" fn proc(
             }
             return 0;
         }
+        WM_SIZE => {
+            app.layout();
+            return 0;
+        }
         WM_DISPLAYCHANGE => {
             if app.active && app.healthy {
                 app.frames.show(true);
             }
+        }
+        WM_SETTINGCHANGE => app.apply_theme(),
+        WM_DPICHANGED => {
+            let r = *(l as *const RECT);
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            app.fonts();
+            app.layout();
         }
         WM_GETMINMAXINFO => {
             let info = &mut *(l as *mut MINMAXINFO);
@@ -701,45 +931,218 @@ unsafe extern "system" fn proc(
                 x: 440 * dpi / 96,
                 y: 440 * dpi / 96,
             };
+            return 0;
+        }
+        WM_VSCROLL | WM_MOUSEWHEEL => {
+            let mut info: SCROLLINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<SCROLLINFO>() as u32;
+            info.fMask = SIF_ALL;
+            GetScrollInfo(hwnd, SB_VERT, &mut info);
+            let next = if msg == WM_MOUSEWHEEL {
+                app.scroll - ((w >> 16) as i16 as i32) / 120 * 45
+            } else {
+                match (w & 65535) as i32 {
+                    SB_LINEUP => app.scroll - 24,
+                    SB_LINEDOWN => app.scroll + 24,
+                    SB_PAGEUP => app.scroll - info.nPage as i32,
+                    SB_PAGEDOWN => app.scroll + info.nPage as i32,
+                    SB_THUMBTRACK => info.nTrackPos,
+                    _ => app.scroll,
+                }
+            };
+            app.scroll = next.clamp(0, (info.nMax - info.nPage as i32 + 1).max(0));
+            app.layout();
+            return 0;
+        }
+        WM_DRAWITEM => {
+            let item = &*(l as *const DRAWITEMSTRUCT);
+            let dc = item.hDC;
+            let mut r = item.rcItem;
+            let section = matches!(item.CtlID, 20 | 22 | 30 | 40 | 50);
+            let disabled = item.itemState & ODS_DISABLED != 0;
+            let primary = item.CtlID == 24 && !disabled;
+            let pressed = item.itemState & ODS_SELECTED != 0;
+            FillRect(dc, &r, app.background);
+            let fill = if primary {
+                if pressed {
+                    0x00c25800
+                } else {
+                    0x00dd6600
+                }
+            } else if app.dark {
+                if pressed {
+                    0x003b3b3b
+                } else {
+                    0x002d2d2d
+                }
+            } else if pressed {
+                0x00ededed
+            } else {
+                0x00ffffff
+            };
+            let brush = CreateSolidBrush(fill);
+            let pen = CreatePen(
+                PS_SOLID,
+                1,
+                if primary {
+                    fill
+                } else if app.dark {
+                    0x00454545
+                } else {
+                    0x00e5e5e5
+                },
+            );
+            let previous_brush = SelectObject(dc, brush);
+            let previous_pen = SelectObject(dc, pen);
+            let radius = (6 * GetDpiForWindow(hwnd) / 96) as i32;
+            RoundRect(dc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
+            SelectObject(dc, previous_brush);
+            SelectObject(dc, previous_pen);
+            DeleteObject(brush);
+            DeleteObject(pen);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(
+                dc,
+                if disabled {
+                    0x00888888
+                } else if primary {
+                    0x00ffffff
+                } else if app.dark {
+                    0x00f3f3f3
+                } else {
+                    0x00171717
+                },
+            );
+            let previous_font = SelectObject(dc, app.font);
+            let s = wide(&read(item.hwndItem));
+            if section {
+                r.left += radius * 2;
+            }
+            DrawTextW(
+                dc,
+                s.as_ptr(),
+                -1,
+                &mut r,
+                (if section { DT_LEFT } else { DT_CENTER }) | DT_VCENTER | DT_SINGLELINE,
+            );
+            SelectObject(dc, previous_font);
+            if item.itemState & ODS_FOCUS != 0 {
+                InflateRect(&mut r, -3, -3);
+                DrawFocusRect(dc, &r);
+            }
+            return 1;
+        }
+        WM_ERASEBKGND => {
+            let mut r = std::mem::zeroed();
+            GetClientRect(hwnd, &mut r);
+            FillRect(w as HDC, &r, app.background);
+            return 1;
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN => {
+            let dc = w as HDC;
+            let input = msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORLISTBOX;
+            let color = if l as HWND == app.h(9) {
+                0x005c5ccd
+            } else if l as HWND == app.h(1)
+                || (l as HWND == app.h(2)
+                    && app.healthy
+                    && !app.paused
+                    && text(&app.status, "connection") == "online")
+            {
+                0x00dd6600
+            } else if app.dark {
+                0x00f3f3f3
+            } else {
+                0x00171717
+            };
+            SetTextColor(dc, color);
+            SetBkColor(
+                dc,
+                if input {
+                    if app.dark {
+                        0x002d2d2d
+                    } else {
+                        0xffffff
+                    }
+                } else if app.dark {
+                    0x00202020
+                } else {
+                    0x00fafafa
+                },
+            );
+            return if input { app.input } else { app.background } as isize;
         }
         _ => {}
     }
-    DefSubclassProc(hwnd, msg, w, l)
+    DefWindowProcW(hwnd, msg, w, l)
 }
-impl Drop for App {
-    fn drop(&mut self) {
-        unsafe {
-            RemoveWindowSubclass(self.hwnd, Some(proc), 1);
-            KillTimer(self.hwnd, HOST_TIMER);
-            UnregisterHotKey(self.hwnd, 1);
-            Shell_NotifyIconW(NIM_DELETE, &self.tray);
-            self.frames.show(false);
-            let _ = self.window.Close();
-        }
-    }
-}
-unsafe fn build(
+pub unsafe fn run(
     base: PathBuf,
     state: PathBuf,
     activation: HANDLE,
-) -> Result<Box<App>, Box<dyn std::error::Error>> {
-    let window = Window::new()?;
-    window.SetTitle(&HSTRING::from("aBridge"))?;
-    let native = window.cast::<naui_winui3::IWindowNative>()?;
-    let hwnd = native.WindowHandle()?.0;
-    let root = XamlReader::Load(&HSTRING::from(include_str!("settings.xaml")))?
-        .cast::<FrameworkElement>()?;
-    let mut controls = HashMap::new();
-    for id in [
-        2, 3, 9, 10, 11, 12, 13, 14, 20, 21, 23, 24, 25, 26, 31, 32, 33, 34, 41, 51, 52,
-    ] {
-        controls.insert(
-            id,
-            root.FindName(&HSTRING::from(format!("c{id}")))?
-                .cast::<FrameworkElement>()?,
-        );
-    }
-    window.SetContent(&root.cast::<UIElement>()?)?;
+) -> Result<(), Box<dyn std::error::Error>> {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    let instance = GetModuleHandleW(null());
+    let class = wide("aBridge.Native.Win32");
+    let icon = LoadIconW(instance, std::ptr::without_provenance(1));
+    let wc = WNDCLASSW {
+        lpfnWndProc: Some(proc),
+        hInstance: instance,
+        lpszClassName: class.as_ptr(),
+        hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+        hIcon: icon,
+        ..std::mem::zeroed()
+    };
+    RegisterClassW(&wc);
+    let dpi = GetDpiForSystem() as i32;
+    let font = CreateFontW(
+        -14 * dpi / 96,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as u32,
+        0,
+        0,
+        CLEARTYPE_QUALITY as u32,
+        0,
+        wide("Microsoft YaHei UI").as_ptr(),
+    );
+    let title_font = CreateFontW(
+        -30 * dpi / 96,
+        0,
+        0,
+        0,
+        700,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as u32,
+        0,
+        0,
+        CLEARTYPE_QUALITY as u32,
+        0,
+        wide("Microsoft YaHei UI").as_ptr(),
+    );
+    let status_font = CreateFontW(
+        -22 * dpi / 96,
+        0,
+        0,
+        0,
+        600,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as u32,
+        0,
+        0,
+        CLEARTYPE_QUALITY as u32,
+        0,
+        wide("Microsoft YaHei UI").as_ptr(),
+    );
     let preferences = state.join("windows-ui/native-preferences.json");
     let theme = std::fs::read(&preferences)
         .ok()
@@ -747,13 +1150,10 @@ unsafe fn build(
         .and_then(|v| v["theme"].as_i64())
         .unwrap_or(0)
         .clamp(0, 2) as i32;
-    controls[&41].cast::<ComboBox>()?.SetSelectedIndex(theme)?;
     let mut app = Box::new(App {
-        exiting: false,
-        hwnd,
-        window,
-        root,
-        controls,
+        hwnd: null_mut(),
+        destroyed: false,
+        controls: HashMap::new(),
         host: Host::start(&base, &state)?,
         frames: Frames::default(),
         activation,
@@ -767,100 +1167,82 @@ unsafe fn build(
         quitting: false,
         has_status: false,
         heartbeat: Instant::now(),
+        sections: [true, false, true, false, false],
         theme,
-        status_appearance: None,
+        dark: false,
+        background: null_mut(),
+        input: null_mut(),
+        font,
+        title_font,
+        status_font,
+        scroll: 0,
+        content_height: 0,
         status_error: String::new(),
         transport_error: String::new(),
         tray: std::mem::zeroed(),
         taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
         tray_callback: RegisterWindowMessageW(wide("aBridge.Native.Tray.Callback").as_ptr()),
+        layout_state: None,
+        online_color: false,
     });
-    SetWindowSubclass(hwnd, Some(proc), 1, &mut *app as *mut App as usize);
-    for id in [11u16, 12, 13, 14, 24, 25, 26] {
-        let handle = hwnd as usize;
-        app.h(id)
-            .cast::<Button>()?
-            .Click(&RoutedEventHandler::new(move |_, _| {
-                PostMessageW(handle as HWND, WM_COMMAND, id as usize, 0);
-                Ok(())
-            }))?;
-    }
-    for id in 31u16..=34 {
-        let handle = hwnd as usize;
-        app.h(id)
-            .cast::<CheckBox>()?
-            .Click(&RoutedEventHandler::new(move |_, _| {
-                PostMessageW(handle as HWND, WM_COMMAND, id as usize, 0);
-                Ok(())
-            }))?;
-    }
-    let handle = hwnd as usize;
-    app.h(41)
-        .cast::<ComboBox>()?
-        .SelectionChanged(&SelectionChangedEventHandler::new(move |_, _| {
-            PostMessageW(
-                handle as HWND,
-                WM_COMMAND,
-                41 | ((CBN_SELCHANGE as usize) << 16),
-                0,
-            );
-            Ok(())
-        }))?;
-    app.apply_theme();
-    app.refresh();
-    app.layout();
-    app.initialize_tray();
-    SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, app.tray.hIcon as isize);
-    SendMessageW(
-        hwnd,
-        WM_SETICON,
-        ICON_SMALL as usize,
-        app.tray.hIcon as isize,
-    );
-    let dpi = GetDpiForWindow(hwnd) as i32;
     let width = 540 * dpi / 96;
     let height = 640 * dpi / 96;
-    SetWindowPos(
-        hwnd,
-        null_mut(),
+    let hwnd = CreateWindowExW(
+        WS_EX_CONTROLPARENT,
+        class.as_ptr(),
+        wide("aBridge").as_ptr(),
+        WS_OVERLAPPEDWINDOW | WS_VSCROLL | WS_CLIPCHILDREN,
         (GetSystemMetrics(SM_CXSCREEN) - width) / 2,
         (GetSystemMetrics(SM_CYSCREEN) - height) / 2,
         width,
         height,
-        SWP_NOZORDER,
+        null_mut(),
+        null_mut(),
+        instance,
+        null(),
     );
-    app.window.Activate()?;
-    Ok(app)
-}
-pub unsafe fn run(
-    base: PathBuf,
-    state: PathBuf,
-    activation: HANDLE,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::{cell::RefCell, rc::Rc};
-    let result = Rc::new(RefCell::new(None::<Box<App>>));
-    let result_ui = result.clone();
-    let failure = Rc::new(RefCell::new(None::<String>));
-    let failure_ui = failure.clone();
-    // naui's lifecycle helper supplies WinUI's composed Application and metadata provider.
-    // All controls and device UI state below remain owned by aBridge.
-    naui_windows::run(naui_core::Settings::new("aBridge"), move |_| {
-        match build(base, state, activation as usize as HANDLE) {
-            Ok(app) => *result_ui.borrow_mut() = Some(app),
-            Err(e) => {
-                *failure_ui.borrow_mut() = Some(e.to_string());
-                if let Ok(app) = xaml::Application::Current() {
-                    let _ = app.Exit();
+    if hwnd.is_null() {
+        return Err("window creation".into());
+    }
+    app.hwnd = hwnd;
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut *app as *mut App as isize);
+    app.create();
+    ShowWindow(hwnd, SW_SHOW);
+    let mut msg = std::mem::zeroed();
+    while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+        if IsDialogMessageW(hwnd, &msg) == 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        } else if msg.message == WM_KEYDOWN && msg.wParam == VK_TAB as usize {
+            let focus = GetFocus();
+            if IsChild(hwnd, focus) != 0 {
+                let mut bounds = RECT::default();
+                let mut client = RECT::default();
+                GetWindowRect(focus, &mut bounds);
+                GetClientRect(hwnd, &mut client);
+                let mut origin = POINT { x: 0, y: 0 };
+                ClientToScreen(hwnd, &mut origin);
+                let top = bounds.top - origin.y;
+                let bottom = bounds.bottom - origin.y;
+                let delta = if top < 12 {
+                    top - 12
+                } else if bottom > client.bottom - 12 {
+                    bottom - client.bottom + 12
+                } else {
+                    0
+                };
+                if delta != 0 {
+                    app.scroll += delta * 96 / GetDpiForWindow(hwnd) as i32;
+                    app.layout();
                 }
             }
         }
-        Ok(())
-    })?;
-    result.borrow_mut().take();
-    let error = failure.borrow_mut().take();
-    if let Some(error) = error {
-        Err(error.into())
-    } else {
-        Ok(())
     }
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    DeleteObject(app.font);
+    DeleteObject(app.title_font);
+    DeleteObject(app.status_font);
+    DeleteObject(app.background);
+    DeleteObject(app.input);
+    Ok(())
 }

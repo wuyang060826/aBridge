@@ -29,14 +29,13 @@ pub struct Host {
 }
 impl Host {
     pub fn start(base: &Path, state: &Path) -> std::io::Result<Self> {
-        let runtime = base.join("runtime");
-        let mut child = Command::new(runtime.join("node.exe"))
-            .arg(runtime.join("windows-host.mjs"))
+        let mut child = Command::new(base.join("aBridge.exe"))
+            .arg("--native-host")
             .arg("--state-dir")
             .arg(state)
             .arg("--parent-pid")
             .arg(std::process::id().to_string())
-            .current_dir(runtime)
+            .current_dir(base)
             .creation_flags(0x08000000)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

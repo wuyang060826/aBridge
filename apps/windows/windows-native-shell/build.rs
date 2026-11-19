@@ -1,4 +1,19 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=ABRIDGE_CONTRACT_PATH");
+    let source = std::env::var("ABRIDGE_CONTRACT_PATH")
+        .expect("Build via npm run windows:shell:check to generate the shared protocol contract");
+    println!("cargo:rerun-if-changed={source}");
+    let bytes = std::fs::read(source).expect("Read generated desktop contract");
+    let contract: serde_json::Value = serde_json::from_slice(&bytes).expect("Valid contract JSON");
+    println!(
+        "cargo:rustc-env=ABRIDGE_VERSION={}",
+        contract["version"].as_str().expect("Product version")
+    );
+    std::fs::write(
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("contract.json"),
+        bytes,
+    )
+    .expect("Write embedded desktop contract");
     println!("cargo:rerun-if-env-changed=ABRIDGE_VERSION");
     println!("cargo:rerun-if-env-changed=ABRIDGE_ICON");
     println!("cargo:rerun-if-changed=app.manifest");
@@ -30,29 +45,6 @@ fn main() {
         .set_manifest_file("app.manifest");
     if let Ok(icon) = std::env::var("ABRIDGE_ICON") {
         resource.set_icon(&icon);
-    }
-    println!("cargo:rerun-if-env-changed=ABRIDGE_WINUI_MANIFEST");
-    let bundle = std::env::var("ABRIDGE_WINUI_MANIFEST")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
-                .ancestors()
-                .nth(3)
-                .unwrap()
-                .join("naui-winappsdk/naui-winappsdk.manifest")
-        });
-    println!("cargo:rerun-if-changed={}", bundle.display());
-    if bundle.exists() {
-        let sdk = std::fs::read_to_string(&bundle).expect("WinUI runtime manifest");
-        let start = sdk.find("<asmv3:file").expect("WinUI file declarations");
-        let end = sdk.rfind("</assembly>").expect("WinUI assembly end");
-        let base = std::fs::read_to_string("app.manifest").expect("app manifest");
-        let merged = base.replace("<assembly manifestVersion", "<assembly xmlns:asmv3='urn:schemas-microsoft-com:asm.v3' xmlns:winrtv1='urn:schemas-microsoft-com:winrt.v1' manifestVersion").replace("</assembly>", &format!("{}\n</assembly>", &sdk[start..end]));
-        let path =
-            std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("app-winui.manifest");
-        std::fs::write(&path, merged).expect("combined app manifest");
-        resource.set_manifest_file(path.to_str().unwrap());
     }
     resource.compile().expect("Windows resources");
 }
