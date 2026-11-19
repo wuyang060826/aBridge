@@ -36,18 +36,23 @@ export async function checkInstalledPackage(tarball: string, name: string, versi
       "--no-update-notifier",
       "--no-save",
     ]);
+    const installStarted = performance.now();
     const install = spawnSync(invocation.command, invocation.args, {
       cwd: directory,
       env,
       encoding: "utf8",
-      // A cold Windows cache can take over a minute to unpack the bundled tree.
-      timeout: 120000,
+      // Bound cold Windows extraction of the bundled tree independently of
+      // the product's command deadlines; offline/content assertions still apply.
+      timeout: process.platform === "win32" ? 300000 : 120000,
       windowsHide: true,
     });
     assert.equal(
       install.status,
       0,
-      `Candidate offline installation failed: ${install.error ?? install.stderr}`,
+      `Candidate offline installation failed: ${install.error?.message ?? ""}\n${install.stderr}`,
+    );
+    console.log(
+      `Candidate offline installation completed in ${((performance.now() - installStarted) / 1000).toFixed(1)}s`,
     );
     const cli = join(directory, "node_modules", name, "cli.js");
     await access(join(directory, "node_modules/.bin/abridge" + (process.platform === "win32" ? ".cmd" : "")));
