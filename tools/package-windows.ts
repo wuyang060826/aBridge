@@ -1,6 +1,6 @@
 /** Portable Windows candidate. No installer, global settings, or production credentials. */
 import { createReadStream, closeSync, existsSync, openSync, writeSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,30 +14,31 @@ const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) 
 // Pin the official distribution and its published SHASUMS256.txt digest.
 const nodeVersion = "24.22.3";
 const nodeDigest = "e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f";
-const sdkVersion = "10.0.404";
-const dotnet = existsSync(join(root, ".local/dotnet/dotnet.exe"))
-  ? join(root, ".local/dotnet/dotnet.exe")
-  : "dotnet";
-// Select the pinned SDK even when a newer SDK is also installed on a CI runner.
+const cargo = process.env.CARGO ?? "cargo";
 const buildDirectory = join(root, ".local/release/windows/build");
 await mkdir(buildDirectory, { recursive: true });
-await writeFile(
-  join(buildDirectory, "global.json"),
-  JSON.stringify({ sdk: { version: sdkVersion, rollForward: "disable" } }),
-);
-const sdkProbe = spawnSync(dotnet, ["--version"], {
-  cwd: buildDirectory,
-  encoding: "utf8",
-  windowsHide: true,
-});
-if (sdkProbe.status !== 0 || sdkProbe.stdout.trim() !== sdkVersion)
-  throw Error(`Windows packaging requires .NET SDK ${sdkVersion} (PATH or .local/dotnet).`);
-const sdkList = spawnSync(dotnet, ["--list-sdks"], { encoding: "utf8", windowsHide: true });
-const sdkDirectory = sdkList.stdout
-  .split(/\r?\n/)
-  .find((line) => line.startsWith(`${sdkVersion} [`))
-  ?.match(/\[(.+)\]$/)?.[1];
-if (!sdkDirectory) throw Error("Cannot locate the selected .NET SDK distribution notices.");
+const manifestPath = join(root, "apps/windows/windows-native-shell/Cargo.toml");
+const target = "x86_64-pc-windows-msvc";
+const cargoEnv = {
+  ...process.env,
+  ABRIDGE_VERSION: metadata.version,
+  CARGO_TARGET_DIR: join(buildDirectory, "target"),
+};
+function runCargo(args: string[]): string {
+  const result = spawnSync(cargo, args, {
+    cwd: dirname(manifestPath),
+    env: cargoEnv,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 600000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0)
+    throw Error(
+      `Rust Windows build failed: ${result.error?.message ?? ""}\n${result.stdout}\n${result.stderr}`,
+    );
+  return result.stdout;
+}
 // Reuse the canonical 256px PNG already exported in the macOS icon set.
 const iconset = await readFile(join(root, "apps/desktop/native/assets/AppIcon.icns"));
 let iconPng: Buffer | undefined;
@@ -85,39 +86,62 @@ const nodeSource = join(downloads, `node-v${nodeVersion}-win-x64`);
 const stage = resolve(root, ".local/release/windows/aBridge");
 const releaseRoot = resolve(root, ".local/release/windows");
 if (dirname(stage) !== releaseRoot || !stage.startsWith(root + sep)) throw Error("Unsafe staging path.");
+Object.assign(cargoEnv, { ABRIDGE_ICON: icon });
+runCargo(["build", "--manifest-path", manifestPath, "--release", "--locked", "--target", target]);
+const nativeBundle = join(cargoEnv.CARGO_TARGET_DIR, target, "release/naui-winappsdk");
+for (const required of [
+  "naui-winappsdk.manifest",
+  "Microsoft.UI.Xaml.dll",
+  "resources.pri",
+  "WindowsAppSDK-LICENSE.txt",
+  "WindowsAppSDK-NOTICE.txt",
+])
+  if (!existsSync(join(nativeBundle, required))) throw Error(`Incomplete native WinUI bundle: ${required}`);
+// The first build assembles the checked SDK bundle. Embed its registration data
+// on the second build so Windows 10 does not depend on installed WinRT packages.
+Object.assign(cargoEnv, { ABRIDGE_WINUI_MANIFEST: join(nativeBundle, "naui-winappsdk.manifest") });
+runCargo(["build", "--manifest-path", manifestPath, "--release", "--locked", "--target", target]);
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
-const publish = spawnSync(
-  dotnet,
-  [
-    "publish",
-    join(root, "apps/windows/windows-native-shell/aBridge.csproj"),
-    "--disable-build-servers",
-    "-c",
-    "Release",
-    "-r",
-    "win-x64",
-    "--self-contained",
-    "true",
-    "-o",
-    stage,
-    `-p:Version=${metadata.version}`,
-    `-p:ApplicationIcon=${icon}`,
-    "-p:DebugType=None",
-    "-p:DebugSymbols=false",
-    "-p:UseSharedCompilation=false",
-  ],
-  {
-    cwd: buildDirectory,
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 180000,
-    env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" },
-  },
-);
-if (publish.status !== 0) throw Error(`Native Windows publish failed:\n${publish.stdout}\n${publish.stderr}`);
-await cp(join(dirname(sdkDirectory), "LICENSE.txt"), join(stage, "DotNet-LICENSE.txt"));
-await cp(join(dirname(sdkDirectory), "ThirdPartyNotices.txt"), join(stage, "DotNet-THIRD-PARTY-NOTICES.txt"));
+await cp(nativeBundle, stage, { recursive: true });
+await cp(join(cargoEnv.CARGO_TARGET_DIR, target, "release/aBridge.exe"), join(stage, "aBridge.exe"));
+const cargoMetadata = JSON.parse(
+  runCargo([
+    "metadata",
+    "--manifest-path",
+    manifestPath,
+    "--locked",
+    "--format-version",
+    "1",
+    "--filter-platform",
+    target,
+  ]),
+) as {
+  resolve: { nodes: { id: string }[] };
+  packages: {
+    id: string;
+    name: string;
+    version: string;
+    source: string | null;
+    license: string | null;
+    manifest_path: string;
+  }[];
+};
+const resolved = new Set(cargoMetadata.resolve.nodes.map((node) => node.id));
+let notices = "aBridge Windows shell third-party notices\n";
+for (const pkg of cargoMetadata.packages
+  .filter((pkg) => pkg.source && resolved.has(pkg.id))
+  .sort((a, b) => a.name.localeCompare(b.name))) {
+  notices += `\n${pkg.name} ${pkg.version}\nLicense: ${pkg.license ?? "See included text"}\n`;
+  const directory = dirname(pkg.manifest_path);
+  for (const file of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    if (file.isFile() && /^(LICENSE|COPYING|NOTICE)(?:[._-].*)?$/i.test(file.name))
+      notices += `\n--- ${file.name} ---\n${await readFile(join(directory, file.name), "utf8")}\n`;
+  }
+}
+await writeFile(join(stage, "Rust-THIRD-PARTY-NOTICES.txt"), notices);
 await cp(join(root, "apps/desktop/native/assets/AppIcon.png"), join(stage, "icon.png"));
 const app = join(stage, "runtime");
 await mkdir(app, { recursive: true });
@@ -166,8 +190,7 @@ await writeFile(
       source_dirty: changes.status === 0 ? changes.stdout.trim().length > 0 : null,
       arch: "x64",
       node: nodeVersion,
-      dotnetSdk: sdkVersion,
-      shell: "WPF",
+      shell: "Rust + WinUI 3",
       dependencies: closure,
     },
     null,
@@ -247,5 +270,6 @@ const checksum = createHash("sha256");
 for await (const chunk of createReadStream(output)) checksum.update(chunk);
 await writeFile(output + ".sha256", `${checksum.digest("hex")}  ${relative(dist, output)}\n`);
 console.log(
-  `Packaged unsigned Windows x64 ${metadata.version}, embedded Node ${probe.stdout.trim()}: ${output}`,
+  `Packaged unsigned Windows x64 ${metadata.version}, embedded Node ${probe.stdout.trim()}: ${output}\n` +
+    `ZIP ${((await stat(output)).size / 1024 / 1024).toFixed(2)} MiB; shell ${((await stat(join(stage, "aBridge.exe"))).size / 1024 / 1024).toFixed(2)} MiB`,
 );

@@ -13,3 +13,6 @@ docs/.vitepress/cache/
 
 apps/windows/windows-native-shell/bin/
 apps/windows/windows-native-shell/obj/
+
+apps/windows/windows-native-shell/target/
+apps/windows/windows-native-shell/Cargo.lock

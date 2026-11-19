@@ -1,10 +1,10 @@
 # Windows PC 客户端
 
-Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力，直接连接现有 aBridge Server。完整源码位于 `apps/windows/`：`src/` 是 TypeScript 运行时，`windows-native-shell/` 是 WPF 界面，`tests/` 是回归测试。无需修改或重新部署 Server。
+Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力，直接连接现有 aBridge Server。完整源码位于 `apps/windows/`：`src/` 是 TypeScript 运行时，`windows-native-shell/` 是 Rust + WinUI 3 界面，`tests/` 是回归测试。无需修改或重新部署 Server。
 
 ## 普通用户：下载、解压、启动
 
-当前提供**未签名便携 ZIP**，不是 MSI/Setup 安装器，也没有自动更新。需要 Windows 10/11 x64、可交互且未锁定的桌面；ARM64 尚未验证。运行包已包含 Node 和自包含 .NET，用户不必安装开发工具，也不需要管理员权限。
+当前提供**未签名便携 ZIP**，不是 MSI/Setup 安装器，也没有自动更新。需要 Windows 10/11 x64、可交互且未锁定的桌面；ARM64 尚未验证。运行包已包含 Node 和原生 Windows App SDK；设置界面使用 WinUI 3，外壳为原生 Rust EXE，不分发 .NET，用户不必安装开发工具，也不需要管理员权限。
 
 1. 在提供该代码分支的 GitHub 仓库进入 **Actions → CI**，选择与你要安装的提交号一致、**Windows client** 检查成功的运行。
 2. 下载页面底部的 **windows-client-unsigned** artifact（需要登录 GitHub）。先解开 artifact 外层 ZIP，得到 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。Actions 产物会过期；这不是官方 Release 已发布的承诺。
@@ -20,12 +20,13 @@ Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力�
 - **更新前先从托盘退出旧客户端**。完整解压新 ZIP 到新的程序目录，启动新目录的 EXE；不要让两个程序同时使用同一份状态。保留旧目录即可回退程序文件。
 - 默认凭据、绑定、暂停状态和操作日志位于 `%LOCALAPPDATA%\aBridge`，与程序目录分开。更新程序不要删除或覆盖这个状态目录；使用过 `--state-dir` 或私有 `deployment.json` 的用户应继续指定原状态目录，不要将这些私有文件上传到 GitHub。
 - 如需自定义状态目录，可运行 `aBridge.exe --state-dir "D:\自己的私有状态目录"`。首次使用新的空状态目录需要重新授权。
+- 状态目录优先级为 `--state-dir`、程序旁的 `deployment.json` 中的 `state_dir`、`%LOCALAPPDATA%\aBridge`。Rust 外壳与旧 WPF 外壳使用相同的目录规范化、互斥锁和激活事件名称；同一目录重复启动只唤起已有窗口。外观仍保存在该目录的 `windows-ui/native-preferences.json`，无需转换设备配置。
 - 暂停和关闭能力不会因重连自动解除。更新后确认 Server 地址、设备和本机能力是否正确。
 - 卸载时退出客户端，删除该版本的程序目录和自己建立的快捷方式即可；默认保留状态。彻底移除访问权限还需在管理台撤销设备，确认不再需要后再自行删除私有状态目录。
 
 ## 源码构建
 
-安装 Node.js（版本要求见根 `package.json`）、npm 和 **.NET SDK 10.0.404**。在仓库根目录执行：
+安装 Node.js（版本要求见根 `package.json`）、npm 和 **Rust stable（MSVC x64）及 Visual Studio C++ Build Tools / Windows SDK**。在仓库根目录执行：
 
 ```powershell
 npm install --ignore-scripts --no-audit --no-fund
@@ -35,7 +36,7 @@ npm run package:windows:check
 npm run desktop:windows
 ```
 
-打包器从 PATH 或 `.local/dotnet/` 查找固定 .NET SDK，下载并校验固定版本的 Node 24.22.3。首次构建需要访问 npm、NuGet 和 nodejs.org。输出位于 `dist/releases/`，版本单源为根 `package.json`。构建产物不提交到 Git；CI artifact 或本地构建包才包含可运行二进制。包内附带本文、运行时清单及第三方许可，不包含私有部署配置或凭据。
+打包器从 PATH（或 `CARGO` 环境变量）查找 Cargo，使用锁定的 crate 依赖构建 Rust/WinUI 3 外壳，下载并校验固定版本的 Node 24.22.3。首次构建需要访问 npm、crates.io、nuget.org 和 nodejs.org。WinUI 原生运行库从固定版本的 Microsoft NuGet 包提取并校验，随便携包分发，不要求用户安装 Windows App Runtime。输出位于 `dist/releases/`，版本单源为根 `package.json`。构建产物不提交到 Git；CI artifact 或本地构建包才包含可运行二进制。包内附带本文、运行时清单及第三方许可，不包含私有部署配置或凭据。
 
 ## 能力边界和排障
 
@@ -48,9 +49,12 @@ npm run desktop:windows
 
 ```powershell
 npm run check
+npm run windows:shell:check
 node --import tsx --test --test-concurrency=4 apps/windows/tests/*.test.ts
 npm run package:windows
 npm run package:windows:check
 ```
 
 测试使用虚构身份和自有 fixture。真实桌面输入用例需要显式设置 `ABRIDGE_WINDOWS_LIVE=1`，并使用专用测试窗口；CI 不连接真实账号、桌面或服务。单元测试和包启动检查不能代替多显示器、UAC、真实输入或 Yuxi 截图端到端验收。
+
+外壳升级对照可使用 `$env:ABRIDGE_WINDOWS_LIVE='1'; npm run test:windows:shell:live -- <旧包解压目录> <新包解压目录>`。此检查先核对两包运行时文件一致，再用隔离状态目录验证关闭隐藏、跨版本互斥与激活、快捷键只暂停、原外观偏好保留。它不验证浏览器绑定、托盘菜单退出或实际桌面输入；这些行为须用同一 Server 和运行时从解压 EXE 另行对照，记录响应与失败提示。

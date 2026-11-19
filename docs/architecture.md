@@ -96,9 +96,11 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 ## Windows 客户端
 
-Windows PC 客户端位于 `apps/windows/`，使用独立 TypeScript 运行时与 WPF 托盘壳，直接连接 Server。`windows-native.ts`、`windows-uia.ts` 与 `windows-script.ts` 提供 Win32/UIA；壳与运行时通过私有 stdio 通信。本机权限、焦点、遮挡、暂停及操作去重仍由客户端检查。其构建输出为 `dist/windows/`，不改变 Swift macOS、Rust Linux 或 Kotlin Android 客户端。
+Windows PC 客户端位于 `apps/windows/`，TypeScript 运行时直接连接 Server；Rust 外壳使用 WinUI 3 设置界面与 Win32 托盘及活动边框。`windows-native.ts`、`windows-uia.ts` 与 `windows-script.ts` 提供 Win32/UIA；壳与运行时通过私有 stdio 通信。本机权限、焦点、遮挡、暂停及操作去重仍由客户端检查。其构建输出为 `dist/windows/`，不改变 Swift macOS、Rust Linux 或 Kotlin Android 客户端。
 
 Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](windows-client.md)。
+
+Rust 外壳仅负责设置窗口、托盘、暂停快捷键、桌面活动边框和子进程生命周期。它以私有 stdin/stdout 启动包内 `windows-host.mjs`，传入状态目录及外壳 PID，沿用原 JSON 请求、响应和事件；设备绑定、权限、会话、去重和工具执行仍由 Node/TypeScript/PowerShell 运行时维护。活动边框属于外壳进程，保持分屏物理坐标、鼠标穿透、不激活和工具窗口样式，供原驱动识别与排除。
 
 ## 身份与授权
 

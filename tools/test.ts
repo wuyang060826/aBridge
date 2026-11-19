@@ -2,8 +2,8 @@ import { globSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const files = [
   ...new Set([
-    ...globSync("packages/**/tests/**/*.test.ts"),
-    ...globSync("apps/**/tests/**/*.test.ts"),
+    ...globSync("packages/*/tests/**/*.test.ts"),
+    ...globSync("apps/*/tests/**/*.test.ts"),
     ...globSync("apps/browser/tests/*.test.js"),
     ...globSync("tools/tests/*.test.ts"),
   ]),

@@ -30,6 +30,8 @@ npm run check
 
 Linux CLI 开发另需 Rust（含 rustfmt、Clippy）；版本及安装命令见 [Linux 客户端说明](../apps/linux-client/README.md)。`npm run linux:build` 从共享协议生成原生契约并构建，`npm run linux:check` 运行 Rust 检查及真实 Server 联调，`npm run package:linux` 在 Linux 生成分发包。Linux CI 在 amd64/arm64 上执行这些检查并验证真实用户级 systemd。普通 `npm run check` 仍负责 Node/协议与现有分发；Linux 改动必须同时通过 `linux:check`。
 
+Windows 外壳开发另需 Rust stable（MSVC x64）、Visual Studio C++ Build Tools 和 Windows SDK。`npm run windows:shell:check` 运行格式、Rust 测试和 Clippy；`npm run package:windows` 构建 Rust/WinUI 3 外壳并打包原有 Node 与自包含 Windows App SDK 原生运行库，`npm run package:windows:check` 核验解压产物、SHA-256 与 CLI 启动。真实界面、多屏和输入验收另行执行，见 [Windows 客户端](../docs/windows-client.md)。
+
 ## 接手阅读顺序
 
 先读 [README](../README.md) 的工作方式，再看[执行链与状态归属](../docs/architecture.md#执行链与状态归属)。按要修改的行为选择一条链路阅读：

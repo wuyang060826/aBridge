@@ -29,6 +29,12 @@ for (const entry of entries) {
     !/(?:^|\/)(?:deployment|config|credential|control-auth)\.json$|\.db(?:-|$)|\.map$|cua-driver/.test(entry),
     entry,
   );
+  assert.ok(
+    !/\.(?:deps\.json|runtimeconfig\.json)$|DotNet-|(?:^|\/)(?:coreclr|clrjit|hostfxr|hostpolicy|System\.Private\.CoreLib)\.dll$/i.test(
+      entry,
+    ),
+    `Unexpected managed runtime: ${entry}`,
+  );
 }
 const directory = await mkdtemp(join(tmpdir(), "abridge-windows-package-"));
 assert.equal(dirname(resolve(directory)), resolve(tmpdir()));
@@ -42,26 +48,59 @@ try {
     runtime = join(app, "runtime");
   for (const file of [
     "aBridge.exe",
-    "aBridge.dll",
-    "aBridge.runtimeconfig.json",
     "README.md",
     "runtime/node.exe",
     "runtime/cli.js",
     "runtime/windows-host.mjs",
     "runtime/LICENSE",
     "runtime/Node-LICENSE",
-    "DotNet-LICENSE.txt",
+    "Rust-THIRD-PARTY-NOTICES.txt",
+    "Start-aBridge.ps1",
+    "naui-winappsdk.manifest",
+    "Microsoft.UI.Xaml.dll",
+    "resources.pri",
+    "WindowsAppSDK-LICENSE.txt",
+    "WindowsAppSDK-NOTICE.txt",
   ])
     await access(join(app, file));
-  assert.equal((await readFile(join(app, "aBridge.exe"))).subarray(0, 2).toString(), "MZ");
+  for (const entry of entries.filter((entry) => /\.(dll|exe)$/i.test(entry))) {
+    const binary = await readFile(join(directory, entry));
+    assert.equal(binary.subarray(0, 2).toString(), "MZ", entry);
+    const header = binary.readUInt32LE(0x3c);
+    assert.equal(binary.subarray(header, header + 4).toString(), "PE\0\0", entry);
+    const optional = header + 24;
+    const magic = binary.readUInt16LE(optional);
+    assert.ok(magic === 0x20b || magic === 0x10b, entry);
+    const directories = optional + (magic === 0x20b ? 112 : 96);
+    assert.equal(
+      binary.readUInt32LE(directories + 14 * 8),
+      0,
+      `Managed assembly in portable bundle: ${entry}`,
+    );
+  }
+  const executable = await readFile(join(app, "aBridge.exe"));
+  assert.ok(
+    executable.includes(Buffer.from("Microsoft.UI.Xaml.Application")),
+    "Shell must embed the app-local WinUI activation manifest",
+  );
+  assert.equal(executable.subarray(0, 2).toString(), "MZ");
+  const pe = executable.readUInt32LE(0x3c);
+  assert.equal(executable.subarray(pe, pe + 4).toString(), "PE\0\0");
+  assert.equal(executable.readUInt16LE(pe + 4), 0x8664, "Shell must target x64");
+  const optional = pe + 24;
+  assert.equal(executable.readUInt16LE(optional), 0x20b, "Shell must be PE32+");
+  assert.equal(executable.readUInt16LE(optional + 68), 2, "Shell must use the GUI subsystem");
+  assert.equal(executable.readUInt32LE(optional + 112 + 14 * 8), 0, "Shell must not load the CLR");
   const manifest = JSON.parse(await readFile(join(runtime, "runtime-manifest.json"), "utf8")) as {
     version: string;
     platform: string;
+    shell: string;
     source_commit: string | null;
     source_dirty: boolean | null;
   };
   assert.equal(manifest.version, version);
   assert.equal(manifest.platform, "win32");
+  assert.equal(manifest.shell, "Rust + WinUI 3");
   assert.ok(manifest.source_commit === null || /^[a-f0-9]{40}$/.test(manifest.source_commit));
   // An empty state directory means no credentials, network connection or real desktop actions.
   const env = Object.fromEntries(

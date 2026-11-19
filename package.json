@@ -38,7 +38,9 @@
     "docs:preview": "vitepress preview docs",
     "package:windows": "node --import tsx tools/package-windows.ts",
     "package:windows:check": "node --import tsx tools/check-windows-package.ts",
-    "desktop:windows": ".local\\release\\windows\\aBridge\\aBridge.exe"
+    "desktop:windows": ".local\\release\\windows\\aBridge\\aBridge.exe",
+    "windows:shell:check": "cd apps/windows/windows-native-shell && cargo fmt -- --check && cargo test --locked && cargo clippy --locked --all-targets -- -D warnings",
+    "test:windows:shell:live": "node --import tsx tools/check-windows-shell.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
