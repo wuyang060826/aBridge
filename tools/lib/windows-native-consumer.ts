@@ -15,7 +15,7 @@ async function until<T>(
   accept: (value: T) => boolean,
   label: string,
 ): Promise<T> {
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + 45000;
   do {
     const value = await read();
     if (accept(value)) return value;
@@ -240,7 +240,8 @@ export async function checkNativeConsumer(executable: string, directory: string)
     assert.match(JSON.stringify(read.result), /external change/);
     dispatch("native_shell", "command_execute", {
       command: "Write-Output 'native-shell-fixture'",
-      timeout: 10,
+      // This checks packaged execution, not startup latency on a cold shared runner.
+      timeout: 30,
     });
     const shell = await receipt("native_shell");
     assert.equal(shell.status, "executed");
